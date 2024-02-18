@@ -2,6 +2,7 @@ import { $Enums, Prisma } from '@prisma/client';
 
 export class Users implements Prisma.UsersCreateInput {
   id!: string;
+  hashedRt!: string | null;
   email!: string;
   user_name!: string;
   password_hash!: string;

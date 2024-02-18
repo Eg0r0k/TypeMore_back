@@ -6,19 +6,11 @@ import { UsersModule } from '../users/users.module';
 import { UsersService } from '../users/users.service';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
+import { AtStrategy, RtStrategy } from './strategies';
 
 @Module({
   controllers: [AuthController],
-  imports: [
-    UsersModule,
-    PassportModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET,
-      signOptions: {
-        expiresIn: '1h'
-      }
-    })
-  ],
-  providers: [AuthService, PrismaService, UsersService]
+  imports: [UsersModule, PassportModule, JwtModule.register({})],
+  providers: [AuthService, PrismaService, UsersService, AtStrategy, RtStrategy]
 })
 export class AuthModule {}
