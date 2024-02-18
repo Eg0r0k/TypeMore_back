@@ -9,6 +9,6 @@ services:
       POSTGRES_USER: ${DATABASE_USERNAME}
       POSTGRESS_DB: ${DATABASE_NAME}
     ports:
-      - ${DATABASE_PORT}
+      - ${DATABASE_PORT}:${DATABASE_PORT}
     volumes:
       - ./docker-data/db:/var/lib/postgresql/data

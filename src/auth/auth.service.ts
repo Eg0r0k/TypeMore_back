@@ -1,11 +1,15 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException
+} from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { PrismaService } from '../prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { Users } from '../users/users.model';
 import * as bcrypt from 'bcrypt';
-import { LoginDto } from './dto/login-user.dto';
+import { LoginUserDto } from './dto';
 import { Tokens } from './types/tokens.type';
 
 const saltRounds = 10;
@@ -43,11 +47,10 @@ export class AuthService {
         id: userId
       },
       data: {
-        hashedRt: hash
+        hashed_rt: hash
       }
     });
   }
-  //54:43
   async getTokens(userId: string, email: string) {
     const [at, rt] = await Promise.all([
       this.jwtService.signAsync(
@@ -56,7 +59,7 @@ export class AuthService {
           email
         },
         {
-          expiresIn: 60 * 15,
+          expiresIn: 60 * 15, //15 min
           secret: process.env.JWT_AT_SECRET
         }
       ),
@@ -66,7 +69,7 @@ export class AuthService {
           email
         },
         {
-          expiresIn: 60 * 60 * 24 * 7,
+          expiresIn: 60 * 60 * 24 * 7, //7 day
           secret: process.env.JWT_RT_SECRET
         }
       )
@@ -76,8 +79,42 @@ export class AuthService {
       refresh_token: rt
     };
   }
+  async logout(userId: string) {
+    await this.prismaService.users.updateMany({
+      where: {
+        id: userId,
+        hashed_rt: {
+          not: null
+        }
+      },
+      data: {
+        hashed_rt: null
+      }
+    });
+  }
+  // async refreshTokens(userId: string, rt: string): Promise<Tokens> {
+  //   const user = await this.prismaService.users.findUnique({
+  //     where: {
+  //       id: userId
+  //     }
+  //   });
 
-  async login(loginDto: LoginDto): Promise<any> {
+  //   if (!user || !user.hashed_rt) {
+  //     throw new ForbiddenException('Access Denied');
+  //   }
+
+  //   const rtMatches = await bcrypt.compare(rt, user.hashed_rt);
+  //   if (!rtMatches) {
+  //     throw new ForbiddenException('Access Denied');
+  //   }
+
+  //   const tokens = await this.getTokens(user.id, user.email);
+  //   await this.updateRtHash(user.id, tokens.refresh_token);
+
+  //   return tokens;
+  // }
+
+  async login(loginDto: LoginUserDto): Promise<Tokens> {
     const { email, password_hash } = loginDto;
     const users = await this.prismaService.users.findUnique({
       where: { email }
@@ -92,7 +129,7 @@ export class AuthService {
         'User not found or password is incorrect'
       );
     }
-
-    return this.jwtService.sign({ email });
+    const tokens = await this.getTokens(users.id, users.email);
+    return tokens;
   }
 }
