@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+
 	"net/http"
 	"typeMore/api/handlers"
 	"typeMore/config"
@@ -10,11 +11,17 @@ import (
 	"typeMore/internal/services/jwt"
 	"typeMore/middleware"
 
+	_ "typeMore/docs"
+
 	"github.com/gorilla/mux"
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 func SetupRoutes(db *sql.DB) *mux.Router {
     router := mux.NewRouter()
+    router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
+
+
 
     // Create repositories
     userRepo := repositories.NewUserRepository(db)
