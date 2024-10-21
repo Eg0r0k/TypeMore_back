@@ -48,12 +48,16 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(user)
 }
+//@Summary Register new user
+//@Description Register a user with username, email, password and captcha
+//@Tags Users
+//@Accept json
+//@Produce json 
+//@Param user body models.User true "User data"
+// @Success 201 {object} models.User
+// @Router /users/register [post]
 func (h *UserHandler) RegistrationUser(w http.ResponseWriter, r *http.Request){
-    var newUser struct{
-        Username string `json:"username"`
-        Email string `json:"email"`
-        Password string `json:"password"`
-    }
+    var newUser models.RegistrationCredentials
     err:= json.NewDecoder(r.Body).Decode(&newUser)
     if err != nil{
         http.Error(w,"Invalid request body", http.StatusBadRequest)
@@ -78,7 +82,15 @@ func (h *UserHandler) RegistrationUser(w http.ResponseWriter, r *http.Request){
     w.WriteHeader(http.StatusCreated)
     json.NewEncoder(w).Encode(user)
 }
-
+// @Summary Delete User
+// @Description Deletes a user by ID.
+// @Tags Users
+// @Security ApiKeyAuth
+// @Param id path string true "User ID"
+// @Success 204 {string} string "User deleted successfully"
+// @Failure 400 {string} string "Invalid user ID"
+// @Failure 500 {string} string "Error deleting user"
+// @Router /users/{id} [delete]
 func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
     vars:= mux.Vars(r)
     idStr:= vars["id"]
@@ -95,12 +107,18 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
     }
     w.WriteHeader(http.StatusNoContent)
 }
-
+// @Summary User Login
+// @Description Logs in a user with username and password
+// @Tags Users
+// @Accept json
+// @Produce json
+// @Param credentials body models.LoginCredentials true "Login credentials"  
+// @Success 200 {object} map[string]string
+// @Failure 400 {string} string "Invalid request payload"
+// @Failure 401 {string} string "Invalid username or password"
+// @Router /users/login [post]
 func (h *UserHandler)  Login(w http.ResponseWriter, r *http.Request) {
-    var creds struct {
-        Username string `json:"username"`
-        Password string `json:"password"`
-    }
+    var creds models.LoginCredentials
     
     if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
         http.Error(w, "Invalid request payload", http.StatusBadRequest)
@@ -137,6 +155,7 @@ func (h *UserHandler)  Login(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(response)
 }
+
 func (h *UserHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
     var request struct {
         RefreshToken string `json:"refresh_token"`

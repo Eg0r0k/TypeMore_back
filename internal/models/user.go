@@ -22,3 +22,14 @@ type User struct {
     RegistrationDate *time.Time `json:"registration_date,omitempty" db:"registration_date"`
 	Roles            []Role    `db:"-"`
 }
+
+type LoginCredentials struct{
+	    Username string `json:"username"`
+        Password string `json:"password"`
+}
+
+type RegistrationCredentials struct{
+	Username string `json:"username"`
+	Email string `json:"email"`
+	Password string `json:"password"`
+}
