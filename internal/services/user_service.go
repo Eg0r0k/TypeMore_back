@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -28,15 +29,15 @@ func NewUserService(userRepo *repositories.UserRepository, tokenService *jwt.Tok
     }
 }
 
-func (s *UserService) GetUserByID(id uuid.UUID) (*models.User, error) {
-    return s.userRepo.GetUserByID(id)
+func (s *UserService) GetUserByID(ctx context.Context,id uuid.UUID) (*models.User, error) {
+    return s.userRepo.GetUserByID(ctx,id)
 }
 
-func (s *UserService) CreateUser(u *models.User) error {
+func (s *UserService) CreateUser(ctx context.Context,u *models.User, role models.Role) error {
     if _,err := validate.Email(u.Email); err != nil {
         return fmt.Errorf("invalid email: %w", err)
     }
-    taken, err := s.userRepo.IsUsernameTaken(u.Username)
+    taken, err := s.userRepo.IsUsernameTaken(ctx,u.Username)
     if err != nil {
             return fmt.Errorf("error checking username: %w", err)
     }
@@ -44,7 +45,7 @@ func (s *UserService) CreateUser(u *models.User) error {
             return errors.New("username already taken")
     }
     
-    taken, err = s.userRepo.IsEmailTaken(u.Email)
+    taken, err = s.userRepo.IsEmailTaken(ctx,u.Email)
     if err != nil {
             return fmt.Errorf("error checking email: %w", err)
     }
@@ -62,7 +63,7 @@ func (s *UserService) CreateUser(u *models.User) error {
     u.UpdatedAt = now
     u.RegistrationDate = &now
     u.Password = utils.HashPassword(string(u.Password))
-
+    u.Roles = []models.Role{role}
     err = s.userRepo.CreateUser(u)
     if err != nil {
             log.Printf("Error creating user: %v", err)
@@ -73,16 +74,16 @@ func (s *UserService) CreateUser(u *models.User) error {
 }
 
 
-func (s *UserService) DeleteUser(id uuid.UUID) error{
-    _, err := s.GetUserByID(id)
+func (s *UserService) DeleteUser(ctx context.Context,id uuid.UUID) error{
+    _, err := s.GetUserByID(ctx,id)
     if err != nil {
         return err 
     }
-    return s.userRepo.DeleteUser(id)
+    return s.userRepo.DeleteUser(ctx,id)
 }
 
-func (s *UserService) GenerateRefreshToken(userID uuid.UUID) (string, error) {
-    user, err := s.GetUserByID(userID)
+func (s *UserService) GenerateRefreshToken(ctx context.Context,userID uuid.UUID) (string, error) {
+    user, err := s.GetUserByID(ctx,userID)
     if err != nil {
         return "", err
     }
@@ -100,7 +101,7 @@ func (s *UserService) GenerateRefreshToken(userID uuid.UUID) (string, error) {
         CreatedAt: time.Now(),
     }
 
-    err = s.userRepo.CreateRefreshToken(token)
+    err = s.userRepo.CreateRefreshToken(ctx,token)
     if err != nil {
         return "", err
     }
@@ -108,8 +109,8 @@ func (s *UserService) GenerateRefreshToken(userID uuid.UUID) (string, error) {
     return refreshToken, nil
 }
 
-func (s *UserService) Login(username string, password string) (string, string, error) {
-    user, err := s.userRepo.GetUserByUsername(username)
+func (s *UserService) Login(ctx context.Context,username string, password string) (string, string, error) {
+    user, err := s.userRepo.GetUserByUsername(ctx,username)
     if err != nil {
         log.Printf("Error fetching user: %v", err)
         return "", "", fmt.Errorf("error fetching user: %w", err)
@@ -128,7 +129,7 @@ func (s *UserService) Login(username string, password string) (string, string, e
         log.Printf("Error generating access token: %v", err)
         return "", "", fmt.Errorf("error generating access token: %w", err)
     }
-    refreshToken, err := s.GenerateRefreshToken(user.UserId)
+    refreshToken, err := s.GenerateRefreshToken(ctx,user.UserId)
     if err != nil {
         log.Printf("Error generating refresh token: %v", err)
         return "", "", fmt.Errorf("error generating refresh token: %w", err)

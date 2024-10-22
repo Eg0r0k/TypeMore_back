@@ -6,6 +6,15 @@ definitions:
       username:
         type: string
     type: object
+  models.RegistrationCredentials:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+      username:
+        type: string
+    type: object
   models.Role:
     enum:
     - -1
@@ -48,38 +57,11 @@ definitions:
 info:
   contact: {}
 paths:
-  /users/{id}:
-    delete:
-      description: Deletes a user by ID.
-      parameters:
-      - description: User ID
-        in: path
-        name: id
-        required: true
-        type: string
-      responses:
-        "204":
-          description: User deleted successfully
-          schema:
-            type: string
-        "400":
-          description: Invalid user ID
-          schema:
-            type: string
-        "500":
-          description: Error deleting user
-          schema:
-            type: string
-      security:
-      - ApiKeyAuth: []
-      summary: Delete User
-      tags:
-      - Users
-  /users/login:
+  /api/v1/auth/login:
     post:
       consumes:
       - application/json
-      description: Logs in a user with username and password
+      description: Logs in a user with username and password.
       parameters:
       - description: Login credentials
         in: body
@@ -107,18 +89,46 @@ paths:
       summary: User Login
       tags:
       - Users
-  /users/register:
+  /api/v1/auth/refresh:
     post:
       consumes:
       - application/json
-      description: Register a user with username, email, password and captcha
+      description: Refreshes the access token using a refresh token.
+      parameters:
+      - description: Refresh token
+        in: body
+        name: refresh_token
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Invalid request payload
+          schema:
+            type: string
+      summary: Refresh Access Token
+      tags:
+      - Users
+  /api/v1/auth/signup:
+    post:
+      consumes:
+      - application/json
+      description: Register a user with username, email, and password.
       parameters:
       - description: User data
         in: body
         name: user
         required: true
         schema:
-          $ref: '#/definitions/models.User'
+          $ref: '#/definitions/models.RegistrationCredentials'
       produces:
       - application/json
       responses:
@@ -126,7 +136,70 @@ paths:
           description: Created
           schema:
             $ref: '#/definitions/models.User'
+        "400":
+          description: Invalid request body
+          schema:
+            type: string
+        "500":
+          description: Error creating user
+          schema:
+            type: string
       summary: Register new user
+      tags:
+      - Users
+  /api/v1/users/{id}:
+    delete:
+      description: Deletes a user by ID.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: User deleted successfully
+        "400":
+          description: Invalid user ID
+          schema:
+            type: string
+        "500":
+          description: Error deleting user
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Delete User
+      tags:
+      - Users
+    get:
+      description: Retrieves a user by their ID.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.User'
+        "400":
+          description: Invalid user ID
+          schema:
+            type: string
+        "404":
+          description: User not found
+          schema:
+            type: string
+        "500":
+          description: Error fetching user
+          schema:
+            type: string
+      summary: Get User by ID
       tags:
       - Users
 swagger: "2.0"

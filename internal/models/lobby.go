@@ -22,3 +22,17 @@ type Lobby struct {
     Players     []uuid.UUID  `json:"players" db:"players"` 
 	//? GameMode    string       `json:"game_mode" db:"game_mode"`    maybe 
 }
+
+
+type LobbyUpdateType string
+
+const (
+    LobbyCreated LobbyUpdateType = "lobby_created"
+    LobbyUpdated LobbyUpdateType = "lobby_updated"
+    LobbyDeleted LobbyUpdateType = "lobby_deleted" 
+)
+
+type LobbyUpdateMessage struct {
+    Type  LobbyUpdateType `json:"type"`
+    Lobby *Lobby          `json:"lobby"`
+}

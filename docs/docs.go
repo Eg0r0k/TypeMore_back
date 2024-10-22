@@ -15,9 +15,9 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/users/login": {
+        "/api/v1/auth/login": {
             "post": {
-                "description": "Logs in a user with username and password",
+                "description": "Logs in a user with username and password.",
                 "consumes": [
                     "application/json"
                 ],
@@ -64,9 +64,52 @@ const docTemplate = `{
                 }
             }
         },
-        "/users/register": {
+        "/api/v1/auth/refresh": {
             "post": {
-                "description": "Register a user with username, email, password and captcha",
+                "description": "Refreshes the access token using a refresh token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Refresh Access Token",
+                "parameters": [
+                    {
+                        "description": "Refresh token",
+                        "name": "refresh_token",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request payload",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/signup": {
+            "post": {
+                "description": "Register a user with username, email, and password.",
                 "consumes": [
                     "application/json"
                 ],
@@ -84,7 +127,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/models.User"
+                            "$ref": "#/definitions/models.RegistrationCredentials"
                         }
                     }
                 ],
@@ -94,11 +137,68 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/models.User"
                         }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Error creating user",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 }
             }
         },
-        "/users/{id}": {
+        "/api/v1/users/{id}": {
+            "get": {
+                "description": "Retrieves a user by their ID.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Get User by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.User"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid user ID",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Error fetching user",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
             "delete": {
                 "security": [
                     {
@@ -121,10 +221,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "204": {
-                        "description": "User deleted successfully",
-                        "schema": {
-                            "type": "string"
-                        }
+                        "description": "User deleted successfully"
                     },
                     "400": {
                         "description": "Invalid user ID",
@@ -146,6 +243,20 @@ const docTemplate = `{
         "models.LoginCredentials": {
             "type": "object",
             "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.RegistrationCredentials": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
                 "password": {
                     "type": "string"
                 },
