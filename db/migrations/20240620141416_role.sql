@@ -5,6 +5,12 @@ CREATE TABLE roles (
     name VARCHAR(255) UNIQUE NOT NULL
 );
 
+INSERT INTO roles (id, name) VALUES 
+(-1, 'invalid'),
+(0, 'user'),
+(1, 'admin'),
+(2, 'super_admin');
+
 CREATE TABLE users (
    id UUID PRIMARY KEY,
    username VARCHAR(255) UNIQUE NOT NULL,
@@ -24,6 +30,9 @@ CREATE TABLE user_roles (
    role_id SMALLINT REFERENCES roles(id) ON DELETE CASCADE,
    PRIMARY KEY (user_id, role_id) 
 );
+
+CREATE INDEX idx_users_username ON users(username);
+CREATE INDEX idx_users_email ON users(email);
 -- +goose StatementEnd
 
 -- +goose Down

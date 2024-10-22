@@ -15,14 +15,17 @@ import (
 
 	"github.com/gorilla/mux"
 	httpSwagger "github.com/swaggo/http-swagger"
+	"go.uber.org/zap"
 )
 
-func SetupRoutes(db *sql.DB) *mux.Router {
+func SetupRoutes(db *sql.DB, logger *zap.Logger) *mux.Router {
     router := mux.NewRouter()
     router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
+    router.Use(middleware.CORSMiddleware)
 
+    apiRouter := router.PathPrefix("/api/v1").Subrouter() 
 
-
+    
     // Create repositories
     userRepo := repositories.NewUserRepository(db)
     lobbyRepo := repositories.NewLobbyRepository(db)
@@ -34,38 +37,26 @@ func SetupRoutes(db *sql.DB) *mux.Router {
     lobbyService := services.NewLobbyService(lobbyRepo)
 
     // Create handlers
-    // authHandler := handlers.NewAuthHandler(userService)
-    userHandler := handlers.NewUserHandler(userService,tokenService)
-    lobbyHandler := handlers.NewLobbyHandler(lobbyService, tokenService)
-    // lobbyHandler := handlers.NewLobbyHandler(db)
+    userHandler := handlers.NewUserHandler(userService,tokenService,logger)
+    lobbyHandler := handlers.NewLobbyHandler(lobbyService, tokenService,logger)
 
-    // Auth routes
-    // router.HandleFunc("/auth/login", authHandler.Login).Methods("POST")
-    // router.HandleFunc("/auth/logout", authHandler.Logout).Methods("POST")
-    // router.HandleFunc("/auth/register", authHandler.Register).Methods("POST")
 
-    // User routes
-    // router.HandleFunc("/users", userHandler.ListUsers).Methods("GET")
-    router.HandleFunc("/users/{id}", userHandler.GetUser).Methods("GET")
-    router.HandleFunc("/user/signup", userHandler.RegistrationUser).Methods("POST")
-    router.HandleFunc("/lobbies", lobbyHandler.CreateLobby).Methods("POST")
-    router.HandleFunc("/lobbies/{id}", lobbyHandler.GetLobby).Methods("GET")
-    router.HandleFunc("/lobbies", lobbyHandler.GetAllLobbies).Methods("GET")
-	router.Handle("/users/{id}", middleware.TokenValidationMiddleware(tokenService)(http.HandlerFunc(userHandler.DeleteUser))).Methods("DELETE")
+       // Lobby routes
+    apiRouter.HandleFunc("/lobbies", lobbyHandler.CreateLobby).Methods(http.MethodPost).Name("CreateLobby")
+    apiRouter.HandleFunc("/lobbies/{id:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}}", lobbyHandler.GetLobby).Methods(http.MethodGet).Name("GetLobby")
+    apiRouter.HandleFunc("/lobbies", lobbyHandler.GetAllLobbies).Methods(http.MethodGet).Name("GetAllLobbies")
+    apiRouter.HandleFunc("/lobbies/open", lobbyHandler.GetOpenLobbies).Methods(http.MethodGet).Name("GetOpenLobbies")
+    apiRouter.HandleFunc("/lobbies/{id}/ws", lobbyHandler.HandleWebSocket).Methods(http.MethodGet).Name("LobbyWebSocket")
 
-    router.HandleFunc("/users/login", userHandler.Login).Methods("POST")
-    router.HandleFunc("/auth/refresh", userHandler.RefreshToken).Methods("POST")
-    // router.HandleFunc("/users/{id}", userHandler.UpdateUser).Methods("PUT", "PATCH")
-    // router.HandleFunc("/users/{id}", userHandler.DeleteUser).Methods("DELETE")
-    // router.HandleFunc("/users/{id}/statistics", userHandler.GetUserStatistics).Methods("GET")
-
-    // Lobby routes
-    // router.HandleFunc("/lobbies", lobbyHandler.ListLobbies).Methods("GET")
-    // router.HandleFunc("/lobbies/{id}", lobbyHandler.GetLobby).Methods("GET")
-    // router.HandleFunc("/lobbies/{id}", lobbyHandler.UpdateLobby).Methods("PUT", "PATCH")
-    // router.HandleFunc("/lobbies/{id}", lobbyHandler.DeleteLobby).Methods("DELETE")
-    // router.HandleFunc("/lobbies/ws", lobbyHandler.HandleWebSocket)
-    router.HandleFunc("/lobbies/{id}/ws", lobbyHandler.HandleWebSocket).Methods("GET")
-
+   // User routes
+        //??????
+    apiRouter.HandleFunc("/users/{id}", userHandler.GetUser).Methods(http.MethodGet).Name("GetUser")
+        //
+    router.Handle("/users/{id}", middleware.TokenValidationMiddleware(tokenService)(http.HandlerFunc(userHandler.DeleteUser))).Methods("DELETE")
+    apiRouter.HandleFunc("/auth/signup", userHandler.RegistrationUser).Methods(http.MethodPost).Name("Signup")
+    apiRouter.HandleFunc("/auth/login", userHandler.Login).Methods(http.MethodPost).Name("Login")
+    apiRouter.HandleFunc("/auth/refresh", userHandler.RefreshToken).Methods(http.MethodPost).Name("Refresh")
+    // SSE route
+    apiRouter.HandleFunc("/sse/public", lobbyHandler.HandleSSELobbies).Methods(http.MethodGet).Name("SSELobbies")
     return router
 }

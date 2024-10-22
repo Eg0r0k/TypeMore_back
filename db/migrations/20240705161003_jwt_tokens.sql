@@ -9,8 +9,8 @@ CREATE TABLE refresh_tokens (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_access_tokens_user_id ON access_tokens(user_id);
 CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
 -- +goose StatementEnd
 
 -- +goose Down
