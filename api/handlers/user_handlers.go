@@ -159,9 +159,9 @@ func (h *UserHandler)  Login(w http.ResponseWriter, r *http.Request) {
         utils.WriteJSONResponse(w, http.StatusBadRequest, &utils.Response{Success: false, Error: "Invalid request payload"})
         return
     }
-    accessToken, refreshToken, err := h.userService.Login(ctx,creds.Username, creds.Password)
+    accessToken, refreshToken, user, err := h.userService.Login(ctx, creds.Username, creds.Password) // Изменено здесь
     if err != nil {
-        h.logger.Error("Login failed", zap.Error(err), zap.String("username", creds.Username)) 
+        h.logger.Error("Login failed", zap.Error(err), zap.String("username", creds.Username))
         utils.WriteJSONResponse(w, http.StatusUnauthorized, &utils.Response{Success: false, Error: "Invalid username or password"})
         return
     }
@@ -183,11 +183,16 @@ func (h *UserHandler)  Login(w http.ResponseWriter, r *http.Request) {
         Secure:   true,
         SameSite: http.SameSiteStrictMode,
     })
-    response := map[string]string{
-        "access_token":  accessToken,
-        "refresh_token": refreshToken,
-}
-utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: response})
+    responseData := struct {
+        AccessToken  string      `json:"access_token"`
+        RefreshToken string      `json:"refresh_token"`
+        User         *models.User `json:"user"`
+    }{
+        AccessToken:  accessToken,
+        RefreshToken: refreshToken,
+        User:         user,
+    }
+utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: responseData})
 }
 
 // @Summary Refresh Access Token
