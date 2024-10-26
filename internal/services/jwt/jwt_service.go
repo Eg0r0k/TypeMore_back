@@ -83,15 +83,12 @@ func (s *TokenService) ValidateAccessToken(tokenStr string) (*UserClaims, error)
     }
 
     claims := &UserClaims{
-        UserID: uuid.MustParse(token.Subject()), // Получаем UserID
+        UserID: uuid.MustParse(token.Subject()), 
     }
-
-    // Получаем роли из токена
+    
     roles, ok := token.Get("roles")
     if ok {
-        // Проверяем, что roles является списком
         if rolesList, ok := roles.([]interface{}); ok {
-            // Преобразуем каждый элемент списка в строку
             for _, role := range rolesList {
                 if roleStr, ok := role.(string); ok {
                     claims.Roles = append(claims.Roles, models.RoleFromString(roleStr))

@@ -102,17 +102,23 @@ func (s *LobbyService) broadcastLobbyUpdate(updateType models.LobbyUpdateType, l
         return
     }
 
-    // Send the update to SSE clients
+    // Отправляем обновление всем SSE клиентам
     s.sseClientsMu.Lock()
     defer s.sseClientsMu.Unlock()
-    for _, sseClient := range s.sseClients {
-        // Send the data to the SSE client
-		fmt.Fprintf(sseClient.SSE, "data: %s\n\n", messageBytes)
-		if flusher, ok := sseClient.SSE.(http.Flusher); ok {
-			flusher.Flush() // Ensure the data is sent immediately
-		}
+    for i, sseClient := range s.sseClients {
+        _, err := fmt.Fprintf(sseClient.SSE, "data: %s\n\n", messageBytes)
+        if err != nil {
+            log.Printf("Error sending update to SSE client: %v", err)
+            // Если произошла ошибка отправки, удаляем клиента
+            s.sseClients = append(s.sseClients[:i], s.sseClients[i+1:]...)
+            continue
+        }
+        if flusher, ok := sseClient.SSE.(http.Flusher); ok {
+            flusher.Flush() // Отправляем данные немедленно
+        }
     }
 }
+
 func (s *LobbyService) AddSSEClient(client *Client) {
 	s.sseClientsMu.Lock()
 	defer s.sseClientsMu.Unlock()

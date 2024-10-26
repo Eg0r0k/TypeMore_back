@@ -128,40 +128,69 @@ func (h *LobbyHandler) GetAllLobbies(w http.ResponseWriter, r *http.Request) {
 }
 func (h *LobbyHandler) HandleSSELobbies(w http.ResponseWriter, r *http.Request) {
     ctx := r.Context()
+
+    // Настраиваем заголовки для SSE
     w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+    
+    // Проверяем, поддерживает ли клиент SSE
     flusher, ok := w.(http.Flusher)
     if !ok {
         http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
         return
     }
 
-	lobbies, err := h.lobbyService.GetAllLobbies(ctx)
+    // Добавляем клиента
+    client := &services.Client{SSE: w}
+    h.lobbyService.AddSSEClient(client)
+    log.Println("Client connected to public SSE")
+
+    defer func() {
+        h.lobbyService.RemoveSSEClient(client)
+        log.Printf("Client disconnected from public SSE: %v", r.Context().Err())
+    }()
+
+    // Получаем существующие лобби
+    lobbies, err := h.lobbyService.GetAllLobbies(ctx)
     if err != nil {
         log.Printf("Error fetching lobbies: %v", err)
         http.Error(w, "Error fetching lobbies", http.StatusInternalServerError)
         return
     }
+
+    // Отправляем данные лобби
     for _, lobby := range lobbies {
         jsonLobby, err := json.Marshal(lobby)
         if err != nil {
             log.Printf("Error marshaling lobby data: %v", err)
             continue
         }
- 
         fmt.Fprintf(w, "data: %s\n\n", jsonLobby)
         flusher.Flush()
     }
 
-    client := &services.Client{SSE: w}
-    h.lobbyService.AddSSEClient(client)
-    log.Println("Client connected public SSE" , )
-    defer h.lobbyService.RemoveSSEClient(client)
-    <-r.Context().Done()
-    log.Println("Client disconnected from public SSE")
-    //TODO COnnections 
-}   
+    // Начинаем отправку heartbeat каждые 30 секунд для поддержания соединения
+    go func() {
+        ticker := time.NewTicker(30 * time.Second)
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case <-ticker.C:
+                fmt.Fprintf(w, "data: \n\n") // Пустое сообщение
+                flusher.Flush()
+            }
+        }
+    }()
+
+    // Ожидаем завершения соединения
+    <-ctx.Done()
+}
+
 
 func (h *LobbyHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 

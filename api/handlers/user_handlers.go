@@ -260,3 +260,38 @@ func (h *UserHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
     })
     utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: response})
 }
+func (h *UserHandler) handleError(w http.ResponseWriter, err error, status int, message string) {
+    h.logger.Error(message, zap.Error(err))
+    utils.WriteJSONResponse(w, status, &utils.Response{Success: false, Error: message})
+}
+
+func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    accessToken, err := r.Cookie("access_token")
+    if err != nil {
+        h.handleError(w, err, http.StatusNoContent, "Access token not found")
+        return
+    }    
+    tokenStr := accessToken.Value
+    claims, err := h.tokenService.ValidateAccessToken(tokenStr)
+    if err != nil {
+        http.Error(w, "Invalid token", http.StatusUnauthorized)
+        return
+    }
+    refreshToken, err := r.Cookie("refresh_token")
+    if err != nil {
+        h.handleError(w, err, http.StatusNoContent, "Refresh token not found")
+        return
+    }
+    err = h.userService.RemoveRefreshToken(ctx, claims.UserID, refreshToken.Value)
+    if err != nil {
+        h.handleError(w, err, http.StatusInternalServerError, "Failed to remove refresh token")
+        return
+    }
+
+    utils.ClearCookie(w, "access_token")
+    utils.ClearCookie(w, "refresh_token")
+
+    w.WriteHeader(http.StatusOK)
+}

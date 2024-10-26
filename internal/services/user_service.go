@@ -73,7 +73,10 @@ func (s *UserService) CreateUser(ctx context.Context,u *models.User, role models
     return nil
 }
 
+func (s *UserService) RemoveRefreshToken(ctx context.Context, userID uuid.UUID, refreshToken string) error {
 
+    return s.userRepo.DeleteRefreshToken(ctx, userID, refreshToken)
+}
 func (s *UserService) DeleteUser(ctx context.Context,id uuid.UUID) error{
     _, err := s.GetUserByID(ctx,id)
     if err != nil {
