@@ -29,6 +29,10 @@ func (r *UserRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*models
 func (r *UserRepository) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
     return r.getUser(ctx, "WHERE username = $1", username)
 }
+func (r *UserRepository) DeleteRefreshToken(ctx context.Context, userID uuid.UUID, token string) error {
+    _, err := r.db.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE user_id = $1 AND token = $2`, userID, token)
+    return err
+}
 
 func (r *UserRepository) getUser(ctx context.Context, whereClause string, args ...interface{}) (*models.User, error) {
     u := &models.User{}

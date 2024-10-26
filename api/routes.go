@@ -21,11 +21,11 @@ import (
 func SetupRoutes(db *sql.DB, logger *zap.Logger) *mux.Router {
     router := mux.NewRouter()
     router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
-    router.Use(middleware.CORSMiddleware)
+  
 
     apiRouter := router.PathPrefix("/api/v1").Subrouter() 
 
-    
+    apiRouter.Use(middleware.CORSMiddleware)  
     // Create repositories
     userRepo := repositories.NewUserRepository(db)
     lobbyRepo := repositories.NewLobbyRepository(db)
@@ -52,10 +52,11 @@ func SetupRoutes(db *sql.DB, logger *zap.Logger) *mux.Router {
         //??????
     apiRouter.HandleFunc("/users/{id}", userHandler.GetUser).Methods(http.MethodGet).Name("GetUser")
         //
-    router.Handle("/users/{id}", middleware.TokenValidationMiddleware(tokenService)(http.HandlerFunc(userHandler.DeleteUser))).Methods("DELETE")
+    router.Handle("/users/{id}", middleware.TokenValidationMiddleware(tokenService)(http.HandlerFunc(userHandler.DeleteUser))).Methods(http.MethodDelete)
     apiRouter.HandleFunc("/auth/signup", userHandler.RegistrationUser).Methods(http.MethodPost).Name("Signup")
     apiRouter.HandleFunc("/auth/login", userHandler.Login).Methods(http.MethodPost).Name("Login")
     apiRouter.HandleFunc("/auth/refresh", userHandler.RefreshToken).Methods(http.MethodPost).Name("Refresh")
+    apiRouter.HandleFunc("/auth/logout", userHandler.Logout).Methods(http.MethodPost)
     // SSE route
     apiRouter.HandleFunc("/sse/public", lobbyHandler.HandleSSELobbies).Methods(http.MethodGet).Name("SSELobbies")
     return router
