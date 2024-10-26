@@ -112,31 +112,31 @@ func (s *UserService) GenerateRefreshToken(ctx context.Context,userID uuid.UUID)
     return refreshToken, nil
 }
 
-func (s *UserService) Login(ctx context.Context,username string, password string) (string, string, error) {
+func (s *UserService) Login(ctx context.Context,username string, password string) (string, string, *models.User, error) {
     user, err := s.userRepo.GetUserByUsername(ctx,username)
     if err != nil {
         log.Printf("Error fetching user: %v", err)
-        return "", "", fmt.Errorf("error fetching user: %w", err)
+        return "", "", nil,fmt.Errorf("error fetching user: %w", err)
     }
 
     if user == nil {
         log.Printf("User not found with username: %s", username)
-        return "", "", errors.New("invalid username or password")
+        return "", "",nil, errors.New("invalid username or password")
     }
     err = utils.CheckPassword(user.Password, password)
     if err != nil {
-        return "", "", errors.New("invalid username or password")
+        return "", "", nil, errors.New("invalid username or password")
     }
     accessToken, err := s.tokenService.GenerateAccessToken(user)
     if err != nil {
         log.Printf("Error generating access token: %v", err)
-        return "", "", fmt.Errorf("error generating access token: %w", err)
+        return "", "",nil, fmt.Errorf("error generating access token: %w", err)
     }
     refreshToken, err := s.GenerateRefreshToken(ctx,user.UserId)
     if err != nil {
         log.Printf("Error generating refresh token: %v", err)
-        return "", "", fmt.Errorf("error generating refresh token: %w", err)
+        return "", "", nil,fmt.Errorf("error generating refresh token: %w", err)
     }
  
-    return accessToken, refreshToken, nil
+    return accessToken, refreshToken, user, nil
 }
