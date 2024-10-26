@@ -264,10 +264,21 @@ func (h *UserHandler) handleError(w http.ResponseWriter, err error, status int, 
     h.logger.Error(message, zap.Error(err))
     utils.WriteJSONResponse(w, status, &utils.Response{Success: false, Error: message})
 }
-
+// @Summary Logout user
+// @Description Logs out the user by invalidating their access and refresh tokens.
+// @Tags users
+// @Success 200 {object} utils.Response
+// @Failure 204 {object} utils.Response "No content, token not found"
+// @Failure 401 {object} utils.Response "Unauthorized, invalid token"
+// @Failure 500 {object} utils.Response "Internal server error, failed to remove refresh token"
+// @Router /api/v1/auth/logout [post] 
 func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
+    start := time.Now()
     ctx := r.Context()
-
+    defer func() {
+        duration := time.Since(start)
+        h.logger.Info("Logout completed", zap.Duration("duration", duration))
+    }()
     accessToken, err := r.Cookie("access_token")
     if err != nil {
         h.handleError(w, err, http.StatusNoContent, "Access token not found")
