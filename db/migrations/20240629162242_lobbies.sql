@@ -7,7 +7,7 @@ CREATE TABLE lobbies (
     is_public BOOLEAN NOT NULL,
     password BYTEA,
     status SMALLINT NOT NULL,
-    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE
+    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, 
     max_players INTEGER NOT NULL,
     name VARCHAR(255) NOT NULL,
     is_open BOOLEAN NOT NULL,

@@ -1,0 +1,10 @@
+# Environment variables
+.env
+.env.local
+
+# Visual Studio Code
+.vscode/
+
+# Go binary
+/bin/
+/obj/

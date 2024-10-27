@@ -21,8 +21,6 @@ func Email(email string) (string, error) {
 			err = fmt.Errorf("email: %w", err)
 			return "", err
 	}
-
-
 	if !isValidDomain(email) {
 			return "", fmt.Errorf("invalid domain in email address: %s", email)
 	}

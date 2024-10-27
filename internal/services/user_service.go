@@ -2,19 +2,21 @@ package services
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
-
+	"regexp"
+	"strings"
 	"time"
 	"typeMore/internal/models"
 	"typeMore/internal/repositories"
 	"typeMore/internal/services/jwt"
 	"typeMore/lib/validate"
-
 	"typeMore/utils"
 
 	"github.com/google/uuid"
+	"github.com/markbates/goth"
 )
 
 type UserService struct {
@@ -28,31 +30,101 @@ func NewUserService(userRepo *repositories.UserRepository, tokenService *jwt.Tok
         tokenService: tokenService,
     }
 }
+func (s *UserService) UpsertOAuthAccount(ctx context.Context, account *models.OAuthAccount) error {
+    return s.userRepo.UpsertOAuthAccount(ctx, account)
+}
+
+func (s *UserService) GetOrCreateOAuthUser(ctx context.Context, provider string, gothUser goth.User) (*models.User, error) {
+    oauthAccount, err := s.userRepo.GetOAuthAccount(ctx, provider, gothUser.UserID)
+    if err != nil {
+        return nil, fmt.Errorf("getting oauth account: %w", err)
+    }
+    if oauthAccount != nil {
+        return s.GetUserByID(ctx, oauthAccount.UserID)
+    }
+    var user *models.User
+    if gothUser.Email != "" {
+        user, err = s.GetUserByEmail(ctx, gothUser.Email)
+        if err != nil && !errors.Is(err, sql.ErrNoRows) {
+            return nil, fmt.Errorf("getting user by email: %w", err)
+        }
+    }
+
+    if user == nil {
+        var username string
+        if gothUser.Email == "" {
+            if gothUser.NickName != "" {
+                username = sanitizeUsername(gothUser.NickName)
+            } else if gothUser.Name != "" {
+                username = sanitizeUsername(gothUser.Name)
+            } else {
+                username = "user-" + uuid.New().String()
+            }
+            gothUser.Email = fmt.Sprintf("%s@%s.com", username, provider) 
+        } else {
+            username = sanitizeUsername(gothUser.NickName)
+        }
+
+        user = &models.User{
+            UserId:    uuid.New(),
+            Username:  username,
+            Email:     gothUser.Email,
+            Password:  []byte{},
+            AuthType:  models.AuthTypeOAuth,
+            Roles:     []models.Role{models.UserRole},
+        }
+
+        if err := s.CreateUser(ctx, user, models.UserRole); err != nil {
+            return nil, fmt.Errorf("creating new user: %w", err)
+        }
+    }
+
+    oauthAccount = &models.OAuthAccount{
+        UserID:         user.UserId,
+        Provider:       provider,
+        ProviderUserID: gothUser.UserID,
+        Email:         gothUser.Email,
+        Name:          gothUser.Name,
+        AccessToken:   gothUser.AccessToken,
+        RefreshToken:  gothUser.RefreshToken,
+        ExpiresAt:     gothUser.ExpiresAt,
+    }
+
+    if err := s.UpsertOAuthAccount(ctx, oauthAccount); err != nil {
+        return nil, fmt.Errorf("upserting oauth account: %w", err)
+    }
+
+    return user, nil
+}
+
+func sanitizeUsername(username string) string {
+    reg := regexp.MustCompile("[^a-zA-Z0-9]+")
+    sanitizedUsername := reg.ReplaceAllString(username, "")
+
+    if len(sanitizedUsername) < 3 {
+        sanitizedUsername = "user" 
+    }
+
+    if len(sanitizedUsername) > 20 {
+        sanitizedUsername = sanitizedUsername[:20]
+    }
+
+    return strings.ToLower(sanitizedUsername)
+}
 
 func (s *UserService) GetUserByID(ctx context.Context,id uuid.UUID) (*models.User, error) {
     return s.userRepo.GetUserByID(ctx,id)
 }
-
+func (s *UserService) GetUserByEmail(ctx context.Context,email string) (*models.User, error) {
+    return s.userRepo.GetUserByEmail(ctx,email)
+}
 func (s *UserService) CreateUser(ctx context.Context,u *models.User, role models.Role) error {
     if _,err := validate.Email(u.Email); err != nil {
         return fmt.Errorf("invalid email: %w", err)
     }
-    taken, err := s.userRepo.IsUsernameTaken(ctx,u.Username)
-    if err != nil {
-            return fmt.Errorf("error checking username: %w", err)
+    if err := validate.ValidateUser(ctx, s.userRepo, u.Username, u.Email); err != nil {
+        return err
     }
-    if taken {
-            return errors.New("username already taken")
-    }
-    
-    taken, err = s.userRepo.IsEmailTaken(ctx,u.Email)
-    if err != nil {
-            return fmt.Errorf("error checking email: %w", err)
-    }
-    if taken {
-            return errors.New("email already taken")
-    }
-
     userID, err := uuid.NewV7()
     if err != nil {
             return fmt.Errorf("error generating UUID: %w", err)
@@ -74,7 +146,6 @@ func (s *UserService) CreateUser(ctx context.Context,u *models.User, role models
 }
 
 func (s *UserService) RemoveRefreshToken(ctx context.Context, userID uuid.UUID, refreshToken string) error {
-
     return s.userRepo.DeleteRefreshToken(ctx, userID, refreshToken)
 }
 func (s *UserService) DeleteUser(ctx context.Context,id uuid.UUID) error{

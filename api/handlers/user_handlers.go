@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/markbates/goth/gothic"
 	"go.uber.org/zap"
 )
 
@@ -25,6 +26,12 @@ type UserHandler struct {
 func NewUserHandler(userService *services.UserService, tokenService *jwt.TokenService, logger *zap.Logger) *UserHandler {
     return &UserHandler{userService: userService, tokenService: tokenService, logger: logger}
 }
+
+func (h *UserHandler) setTokensInCookies(w http.ResponseWriter, accessToken string, refreshToken string) {
+	utils.SetCookie(w, "access_token", accessToken, "/", h.tokenService.AccessTTL, true, true, http.SameSiteStrictMode)
+	utils.SetCookie(w, "refresh_token", refreshToken, "/", h.tokenService.RefreshTTL, true, true, http.SameSiteStrictMode)
+}
+
 // GetUser handler with improved logging and error handling
 // @Summary Get User by ID
 // @Description Retrieves a user by their ID.
@@ -159,30 +166,14 @@ func (h *UserHandler)  Login(w http.ResponseWriter, r *http.Request) {
         utils.WriteJSONResponse(w, http.StatusBadRequest, &utils.Response{Success: false, Error: "Invalid request payload"})
         return
     }
-    accessToken, refreshToken, user, err := h.userService.Login(ctx, creds.Username, creds.Password) // Изменено здесь
+    accessToken, refreshToken, user, err := h.userService.Login(ctx, creds.Username, creds.Password) 
     if err != nil {
         h.logger.Error("Login failed", zap.Error(err), zap.String("username", creds.Username))
         utils.WriteJSONResponse(w, http.StatusUnauthorized, &utils.Response{Success: false, Error: "Invalid username or password"})
         return
     }
-    http.SetCookie(w, &http.Cookie{
-        Name:     "access_token",
-        Value:    accessToken,
-        Path:     "/",
-        Expires:  time.Now().Add(h.tokenService.AccessTTL),
-        HttpOnly: true,
-        Secure:   true,
-        SameSite: http.SameSiteStrictMode,
-    })
-    http.SetCookie(w, &http.Cookie{
-        Name:     "refresh_token",
-        Value:    refreshToken,
-        Path:     "/",
-        Expires:  time.Now().Add(h.tokenService.RefreshTTL), 
-        HttpOnly: true,
-        Secure:   true,
-        SameSite: http.SameSiteStrictMode,
-    })
+    h.setTokensInCookies(w, accessToken, refreshToken)
+
     responseData := struct {
         AccessToken  string      `json:"access_token"`
         RefreshToken string      `json:"refresh_token"`
@@ -244,25 +235,7 @@ func (h *UserHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
         "access_token":  newAccessToken,
         "refresh_token": newRefreshToken,
     }
-    http.SetCookie(w, &http.Cookie{
-        Name:     "access_token",
-        Value:    newAccessToken,
-        Path:     "/",
-        Expires:  time.Now().Add(h.tokenService.AccessTTL),
-        HttpOnly: true,
-        Secure:   true,
-        SameSite: http.SameSiteStrictMode,
-    })
-
-    http.SetCookie(w, &http.Cookie{
-        Name:     "refresh_token",
-        Value:    newRefreshToken,
-        Path:     "/",
-        Expires:  time.Now().Add(h.tokenService.RefreshTTL), 
-        HttpOnly: true,
-        Secure:   true,
-        SameSite: http.SameSiteStrictMode,
-    })
+    h.setTokensInCookies(w, newAccessToken, newRefreshToken)
     utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: response})
 }
 func (h *UserHandler) handleError(w http.ResponseWriter, err error, status int, message string) {
@@ -310,4 +283,95 @@ func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
     utils.ClearCookie(w, "refresh_token")
 
     w.WriteHeader(http.StatusOK)
+}
+
+
+func (h *UserHandler) OAuthLogin(w http.ResponseWriter, r *http.Request){
+    provider := mux.Vars(r)["provider"]
+    if provider == ""{
+        h.handleError(w, fmt.Errorf("provider is required"), http.StatusBadRequest, "Provider is required")
+        return
+    }
+    gothic.BeginAuthHandler(w, r)
+}
+
+func (h *UserHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
+    start := time.Now()
+    ctx := r.Context()
+    defer func() {
+        h.logger.Info("OAuthCallback completed",
+            zap.Duration("duration", time.Since(start)),
+            zap.String("provider", mux.Vars(r)["provider"]))
+    }()
+
+    provider := mux.Vars(r)["provider"]
+    h.logger.Info("Processing OAuth callback", zap.String("url", r.URL.String()))
+
+    gothUser, err := gothic.CompleteUserAuth(w, r)
+    if err != nil {
+        h.logger.Error("Error completing user auth", zap.Error(err))
+        h.handleError(w, err, http.StatusInternalServerError, "Failed to complete authentication")
+        return
+    }
+
+    dbUser, err := h.userService.GetOrCreateOAuthUser(ctx, provider, gothUser)
+    if err != nil {
+        h.logger.Error("Failed to get or create OAuth user",
+            zap.Error(err),
+            zap.String("email", gothUser.Email),
+            zap.String("provider", provider))
+        h.handleError(w, err, http.StatusInternalServerError, "Failed to process user account")
+        return
+    }
+    oauthAccount := &models.OAuthAccount{
+        UserID:         dbUser.UserId,
+        Provider:       provider,
+        ProviderUserID: gothUser.UserID,
+        Email:         gothUser.Email,
+        Name:          gothUser.Name,
+        AccessToken:   gothUser.AccessToken,
+        RefreshToken:  gothUser.RefreshToken,
+        ExpiresAt:     gothUser.ExpiresAt,
+    }
+    if err := h.userService.UpsertOAuthAccount(ctx, oauthAccount); err != nil {
+        h.logger.Error("Failed to upsert OAuth account",
+            zap.Error(err),
+            zap.String("user_id", dbUser.UserId.String()),
+            zap.String("provider", provider))
+        h.handleError(w, err, http.StatusInternalServerError, "Failed to update OAuth account")
+        return
+    }
+    accessToken, err := h.tokenService.GenerateAccessToken(dbUser)
+    if err != nil {
+        h.handleError(w, err, http.StatusInternalServerError, "Failed to generate access token")
+        return
+    }
+    refreshToken, err := h.userService.GenerateRefreshToken(ctx, dbUser.UserId)
+    if err != nil {
+        h.handleError(w, err, http.StatusInternalServerError, "Failed to generate refresh token")
+        return
+    }
+    h.setTokensInCookies(w, accessToken, refreshToken)
+    dbUser.Password = nil 
+    utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{
+        Success: true,
+        Data: map[string]interface{}{
+            "access_token":  accessToken,
+            "refresh_token": refreshToken,
+            "user":         dbUser,
+        },
+    })
+}
+//TODO: НЕ ЗАБЫТЬ СДЕЛАТЬ РЕСЕТ ПАРОЛЯ ( ДОДЕЛАТЬ ХЭНДЛЕР )
+/**
+* CREATE TABLE password_reset_tokens(
+    id 
+    email 
+    token 
+    expires_at 
+    created_at 
+)
+**/
+func (h *UserHandler) RequestPasswordReset(w http.Request, r *http.Request){
+
 }
