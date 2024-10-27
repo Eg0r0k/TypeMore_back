@@ -59,5 +59,12 @@ func SetupRoutes(db *sql.DB, logger *zap.Logger) *mux.Router {
     apiRouter.HandleFunc("/auth/logout", userHandler.Logout).Methods(http.MethodPost)
     // SSE route
     apiRouter.HandleFunc("/sse/public", lobbyHandler.HandleSSELobbies).Methods(http.MethodGet).Name("SSELobbies")
+
+
+    //OAuth routes
+    apiRouter.HandleFunc("/auth/{provider}/login", userHandler.OAuthLogin).Methods(http.MethodGet).Name("OAuthLogin")
+    apiRouter.HandleFunc("/auth/{provider}/callback", userHandler.OAuthCallback).Methods(http.MethodGet).Name("OAuthCallback")
+
+
     return router
 }

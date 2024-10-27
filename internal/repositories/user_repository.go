@@ -29,6 +29,10 @@ func (r *UserRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*models
 func (r *UserRepository) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
     return r.getUser(ctx, "WHERE username = $1", username)
 }
+func (r *UserRepository ) GetUserByEmail(ctx context.Context, email string) (*models.User, error){
+    return r.getUser(ctx, "WHERE email = $1", email)
+}
+
 func (r *UserRepository) DeleteRefreshToken(ctx context.Context, userID uuid.UUID, token string) error {
     _, err := r.db.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE user_id = $1 AND token = $2`, userID, token)
     return err
@@ -125,22 +129,6 @@ func (r *UserRepository) CreateUser(u *models.User) error {
     return tx.Commit()
 }
 
-func (r *UserRepository) GetAccessTokenByToken(token string) (*models.AccessToken, error) {
-    at := &models.AccessToken{}
-    err := r.db.QueryRow(`
-        SELECT id, user_id, token, expires_at, created_at
-        FROM access_tokens
-        WHERE token = $1`, token).Scan(
-        &at.ID, &at.UserID, &at.Token, &at.ExpiresAt, &at.CreatedAt)
-    if err != nil {
-        if err == sql.ErrNoRows {
-            return nil, nil
-        }
-        return nil, err
-    }
-    return at, nil
-}
-
 func (r *UserRepository) CreateRefreshToken(ctx context.Context, token *models.RefreshToken) error {
     _, err := r.db.ExecContext(ctx, `
             INSERT INTO refresh_tokens (id, user_id, token, expires_at, created_at)
@@ -155,9 +143,138 @@ func (r *UserRepository) IsUsernameTaken(ctx context.Context, username string) (
     return exists, err
 }
 
-
 func (r *UserRepository) IsEmailTaken(ctx context.Context, email string) (bool, error) {
     var exists bool
     err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", email).Scan(&exists)
     return exists, err
+}
+func (r *UserRepository) UpsertOAuthAccount(ctx context.Context, account *models.OAuthAccount) error {
+    tx, err := r.db.BeginTx(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("beginning transaction: %w", err)
+    }
+    defer tx.Rollback()
+
+    result, err := tx.ExecContext(ctx, `
+        UPDATE oauth_accounts 
+        SET email = $1, 
+            name = $2, 
+            access_token = $3, 
+            refresh_token = $4, 
+            expires_at = $5,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE provider = $6 AND provider_user_id = $7
+        RETURNING id`,
+        account.Email,
+        account.Name,
+        account.AccessToken,
+        account.RefreshToken,
+        account.ExpiresAt,
+        account.Provider,
+        account.ProviderUserID)
+    
+    if err != nil {
+        return fmt.Errorf("updating oauth account: %w", err)
+    }
+
+    rowsAffected, err := result.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("checking rows affected: %w", err)
+    }
+
+    if rowsAffected == 0 {
+        account.ID = uuid.New()
+        account.CreatedAt = time.Now()
+        account.UpdatedAt = account.CreatedAt
+
+        _, err = tx.ExecContext(ctx, `
+            INSERT INTO oauth_accounts (
+                id, user_id, provider, provider_user_id, 
+                email, name, access_token, refresh_token, 
+                expires_at, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            account.ID,
+            account.UserID,
+            account.Provider,
+            account.ProviderUserID,
+            account.Email,
+            account.Name,
+            account.AccessToken,
+            account.RefreshToken,
+            account.ExpiresAt,
+            account.CreatedAt,
+            account.UpdatedAt)
+
+        if err != nil {
+            return fmt.Errorf("inserting oauth account: %w", err)
+        }
+    }
+
+    return tx.Commit()
+}
+func (r *UserRepository) GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*models.OAuthAccount, error) {
+    account := &models.OAuthAccount{}
+    err := r.db.QueryRowContext(ctx, `
+        SELECT id, user_id, provider, provider_user_id, 
+               email, name, access_token, refresh_token, 
+               expires_at, created_at, updated_at
+        FROM oauth_accounts 
+        WHERE provider = $1 AND provider_user_id = $2`,
+        provider, providerUserID).Scan(
+        &account.ID,
+        &account.UserID,
+        &account.Provider,
+        &account.ProviderUserID,
+        &account.Email,
+        &account.Name,
+        &account.AccessToken,
+        &account.RefreshToken,
+        &account.ExpiresAt,
+        &account.CreatedAt,
+        &account.UpdatedAt)
+
+    if err == sql.ErrNoRows {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, fmt.Errorf("querying oauth account: %w", err)
+    }
+
+    return account, nil
+}
+
+
+//! Возможно переписать
+func (r *UserRepository) AddUserRole(ctx context.Context, userID uuid.UUID, role string) error {
+    tx, err := r.db.BeginTx(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("begin transaction: %w", err)
+    }
+    defer tx.Rollback()
+
+    _, err = tx.ExecContext(ctx, `
+        INSERT INTO user_roles (user_id, role_id)
+        SELECT $1, r.id FROM roles r WHERE r.name = $2`, userID, role)
+    if err != nil {
+        return fmt.Errorf("add user role: %w", err)
+    }
+
+    return tx.Commit()
+}
+
+func (r *UserRepository) RemoveUserRole(ctx context.Context, userID uuid.UUID, role string) error {
+    tx, err := r.db.BeginTx(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("begin transaction: %w", err)
+    }
+    defer tx.Rollback()
+
+    _, err = tx.ExecContext(ctx, `
+        DELETE FROM user_roles 
+        WHERE user_id = $1 AND role_id = (SELECT id FROM roles WHERE name = $2)`, userID, role)
+    if err != nil {
+        return fmt.Errorf("remove user role: %w", err)
+    }
+
+    return tx.Commit()
 }

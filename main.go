@@ -11,6 +11,7 @@ import (
 	"typeMore/api"
 	"typeMore/config"
 	"typeMore/db"
+	"typeMore/internal/providers"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -39,6 +40,7 @@ func main() {
         sugar.Fatalw("Failed to connect to the database", "error", err)
 }
     defer db.Close()   
+    providers.InitGoth()
     router := api.SetupRoutes(db, logger)
     server := &http.Server{
         Addr:         ":" + cfg.ServerPort,

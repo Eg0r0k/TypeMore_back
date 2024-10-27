@@ -16,3 +16,15 @@ func  ClearCookie(w http.ResponseWriter, name string) {
 		SameSite: http.SameSiteStrictMode,
 	})
 }
+
+func SetCookie(w http.ResponseWriter, name, value string, path string, ttl time.Duration, httpOnly, secure bool, sameSite http.SameSite) {
+	http.SetCookie(w, &http.Cookie{
+		Name: name,
+		Value: value,
+		Path: path, 
+		Expires:  time.Now().Add(ttl),
+		HttpOnly: httpOnly,
+		Secure:   secure,
+		SameSite: sameSite,	
+	})
+}

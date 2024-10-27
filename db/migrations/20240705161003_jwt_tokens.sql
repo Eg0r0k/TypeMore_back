@@ -15,6 +15,5 @@ CREATE INDEX idx_refresh_tokens_token ON refresh_tokens(token);
 
 -- +goose Down
 -- +goose StatementBegin
-DROP TABLE access_tokens;
 DROP TABLE refresh_tokens;
 -- +goose StatementEnd
