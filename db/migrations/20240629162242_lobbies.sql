@@ -8,9 +8,9 @@ CREATE TABLE lobbies (
     password BYTEA,
     status SMALLINT NOT NULL,
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, 
-    max_players INTEGER NOT NULL,
+    max_players INTEGER NOT NULL CHECK (max_players > 0),
     name VARCHAR(255) NOT NULL,
-    is_open BOOLEAN NOT NULL,
+    is_open BOOLEAN NOT NULL DEFAULT TRUE,
     players UUID[] NOT NULL
 );
 

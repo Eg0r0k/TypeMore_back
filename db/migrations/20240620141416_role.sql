@@ -37,7 +37,7 @@ CREATE INDEX idx_users_email ON users(email);
 
 -- +goose Down
 -- +goose StatementBegin
-DROP TABLE user_roles;
-DROP TABLE users;
-DROP TABLE roles;
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS roles;   
 -- +goose StatementEnd

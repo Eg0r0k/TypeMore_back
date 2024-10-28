@@ -9,37 +9,35 @@ import (
 	"github.com/markbates/goth/providers/google"
 )
 
-
 func InitGoth() {
+	googleClientID := utils.GetEnv("GOOGLE_CLIENT_ID", "")
+	googleClientSecret := utils.GetEnv("GOOGLE_CLIENT_SECRET", "")
 
-	googleClientID := utils.GetEnv("GOOGLE_CLIENT_ID", "----")
-	googleClientSecret := utils.GetEnv("GOOGLE_CLIENT_SECRET", "-----")
-
-	if googleClientID == "----" || googleClientSecret == "-----" {
+	if googleClientID == "" || googleClientSecret == "" {
 		log.Fatal("Google Client ID and Secret must be set")
 	}
-	githubClientID := utils.GetEnv("GITHUB_CLIENT_ID", "----")
-	githubClientSecret := utils.GetEnv("GITHUB_CLIENT_SECRET", "-----")
 
-	if githubClientID == "----" || githubClientSecret == "-----" {
+	githubClientID := utils.GetEnv("GITHUB_CLIENT_ID", "")
+	githubClientSecret := utils.GetEnv("GITHUB_CLIENT_SECRET", "")
+
+	if githubClientID == "" || githubClientSecret == "" {
 		log.Fatal("GitHub Client ID and Secret must be set")
 	}
+	callbackBaseURL := "http://localhost:3000/api/v1/auth"
 
 	goth.UseProviders(
 		google.New(
 			googleClientID,
 			googleClientSecret,
-			"http://localhost:3000/api/v1/auth/google/callback",
+			callbackBaseURL+"/google/callback",
 		),
 		github.New(
 			githubClientID,
 			githubClientSecret,
-			"http://localhost:3000/api/v1/auth/github/callback",
+			callbackBaseURL+"/github/callback",
 		),
 	)
-
-	
-	if goth.GetProviders() == nil {
+	if len(goth.GetProviders()) == 0 {
 		log.Fatal("Failed to initialize Goth providers")
 	}
 }
