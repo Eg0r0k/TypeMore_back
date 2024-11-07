@@ -92,7 +92,7 @@ func (r *LobbyRepository) GetOpenLobbies(ctx context.Context) ([]*models.Lobby, 
     rows, err := r.db.QueryContext(ctx, `
             SELECT id, created_at, updated_at, is_public, owner_id, max_players, name, is_open, players 
             FROM lobbies
-            WHERE is_open = TRUE AND status = $1  
+            WHERE is_open = TRUE AND status = $1 AND is_public = TRUE
     `, models.Active) 
     if err != nil {
             return nil, err

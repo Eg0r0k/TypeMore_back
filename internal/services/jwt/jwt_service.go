@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"errors"
 	"time"
 	"typeMore/internal/models"
 
@@ -19,6 +20,15 @@ type Token struct {
 	method jwa.SignatureAlgorithm
 	secret jwk.Key
 }
+const (
+	rolesKey   = "roles"
+	userIDKey  = "user_id"
+)
+
+var (
+	ErrInvalidToken  = errors.New("invalid token")
+	ErrExpiredToken  = errors.New("token has expired")
+)
 
 type TokenService struct {
     accessSecret  jwk.Key
@@ -77,54 +87,39 @@ func (s *TokenService) GenerateRefreshToken(user *models.User) (string, error) {
     return string(signed), nil
 }
 func (s *TokenService) ValidateAccessToken(tokenStr string) (*UserClaims, error) {
-    token, err := jwt.Parse([]byte(tokenStr), jwt.WithVerify(jwa.HS256, s.accessSecret))
-    if err != nil {
-        return nil, err
-    }
+	token, err := jwt.Parse([]byte(tokenStr), jwt.WithVerify(jwa.HS256, s.accessSecret))
+	if err != nil {
+		return nil, err
+	}
 
-    claims := &UserClaims{
-        UserID: uuid.MustParse(token.Subject()), 
-    }
-    
-    roles, ok := token.Get("roles")
-    if ok {
-        if rolesList, ok := roles.([]interface{}); ok {
-            for _, role := range rolesList {
-                if roleStr, ok := role.(string); ok {
-                    claims.Roles = append(claims.Roles, models.RoleFromString(roleStr))
-                }
-            }
-        }
-    }
-
-    return claims, nil
+	return s.extractClaims(token)
 }
 
 func (s *TokenService) ValidateRefreshToken(tokenStr string) (*UserClaims, error) {
-    token, err := jwt.Parse([]byte(tokenStr), jwt.WithVerify(jwa.HS256, s.refreshSecret))
-    if err != nil {
-        return nil, err
-    }
+	token, err := jwt.Parse([]byte(tokenStr), jwt.WithVerify(jwa.HS256, s.refreshSecret))
+	if err != nil {
+		return nil, err
+	}
 
-    claims := &UserClaims{
-        UserID: uuid.MustParse(token.Subject()), // Получаем UserID
-    }
+	return s.extractClaims(token)
+}
 
-    // Получаем роли из токена
-    roles, ok := token.Get("roles")
-    if ok {
-        // Проверяем, что roles является списком
-        if rolesList, ok := roles.([]interface{}); ok {
-            // Преобразуем каждый элемент списка в строку
-            for _, role := range rolesList {
-                if roleStr, ok := role.(string); ok {
-                    claims.Roles = append(claims.Roles, models.RoleFromString(roleStr))
-                }
-            }
-        }
-    }
+func (s *TokenService) extractClaims(token jwt.Token) (*UserClaims, error) {
+	claims := &UserClaims{
+		UserID: uuid.MustParse(token.Subject()),
+	}
 
-    return claims, nil
+	if roles, ok := token.Get(rolesKey); ok {
+		if rolesList, ok := roles.([]interface{}); ok {
+			for _, role := range rolesList {
+				if roleStr, ok := role.(string); ok {
+					claims.Roles = append(claims.Roles, models.RoleFromString(roleStr))
+				}
+			}
+		}
+	}
+
+	return claims, nil
 }
 
 func (t Token) Bearer() (string, error) {
@@ -136,19 +131,18 @@ func (t Token) Bearer() (string, error) {
 }
 
 
-
 func (c *UserClaims) IsAdmin() bool {
-    for _, role := range c.Roles {
-        if role == models.AdminRole || role == models.SuperAdminRole {
-            return true
-        }
-    }
-    return false
+	for _, role := range c.Roles {
+		if role == models.AdminRole || role == models.SuperAdminRole {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *UserClaims) NewUserToken() jwt.Token {
-    token := jwt.New()
-    token.Set("user_id", c.UserID.String())
-    token.Set("roles", c.Roles)
-    return token
+	token := jwt.New()
+	token.Set(userIDKey, c.UserID.String())
+	token.Set(rolesKey, c.Roles)
+	return token
 }
