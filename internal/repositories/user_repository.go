@@ -278,3 +278,47 @@ func (r *UserRepository) RemoveUserRole(ctx context.Context, userID uuid.UUID, r
 
     return tx.Commit()
 }
+
+func (s *UserRepository) SavePasswordResetToken(ctx context.Context, userID uuid.UUID, token string, expiresAt time.Time) error {
+    query := `INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`
+    _, err := s.db.ExecContext(ctx, query, userID, token, expiresAt)
+    return err
+}
+
+
+func (s *UserRepository) GetValidPasswordResetToken(ctx context.Context, token string) (*models.PasswordResetToken, error) {
+    query := `SELECT id, user_id, expires_at, used FROM password_reset_tokens WHERE token = $1 AND expires_at > NOW() AND used = FALSE`
+    row := s.db.QueryRowContext(ctx, query, token)
+    var resetToken models.PasswordResetToken
+    err := row.Scan(&resetToken.ID, &resetToken.UserID, &resetToken.ExpiresAt, &resetToken.Used)
+    if err != nil {
+        return nil, err
+    }
+    return &resetToken, nil
+}
+func (s *UserRepository) UpdateUserPassword(ctx context.Context, userID uuid.UUID, hashedPassword []byte) error {
+    query := `UPDATE users SET password = $1 WHERE id = $2`
+    _, err := s.db.ExecContext(ctx, query, hashedPassword, userID)
+    return err
+}
+func (s *UserRepository) MarkPasswordResetTokenUsed(ctx context.Context, token string) error {
+    query := `UPDATE password_reset_tokens SET used = TRUE WHERE token = $1`
+    _, err := s.db.ExecContext(ctx, query, token)
+    return err
+}
+
+func (r *UserRepository) GetPasswordResetTokenByToken(ctx context.Context, token string) (*models.PasswordResetToken, error) {
+    var resetToken models.PasswordResetToken
+
+    query := `SELECT id, user_id, token, expires_at, used FROM password_reset_tokens WHERE token = $1 AND used = false`
+    row := r.db.QueryRowContext(ctx, query, token)
+
+    if err := row.Scan(&resetToken.ID, &resetToken.UserID, &resetToken.Token, &resetToken.ExpiresAt, &resetToken.Used); err != nil {
+        if err == sql.ErrNoRows {
+            return nil, nil 
+        }
+        return nil, err 
+    }
+
+    return &resetToken, nil
+}

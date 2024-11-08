@@ -115,6 +115,49 @@ func sanitizeUsername(username string) string {
 func (s *UserService) GetUserByID(ctx context.Context,id uuid.UUID) (*models.User, error) {
     return s.userRepo.GetUserByID(ctx,id)
 }
+func (s *UserService) SavePasswordResetToken(ctx context.Context,id uuid.UUID, token string, expiresAt time.Time ) error{
+    return s.userRepo.SavePasswordResetToken(ctx, id, token, expiresAt)
+}
+func (s *UserService) GetUserByResetToken(ctx context.Context, token string) (*models.User, error) {
+    resetToken, err := s.userRepo.GetValidPasswordResetToken(ctx, token)
+    if err != nil {
+        return nil, err
+    }
+    user, err := s.userRepo.GetUserByID(ctx, resetToken.UserID)
+    if err != nil {
+        return nil, err
+    }
+    return user, nil
+}   
+func (s *UserService) ClearResetToken(ctx context.Context, token string) error {
+    return s.userRepo.MarkPasswordResetTokenUsed(ctx, token)
+}
+
+func (s *UserService) UpdateUserPassword(ctx context.Context, id uuid.UUID, password string, token string) error{
+    resetToken, err := s.userRepo.GetValidPasswordResetToken(ctx, token)
+
+    if err != nil {
+		return errors.New("invalid or expired token")
+	}
+    if resetToken.UserID != id {
+        return errors.New("token does not belong to the specified user")
+    }
+	hashedPassword := utils.HashPassword(password)
+	err = s.userRepo.UpdateUserPassword(ctx, id, hashedPassword)
+	if err != nil {
+		return err
+	}
+    err = s.userRepo.MarkPasswordResetTokenUsed(ctx, token)
+	if err != nil {
+		return err
+	}
+    return nil
+
+}
+func (s *UserService) GetPasswordResetTokenByToken(ctx context.Context, token string) (*models.PasswordResetToken, error) {
+    return s.userRepo.GetPasswordResetTokenByToken(ctx, token)
+}
+
 func (s *UserService) GetUserByEmail(ctx context.Context,email string) (*models.User, error) {
     return s.userRepo.GetUserByEmail(ctx,email)
 }

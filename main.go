@@ -11,6 +11,7 @@ import (
 	"typeMore/api"
 	"typeMore/config"
 	"typeMore/db"
+	"typeMore/internal/messaging"
 	"typeMore/internal/providers"
 
 	"github.com/joho/godotenv"
@@ -40,6 +41,13 @@ func main() {
         sugar.Fatalw("Failed to connect to the database", "error", err)
 }
     defer db.Close()   
+
+    rabbitMQ, err := messaging.ConnectRabbitMQ(messaging.RabbitMQConfig{URL: cfg.RabbitMQURL})
+    if err != nil {
+		sugar.Fatalw("Failed to connect to RabbitMQ", "error", err)
+	}
+	defer rabbitMQ.Close()
+    
     providers.InitGoth()
     router := api.SetupRoutes(db, logger)
     server := &http.Server{

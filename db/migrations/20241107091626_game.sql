@@ -11,7 +11,7 @@ CREATE TABLE game_settings(
     settings_type VARCHAR(50) NOT NULL, 
     value INT NOT NULL,
     is_custom BOOLEAN DEFAULT FALSE,
-    create_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, 
+    create_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 
 );
 CREATE TABLE game_text(
@@ -43,8 +43,8 @@ CREATE INDEX idx_games_is_finished ON games(is_finished);
 
 -- +goose Down
 -- +goose StatementBegin
-DROP TABLE IF EXISTS game_modes;
-DROP TABLE IF EXISTS game_settings;
-DROP TABLE IF EXISTS game_text;
-DROP TABLE IF EXISTS games;
+DROP TABLE IF EXISTS game_modes CASCADE;
+DROP TABLE IF EXISTS game_settings CASCADE;
+DROP TABLE IF EXISTS game_text CASCADE;
+DROP TABLE IF EXISTS games CASCADE;
 -- +goose StatementEnd

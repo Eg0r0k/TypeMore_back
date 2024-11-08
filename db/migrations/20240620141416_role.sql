@@ -30,14 +30,21 @@ CREATE TABLE user_roles (
    role_id SMALLINT REFERENCES roles(id) ON DELETE CASCADE,
    PRIMARY KEY (user_id, role_id) 
 );
-
+CREATE TABLE password_reset_tokens (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY, 
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    token VARCHAR(255) NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    used BOOLEAN DEFAULT FALSE
+);
 CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_users_email ON users(email);
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
-DROP TABLE IF EXISTS user_roles;
-DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS roles;   
+DROP TABLE IF EXISTS user_roles CASCADE; 
+DROP TABLE IF EXISTS password_reset_tokens CASCADE;
+DROP TABLE IF EXISTS users CASCADE; 
+DROP TABLE IF EXISTS roles CASCADE;
 -- +goose StatementEnd

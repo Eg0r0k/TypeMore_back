@@ -10,6 +10,7 @@ type Config struct {
 	DBName     string
 	ServerPort string
 	ReloadDB   bool
+	RabbitMQURL  string
 }
 
 func Load() *Config {
@@ -20,6 +21,7 @@ func Load() *Config {
 		DBPassword: utils.GetEnv("DB_PASSWORD", "admin"),
 		DBName:     utils.GetEnv("DB_NAME", "TypeMore"),
 		ServerPort: utils.GetEnv("SERVER_PORT", "3000"),
-		ReloadDB:   utils.GetEnvAsBool("RELOAD_DB", false),
+		ReloadDB:   utils.GetEnvAsBool("RELOAD_DB", true),
+		RabbitMQURL: utils.GetEnv("RABBITMQ_URL",""),
 	}
 }

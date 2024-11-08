@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"time"
+	"typeMore/internal/messaging"
 	"typeMore/internal/models"
 	"typeMore/internal/services"
 	"typeMore/internal/services/jwt"
@@ -362,16 +363,83 @@ func (h *UserHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
         },
     })
 }
-//TODO: НЕ ЗАБЫТЬ СДЕЛАТЬ РЕСЕТ ПАРОЛЯ ( ДОДЕЛАТЬ ХЭНДЛЕР )
-/**
-* CREATE TABLE password_reset_tokens(
-    id 
-    email 
-    token 
-    expires_at 
-    created_at 
-)
-**/
-func (h *UserHandler) RequestPasswordReset(w http.Request, r *http.Request){
+
+func (h *UserHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
+    var payload struct {
+        Email string `json:"email"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+        utils.WriteJSONResponse(w, http.StatusBadRequest, &utils.Response{Success: false, Error: "Invalid request payload"})
+        return
+    }
+    user, err := h.userService.GetUserByEmail(r.Context(), payload.Email)
+    if err != nil || user == nil {
+        utils.WriteJSONResponse(w, http.StatusNotFound, &utils.Response{Success: false, Error: "User not found"})
+        return
+    }
+    token, err := utils.GenerateRandomToken()
+    if err != nil {
+        h.logger.Error("Failed to generate random token", zap.Error(err))
+        utils.WriteJSONResponse(w, http.StatusInternalServerError, &utils.Response{Success: false, Error: "Failed to generate token"})
+        return
+    }
+    expiresAt := time.Now().Add(15 * time.Minute)
+    if err := h.userService.SavePasswordResetToken(r.Context(), user.UserId, token, expiresAt); err != nil {
+        h.logger.Error("Failed to save password reset token", zap.Error(err))
+        utils.WriteJSONResponse(w, http.StatusInternalServerError, &utils.Response{Success: false, Error: "Failed to process request"})
+        return
+    }
+    if err := messaging.SendEmail(messaging.EmailMessage{
+        To:      user.Email,
+        Subject: "Password Reset Request",
+        Body:    fmt.Sprintf("Your password reset token is: %s", token),
+    }); err != nil {
+        h.logger.Error("Failed to send email", zap.Error(err))
+        utils.WriteJSONResponse(w, http.StatusInternalServerError, &utils.Response{Success: false, Error: "Failed to send email"})
+        return
+    }
+    utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: "Password reset email sent"})
+
+}
+
+func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+    var payload models.ResetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		utils.WriteJSONResponse(w, http.StatusBadRequest, &utils.Response{Success: false, Error: "Invalid request payload"})
+		return
+	}
+    resetToken, err := h.userService.GetPasswordResetTokenByToken(r.Context(), payload.Token)
+    if err != nil || resetToken == nil {
+        utils.WriteJSONResponse(w, http.StatusNotFound, &utils.Response{Success: false, Error: "Invalid or expired token"})
+        return
+    }
+
+    if time.Now().After(resetToken.ExpiresAt) {
+        utils.WriteJSONResponse(w, http.StatusBadRequest, &utils.Response{Success: false, Error: "Token has expired"})
+        return
+    }
+    user, err := h.userService.GetUserByID(r.Context(), resetToken.UserID)
+    if err != nil || user == nil {
+        utils.WriteJSONResponse(w, http.StatusInternalServerError, &utils.Response{Success: false, Error: "User not found"})
+        return
+    }
+    if err := h.userService.UpdateUserPassword(r.Context(), resetToken.UserID, payload.NewPassword, payload.Token); err != nil {
+        h.logger.Error("Failed to update user password", zap.Error(err))
+        utils.WriteJSONResponse(w, http.StatusInternalServerError, &utils.Response{Success: false, Error: "Failed to reset password"})
+        return
+    }
+
+    if err := h.userService.ClearResetToken(r.Context(), payload.Token); err != nil {
+        h.logger.Error("Failed to clear reset token", zap.Error(err))
+    }
+    emailMessage := messaging.EmailMessage{
+        To:      user.Email, 
+        Subject: "Password Reset Confirmation",
+        Body:    "Your password has been successfully reset.",
+    }
+    if err := messaging.SendEmail(emailMessage); err != nil {
+		h.logger.Error("Failed to send confirmation email", zap.Error(err))
+	}
+    utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: "Password reset successfully"})
 
 }
