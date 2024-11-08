@@ -322,3 +322,74 @@ func (r *UserRepository) GetPasswordResetTokenByToken(ctx context.Context, token
 
     return &resetToken, nil
 }
+
+// repositories/user_repository.go
+func (r *UserRepository) GetAllUsers(ctx context.Context) ([]*models.User, error) {
+    query := `
+        SELECT u.id, u.username, u.email, u.is_banned, u.config, u.password, 
+               u.created_at, u.updated_at, u.last_in, u.last_out, u.registration_date, 
+               COALESCE(r.name, '') AS role
+        FROM users u
+        LEFT JOIN user_roles ur ON u.id = ur.user_id
+        LEFT JOIN roles r ON ur.role_id = r.id
+        ORDER BY u.id`
+
+    rows, err := r.db.QueryContext(ctx, query)
+    if err != nil {
+        return nil, fmt.Errorf("querying all users: %w", err)
+    }
+    defer rows.Close()
+
+    users := make(map[uuid.UUID]*models.User)
+    for rows.Next() {
+        var (
+            id              uuid.UUID
+            username        string
+            email           string
+            isBanned        bool
+            config          string
+            password        string
+            createdAt       time.Time
+            updatedAt       time.Time
+            lastIn, lastOut sql.NullTime
+            registrationDate sql.NullTime
+            role            sql.NullString
+        )
+
+        if err := rows.Scan(&id, &username, &email, &isBanned, &config, &password,
+            &createdAt, &updatedAt, &lastIn, &lastOut, &registrationDate, &role); err != nil {
+            return nil, fmt.Errorf("scanning user: %w", err)
+        }
+
+        if _, exists := users[id]; !exists {
+            users[id] = &models.User{
+                UserId:          id,
+                Username:        username,
+                Email:           email,
+                IsBanned:        isBanned,
+                Config:          config,
+                CreatedAt:       createdAt,
+                UpdatedAt:       updatedAt,
+                LastIn:          convertNullTime(lastIn),
+                LastOut:         convertNullTime(lastOut),
+                RegistrationDate: convertNullTime(registrationDate),
+                Roles:           []models.Role{},
+            }
+        }
+        
+
+        if role.Valid {
+            roleObj := models.RoleFromString(role.String)
+            if roleObj != models.InvalidRole {
+                users[id].Roles = append(users[id].Roles, roleObj)
+            }
+        }
+    }
+
+    result := make([]*models.User, 0, len(users))
+    for _, user := range users {
+        result = append(result, user)
+    }
+
+    return result, nil
+}

@@ -290,6 +290,25 @@ paths:
       summary: Register new user
       tags:
       - Auth
+  /api/v1/users:
+    get:
+      description: Retrieves all users and their roles
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.User'
+            type: array
+        "500":
+          description: Failed to fetch users
+          schema:
+            type: string
+      summary: Get all users with roles
+      tags:
+      - Users
   /api/v1/users/{id}:
     delete:
       description: Deletes a user by ID.

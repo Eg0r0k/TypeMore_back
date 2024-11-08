@@ -254,3 +254,8 @@ func (s *UserService) Login(ctx context.Context,username string, password string
  
     return accessToken, refreshToken, user, nil
 }
+
+
+func (s *UserService) GetAllUsers(ctx context.Context) ([]*models.User, error){
+    return s.userRepo.GetAllUsers(ctx)
+}

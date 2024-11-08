@@ -74,6 +74,25 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
     utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: user})
 
 }
+// @Summary Get all users with roles
+// @Description Retrieves all users and their roles
+// @Tags Users
+// @Produce json
+// @Success 200 {array} models.User
+// @Failure 500 {object} string "Failed to fetch users"
+// @Router /api/v1/users [get]
+func (h *UserHandler) GetAllUsers(w http.ResponseWriter, r *http.Request) {
+    start := time.Now()
+    defer func() {
+        h.logger.Info("GetAllUsers completed", zap.Duration("duration", time.Since(start)))
+    }()
+        users, err := h.userService.GetAllUsers(r.Context())
+        if err != nil {
+            h.logger.Error("Failed to get all users", zap.Error(err))
+            utils.WriteJSONResponse(w, http.StatusInternalServerError, &utils.Response{Success: false, Error: "Failed to fetch users"})
+        }
+    utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: users})
+}
 
 // @Summary Register new user
 // @Description Register a user with username, email, and password.

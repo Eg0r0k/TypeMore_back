@@ -15,5 +15,6 @@ func SetupUserRoutes(router *mux.Router, userService *services.UserService, toke
 	userHandler := handlers.NewUserHandler(userService, tokenService, logger)
 
 	router.HandleFunc("/users/{id}", userHandler.GetUser).Methods(http.MethodGet).Name("GetUser")
+	router.HandleFunc("/users", userHandler.GetAllUsers).Methods(http.MethodGet).Name("GetAllUsers")
 	router.Handle("/users/{id}", middleware.TokenValidationMiddleware(tokenService)(http.HandlerFunc(userHandler.DeleteUser))).Methods(http.MethodDelete).Name("DeleteUser")
 }
