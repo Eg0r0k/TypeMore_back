@@ -15,6 +15,13 @@ definitions:
       username:
         type: string
     type: object
+  models.ResetPasswordRequest:
+    properties:
+      new_password:
+        type: string
+      token:
+        type: string
+    type: object
   models.Role:
     enum:
     - -1
@@ -29,6 +36,8 @@ definitions:
     - SuperAdminRole
   models.User:
     properties:
+      auth_type:
+        type: string
       config:
         type: string
       'created_at:':
@@ -54,9 +63,58 @@ definitions:
       username:
         type: string
     type: object
+  utils.Response:
+    properties:
+      data: {}
+      error:
+        type: string
+      success:
+        type: boolean
+    type: object
 info:
   contact: {}
 paths:
+  /api/v1/auth/{provider}/callback:
+    get:
+      description: Completes OAuth flow, retrieves user data, creates or updates user
+        account, and returns tokens.
+      parameters:
+      - description: OAuth provider name
+        in: path
+        name: provider
+        required: true
+        type: string
+      responses:
+        "200":
+          description: User data and tokens
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "500":
+          description: Failed to process authentication
+          schema:
+            $ref: '#/definitions/utils.Response'
+      summary: Handles OAuth callback after provider authentication.
+      tags:
+      - Auth
+  /api/v1/auth/{provider}/login:
+    get:
+      description: Starts the OAuth login flow for a given provider.
+      parameters:
+      - description: OAuth provider name
+        in: path
+        name: provider
+        required: true
+        type: string
+      responses:
+        "302":
+          description: Redirects to the OAuth provider's authorization page
+        "400":
+          description: Provider is required
+          schema:
+            $ref: '#/definitions/utils.Response'
+      summary: Initiates OAuth login process.
+      tags:
+      - Auth
   /api/v1/auth/login:
     post:
       consumes:
@@ -88,7 +146,30 @@ paths:
             type: string
       summary: User Login
       tags:
-      - Users
+      - Auth
+  /api/v1/auth/logout:
+    post:
+      description: Logs out the user by invalidating their access and refresh tokens.
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "204":
+          description: No content, token not found
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "401":
+          description: Unauthorized, invalid token
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "500":
+          description: Internal server error, failed to remove refresh token
+          schema:
+            $ref: '#/definitions/utils.Response'
+      summary: Logout user
+      tags:
+      - Auth
   /api/v1/auth/refresh:
     post:
       consumes:
@@ -116,7 +197,69 @@ paths:
             type: string
       summary: Refresh Access Token
       tags:
-      - Users
+      - Auth
+  /api/v1/auth/request_password_reset:
+    post:
+      description: Sends a password reset token to the user's email if the account
+        exists.
+      parameters:
+      - description: User's email for password reset
+        in: body
+        name: email
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: Password reset email sent
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "400":
+          description: Invalid request payload
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "404":
+          description: User not found
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "500":
+          description: Failed to generate token or send email
+          schema:
+            $ref: '#/definitions/utils.Response'
+      summary: Requests password reset for a user.
+      tags:
+      - Auth
+  /api/v1/auth/reset_password:
+    post:
+      description: Verifies the reset token, resets the password, and clears the reset
+        token.
+      parameters:
+      - description: New password and reset token
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.ResetPasswordRequest'
+      responses:
+        "200":
+          description: Password reset successfully
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "400":
+          description: Invalid request payload or expired token
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "404":
+          description: Invalid or expired token
+          schema:
+            $ref: '#/definitions/utils.Response'
+        "500":
+          description: Failed to reset password
+          schema:
+            $ref: '#/definitions/utils.Response'
+      summary: Resets user's password.
+      tags:
+      - Auth
   /api/v1/auth/signup:
     post:
       consumes:
@@ -146,7 +289,7 @@ paths:
             type: string
       summary: Register new user
       tags:
-      - Users
+      - Auth
   /api/v1/users/{id}:
     delete:
       description: Deletes a user by ID.

@@ -77,7 +77,7 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 
 // @Summary Register new user
 // @Description Register a user with username, email, and password.
-// @Tags Users
+// @Tags Auth
 // @Accept json
 // @Produce json
 // @Param user body models.RegistrationCredentials true "User data"
@@ -148,7 +148,7 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 // @Summary User Login
 // @Description Logs in a user with username and password.
-// @Tags Users
+// @Tags Auth
 // @Accept json
 // @Produce json
 // @Param credentials body models.LoginCredentials true "Login credentials"
@@ -189,7 +189,7 @@ utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: r
 
 // @Summary Refresh Access Token
 // @Description Refreshes the access token using a refresh token.
-// @Tags Users
+// @Tags Auth
 // @Accept json
 // @Produce json
 // @Param refresh_token body string true "Refresh token"
@@ -245,7 +245,7 @@ func (h *UserHandler) handleError(w http.ResponseWriter, err error, status int, 
 }
 // @Summary Logout user
 // @Description Logs out the user by invalidating their access and refresh tokens.
-// @Tags users
+// @Tags Auth
 // @Success 200 {object} utils.Response
 // @Failure 204 {object} utils.Response "No content, token not found"
 // @Failure 401 {object} utils.Response "Unauthorized, invalid token"
@@ -286,7 +286,13 @@ func (h *UserHandler) Logout(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(http.StatusOK)
 }
 
-
+// @Summary Initiates OAuth login process.
+// @Description Starts the OAuth login flow for a given provider.
+// @Tags Auth
+// @Param provider path string true "OAuth provider name" Enum("google", "github")
+// @Success 302 "Redirects to the OAuth provider's authorization page"
+// @Failure 400 {object} utils.Response "Provider is required"
+// @Router /api/v1/auth/{provider}/login [get] 
 func (h *UserHandler) OAuthLogin(w http.ResponseWriter, r *http.Request){
     provider := mux.Vars(r)["provider"]
     if provider == ""{
@@ -295,7 +301,13 @@ func (h *UserHandler) OAuthLogin(w http.ResponseWriter, r *http.Request){
     }
     gothic.BeginAuthHandler(w, r)
 }
-
+// @Summary Handles OAuth callback after provider authentication.
+// @Description Completes OAuth flow, retrieves user data, creates or updates user account, and returns tokens.
+// @Tags Auth
+// @Param provider path string true "OAuth provider name" Enum("google", "github")
+// @Success 200 {object} utils.Response "User data and tokens"
+// @Failure 500 {object} utils.Response "Failed to process authentication"
+// @Router /api/v1/auth/{provider}/callback [get] 
 func (h *UserHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
     start := time.Now()
     ctx := r.Context()
@@ -363,7 +375,15 @@ func (h *UserHandler) OAuthCallback(w http.ResponseWriter, r *http.Request) {
         },
     })
 }
-
+// @Summary Requests password reset for a user.
+// @Description Sends a password reset token to the user's email if the account exists.
+// @Tags Auth
+// @Param email body string true "User's email for password reset"
+// @Success 200 {object} utils.Response "Password reset email sent"
+// @Failure 400 {object} utils.Response "Invalid request payload"
+// @Failure 404 {object} utils.Response "User not found"
+// @Failure 500 {object} utils.Response "Failed to generate token or send email"
+// @Router /api/v1/auth/request_password_reset [post] 
 func (h *UserHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
     var payload struct {
         Email string `json:"email"`
@@ -401,7 +421,15 @@ func (h *UserHandler) RequestPasswordReset(w http.ResponseWriter, r *http.Reques
     utils.WriteJSONResponse(w, http.StatusOK, &utils.Response{Success: true, Data: "Password reset email sent"})
 
 }
-
+// @Summary Resets user's password.
+// @Description Verifies the reset token, resets the password, and clears the reset token.
+// @Tags Auth
+// @Param body body models.ResetPasswordRequest true "New password and reset token"
+// @Success 200 {object} utils.Response "Password reset successfully"
+// @Failure 400 {object} utils.Response "Invalid request payload or expired token"
+// @Failure 404 {object} utils.Response "Invalid or expired token"
+// @Failure 500 {object} utils.Response "Failed to reset password"
+// @Router /api/v1/auth/reset_password [post] 
 func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
     var payload models.ResetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

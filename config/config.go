@@ -21,7 +21,7 @@ func Load() *Config {
 		DBPassword: utils.GetEnv("DB_PASSWORD", "admin"),
 		DBName:     utils.GetEnv("DB_NAME", "TypeMore"),
 		ServerPort: utils.GetEnv("SERVER_PORT", "3000"),
-		ReloadDB:   utils.GetEnvAsBool("RELOAD_DB", true),
+		ReloadDB:   utils.GetEnvAsBool("RELOAD_DB", false),
 		RabbitMQURL: utils.GetEnv("RABBITMQ_URL",""),
 	}
 }

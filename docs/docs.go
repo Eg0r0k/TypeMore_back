@@ -25,7 +25,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Users"
+                    "Auth"
                 ],
                 "summary": "User Login",
                 "parameters": [
@@ -64,6 +64,41 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/auth/logout": {
+            "post": {
+                "description": "Logs out the user by invalidating their access and refresh tokens.",
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Logout user",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "204": {
+                        "description": "No content, token not found",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized, invalid token",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error, failed to remove refresh token",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/refresh": {
             "post": {
                 "description": "Refreshes the access token using a refresh token.",
@@ -74,7 +109,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Users"
+                    "Auth"
                 ],
                 "summary": "Refresh Access Token",
                 "parameters": [
@@ -107,6 +142,98 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/auth/request_password_reset": {
+            "post": {
+                "description": "Sends a password reset token to the user's email if the account exists.",
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Requests password reset for a user.",
+                "parameters": [
+                    {
+                        "description": "User's email for password reset",
+                        "name": "email",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Password reset email sent",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request payload",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to generate token or send email",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/reset_password": {
+            "post": {
+                "description": "Verifies the reset token, resets the password, and clears the reset token.",
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Resets user's password.",
+                "parameters": [
+                    {
+                        "description": "New password and reset token",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.ResetPasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Password reset successfully",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request payload or expired token",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Invalid or expired token",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to reset password",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/signup": {
             "post": {
                 "description": "Register a user with username, email, and password.",
@@ -117,7 +244,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Users"
+                    "Auth"
                 ],
                 "summary": "Register new user",
                 "parameters": [
@@ -148,6 +275,67 @@ const docTemplate = `{
                         "description": "Error creating user",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/{provider}/callback": {
+            "get": {
+                "description": "Completes OAuth flow, retrieves user data, creates or updates user account, and returns tokens.",
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Handles OAuth callback after provider authentication.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "OAuth provider name",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "User data and tokens",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to process authentication",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/{provider}/login": {
+            "get": {
+                "description": "Starts the OAuth login flow for a given provider.",
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Initiates OAuth login process.",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "OAuth provider name",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Redirects to the OAuth provider's authorization page"
+                    },
+                    "400": {
+                        "description": "Provider is required",
+                        "schema": {
+                            "$ref": "#/definitions/utils.Response"
                         }
                     }
                 }
@@ -265,6 +453,17 @@ const docTemplate = `{
                 }
             }
         },
+        "models.ResetPasswordRequest": {
+            "type": "object",
+            "properties": {
+                "new_password": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
+                }
+            }
+        },
         "models.Role": {
             "type": "integer",
             "enum": [
@@ -283,6 +482,9 @@ const docTemplate = `{
         "models.User": {
             "type": "object",
             "properties": {
+                "auth_type": {
+                    "type": "string"
+                },
                 "config": {
                     "type": "string"
                 },
@@ -318,6 +520,18 @@ const docTemplate = `{
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "utils.Response": {
+            "type": "object",
+            "properties": {
+                "data": {},
+                "error": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
                 }
             }
         }
