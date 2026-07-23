@@ -1,24 +1,29 @@
 # TypeMore Server
 
-The TypeMore game server: a single static Go binary. This is the **relay v0**
-bootstrap — it proves the realtime plumbing (WebSocket connection handling, the
-`hello` handshake, and NTP clock exchange) that multiplayer will grow on. It has
-**no** rooms, relay, match logic, or database yet; those arrive in later stages
-(see `ARCHITECTURE.md` / `BACKEND.md`).
+The TypeMore game server: a single static Go binary. It provides the realtime
+plumbing (WebSocket `hello` + NTP clock exchange) and **authentication +
+persistence**: email/password and GitHub/Google OAuth over PostgreSQL, with
+opaque sessions, email verification, and password reset. Rooms/relay/match,
+scoring, and Redis arrive in later stages (see `ARCHITECTURE.md` / `BACKEND.md`).
 
-The client↔server wire contract lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+Contracts: the realtime wire format is in [`docs/PROTOCOL.md`](docs/PROTOCOL.md);
+the auth/HTTP surface (endpoints, schema, env, security) is in
+[`docs/AUTH.md`](docs/AUTH.md).
 
 ## What's here
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /healthz` | Liveness + build info (JSON) |
+| `GET /readyz` | Readiness — database ping |
 | `GET /ws` | WebSocket: `hello` handshake + `ntp_ping`/`ntp_pong` |
+| `/api/v1/auth/*`, `GET /api/v1/me` | Auth + sessions — see [`docs/AUTH.md`](docs/AUTH.md) |
 
 ## Prerequisites
 
-- **Go 1.26+** — https://go.dev/dl/ (this is all you need to run and test).
-- Optional: **Docker Desktop** (for `docker compose`).
+- **Go 1.26+** — https://go.dev/dl/.
+- **Docker Desktop** — required for the full stack (Postgres + Mailpit) and for
+  the integration tests (they spin up Postgres via testcontainers).
 - Optional: **make** — on Windows, install via `choco install make` or use the
   raw `go` commands shown below. Run `make` targets from **git-bash** (bundled
   with Git for Windows), not `cmd.exe`.
@@ -26,23 +31,43 @@ The client↔server wire contract lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md
 ## Quickstart (Windows, git-bash)
 
 ```bash
-# 1. Fetch dependencies
-go mod download
+# 1. Start Postgres + Mailpit (dev SMTP sink) and apply migrations
+docker compose up -d postgres mailpit
+make migrate-up                       # or: go run ./cmd/migrate up
 
 # 2. Run the server (listens on :8080)
-go run ./cmd/server
-#    ...or: make run
+go run ./cmd/server                   # or: make run
 ```
 
 In a second git-bash window:
 
 ```bash
-# 3. Check health + build info
+# 3. Liveness and readiness (readiness pings the DB)
 curl http://localhost:8080/healthz
-# {"status":"ok","build":{"version":"dev","commit":"none",...}}
+curl http://localhost:8080/readyz
 ```
 
 Stop the server with `Ctrl+C` — it shuts down gracefully.
+
+### Try the auth flow
+
+With the stack up: register → verify → login. In dev without SMTP the
+verification link is printed to the server logs; with the compose stack it lands
+in Mailpit's inbox UI at http://localhost:8025.
+
+```bash
+O=http://localhost:5173   # must match TYPEMORE_FRONTEND_ORIGIN (CSRF)
+curl -sX POST localhost:8080/api/v1/auth/register -H "Origin: $O" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com","password":"password123","displayName":"Demo"}'
+# grab the token from http://localhost:8025 , then:
+curl -sX POST localhost:8080/api/v1/auth/verify -H "Origin: $O" \
+  -H 'Content-Type: application/json' -d '{"token":"<TOKEN>"}'
+curl -sX POST localhost:8080/api/v1/auth/login -c cj.txt -H "Origin: $O" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com","password":"password123"}'
+curl -s localhost:8080/api/v1/me -b cj.txt
+```
 
 ### Run the tests
 
@@ -50,9 +75,11 @@ Stop the server with `Ctrl+C` — it shuts down gracefully.
 go test ./...      # or: make test
 ```
 
-The suite includes a real end-to-end WebSocket integration test (spins up a
-server on a random port, connects a real client, runs the full `hello` + 5×NTP
-exchange, and checks the offset math and error paths).
+The suite covers a real end-to-end WebSocket test (`hello` + 5×NTP, offset math,
+error paths) and full auth flows against a throwaway Postgres (testcontainers):
+register → verify → login → `/me` → logout, password reset with session
+revocation, OAuth create/link/collision against a fake provider,
+anti-enumeration, and rate limiting. **Docker must be running.**
 
 > **Race detector note:** `go test -race` (and `make test-race`, used by CI)
 > needs cgo and a C compiler. A stock Windows box usually lacks one, so use plain
@@ -77,12 +104,20 @@ make build            # -> bin/typemore-server(.exe) with version metadata
 
 ## Docker
 
-App-only compose (no Postgres/Redis this phase):
+Full stack — server + Postgres + Mailpit (dev SMTP sink):
 
 ```bash
-docker compose up --build
-curl http://localhost:8080/healthz
+docker compose up -d postgres mailpit   # datastores
+docker compose run --rm migrate up      # apply migrations
+docker compose up --build app           # the server
 ```
+
+- App: http://localhost:8080 (`/healthz`, `/readyz`)
+- Mailpit inbox UI: http://localhost:8025 (sent verification/reset emails)
+
+> On Windows, if host port 8080/5432 is already used by another service, remap
+> the `ports:` in `docker-compose.yml`; the app↔db link uses the compose network
+> and is unaffected.
 
 ## Configuration
 
@@ -98,16 +133,25 @@ override locally.
 | `TYPEMORE_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown budget |
 | `TYPEMORE_READ_HEADER_TIMEOUT` | `5s` | Header read timeout |
 | `TYPEMORE_ALLOWED_ORIGINS` | *(empty)* | WebSocket Origin allow-list; empty = allow any (dev) |
+| *DB / session / OAuth / SMTP / rate-limit vars* | see [`.env.example`](.env.example) | Documented in [`docs/AUTH.md`](docs/AUTH.md) |
 
 ## Project layout
 
 ```
-cmd/server/            # composition root (main): wiring + lifecycle
+cmd/
+  server/              # composition root (main): wiring + lifecycle
+  migrate/             # goose migration runner (embedded SQL)
 internal/
-  platform/            # config, logging, HTTP lifecycle, health/build info (no domain deps)
-  protocol/            # wire message types, version constant, JSON codec (mirrors docs/PROTOCOL.md)
-  ws/                  # WebSocket transport: connection handling + hello/NTP
-docs/PROTOCOL.md       # the client↔server contract (shared with the frontend)
+  platform/            # config, logging, HTTP lifecycle, health/build (no domain deps)
+    db/                # pgx pool          migrate/  # goose runner
+    mail/              # SMTP / log email senders (neutral Message type)
+  protocol/            # realtime wire types (mirrors docs/PROTOCOL.md)
+  ws/                  # WebSocket transport: hello/NTP
+  auth/                # auth domain: service, handlers, sessions, oauth, argon2id
+    authdb/            # sqlc-generated queries (committed)
+    pgstore/           # Postgres impl of the auth Store/SessionStore interfaces
+db/migrations/         # goose SQL migrations (embedded)
+docs/PROTOCOL.md       # realtime contract      docs/AUTH.md  # auth/HTTP contract
 ```
 
 The package layout follows `BACKEND.md §2`; only the packages this phase needs
