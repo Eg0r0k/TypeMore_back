@@ -33,6 +33,34 @@ Success/JSON bodies are shown; errors are `{"error":"<code>","message":"..."}`.
 `<frontend>/auth/callback?status=ok` (or `?error=<code>`, e.g.
 `account_exists_use_linking`), and linking to `?linked=<provider>`.
 
+### Success bodies
+
+All success responses are `200 OK` with `Content-Type: application/json`
+(OAuth `start`/`callback` are `302` redirects with no body). The two user-object
+endpoints share one shape — the `userView` `{id, displayName, createdAt}`,
+lower-camelCase, `createdAt` an RFC 3339 string:
+
+| Endpoint | Body |
+|---|---|
+| `GET /me` | `{"id":"<uuid>","displayName":"<name>","createdAt":"<rfc3339>"}` |
+| `POST /auth/login` | same `userView` object as `/me` |
+| `POST /auth/logout` | `{"status":"ok"}` |
+| `POST /auth/register` | `{"status":"ok","message":"if that email can receive mail, a message is on its way"}` |
+| `POST /auth/verify/resend` | same generic `{status, message}` as `register` |
+| `POST /auth/password-reset/request` | same generic `{status, message}` as `register` |
+| `POST /auth/email/add` | same generic `{status, message}` as `register` |
+| `POST /auth/verify` | `{"status":"ok","message":"email verified; you can now sign in"}` |
+| `POST /auth/password-reset/confirm` | `{"status":"ok","message":"password updated; sign in with your new password"}` |
+| `POST /auth/password/set` | `{"status":"ok","message":"password set; you can now sign in with email and password"}` |
+| `POST /auth/link/{provider}/start` | `{"authorizeUrl":"<provider authorize URL>"}` |
+
+`login` deliberately returns the full user object (not an empty body); the
+session is delivered in the `Set-Cookie` header either way, so a client may read
+the user from the login response or re-fetch `GET /me`. The generic
+`{status, message}` bodies are identical across success and anti-enumeration
+paths (see the security posture below). `/me` field names are pinned by a JSON
+contract test (`TestMeJSONContract`), since the client parses them strictly.
+
 ### Error codes
 
 `bad_request`, `invalid_token`, `invalid_credentials`, `email_not_verified`,
