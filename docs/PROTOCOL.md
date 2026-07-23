@@ -75,8 +75,18 @@ clients do not implement it manually (browsers answer pings automatically).
 First frame of every connection. `nick` is the guest display identity, **1–16
 characters** (counted in Unicode code points, not bytes).
 
+`resumeToken` is **optional**: on a mid-match reconnect the client re-sends its
+hello with the `resumeToken` it was given in the previous `hello_ok`, and the
+server restores its seat and replays the buffered backlog (see §6). Omit it on a
+fresh connection. Logged-in users are additionally identified by their session
+cookie (from the auth layer), which survives independently of this token.
+
 ```json
 { "type": "hello", "protocolVersion": 1, "nick": "Neo" }
+```
+
+```json
+{ "type": "hello", "protocolVersion": 1, "nick": "Neo", "resumeToken": "b3f1…(64 hex chars)" }
 ```
 
 ### `ntp_ping`
@@ -120,6 +130,10 @@ validation lands in the relay phase.
 
 - `matchId` — the match this batch belongs to.
 - `playerId` — the sender (as issued in `hello_ok`).
+- `batchSeq` — a **monotonic, per-player** batch counter starting at `1`. It lets
+  the server detect gaps and duplicates when replaying the backlog after a
+  reconnect; the transport preserves order, `batchSeq` makes loss/duplication
+  detectable.
 - `version` — the **event-log format** version (log-v1 ⇒ `1`).
 - `events` — the ordered array of opaque event objects.
 
@@ -133,6 +147,7 @@ received per player and never reorders.
   "type": "event_batch",
   "matchId": "m_9f3a",
   "playerId": "3b1e...c4",
+  "batchSeq": 7,
   "version": 1,
   "events": [
     { "k": "insert", "seq": 1, "t": 12, "ch": "t" },
@@ -163,9 +178,13 @@ Voluntarily leaves the current room.
 Acknowledges a valid `hello`. `playerId` is the server-issued opaque identity
 for this connection; `serverVersion` echoes the protocol version the server
 speaks (always equal to the client's, since a mismatch would have been rejected).
+`resumeToken` is a fresh **256-bit random** secret (64 hex chars): the client
+stores it and presents it in a later `hello` to reclaim its seat after a
+disconnect (see §6). It is a capability, not the `playerId` — the `playerId` may
+be shown to peers, the `resumeToken` never is.
 
 ```json
-{ "type": "hello_ok", "playerId": "3b1e9c2f7a8d4e10b6c5a1d2e3f40506", "serverVersion": 1 }
+{ "type": "hello_ok", "playerId": "3b1e9c2f7a8d4e10b6c5a1d2e3f40506", "serverVersion": 1, "resumeToken": "b3f1...c9" }
 ```
 
 ### `error`
@@ -245,7 +264,8 @@ NTP offset and schedule the local 3-2-1; the shared **t=0** (the "go" instant)
 is identical for everyone.
 
 - `goAtServerMs` — server-clock instant of t=0.
-- `seed` — the generation seed (see Open questions on encoding).
+- `seed` — the generation seed: an **integer in `[0, 2³²−1]`** (mulberry32 is a
+  32-bit PRNG; this range fits a JSON number with room to spare — no 2⁵³ issue).
 - `dictHash` — FNV-1a dictionary fingerprint the match runs against; a client
   missing this dictionary version downloads the static asset before "go".
 - `lang` — language code of the dictionary.
@@ -309,7 +329,7 @@ They are recorded here so the frontend can rely on them.
   mid-match** — the match continues and the flag is resolved out of band.
 - **Disconnect policy.** On a mid-match WebSocket drop the server **keeps the
   seat for a 15 s grace window** and **buffers the peer-relay backlog**. A
-  reconnect (a `hello` presenting the same `playerId` token) **replays the
+  reconnect (a `hello` presenting the same `resumeToken`) **replays the
   backlog** and resumes. Grace expiry ⇒ the peer is broadcast as `dnf` and the
   match continues for the others. Spectator-side ghosts **freeze during the gap
   and fast-forward on catch-up** (the client's jitter buffer absorbs this).
@@ -320,27 +340,22 @@ They are recorded here so the frontend can rely on them.
 
 ## 7. Open questions
 
-Genuine gaps in the source specification, surfaced here rather than decided
-unilaterally. Each needs a decision before the relay phase implements it.
+Gaps in the source specification, surfaced here rather than decided unilaterally.
+Items marked **RESOLVED** carry the owner's decision (already reflected above);
+the rest still need a decision before the relay phase implements them.
 
-1. **Reconnect token transport.** §6 says a reconnect is "a `hello` with the
-   same `playerId` token", but `hello` as specified carries only
-   `protocolVersion` and `nick` — there is no field to present a prior
-   `playerId`/token. How does a reconnecting client re-present its identity: an
-   added `hello.reconnectToken` field, a separate `resume` message, or a query
-   parameter on the WebSocket URL? And is the token the raw `playerId` or a
-   separate secret (a guessable `playerId` would let anyone hijack a seat)?
-2. **`event_batch` sequence field.** The batching contract says batches are
-   "strictly seq-ordered", but the `event_batch` envelope defines no batch
-   sequence number — only per-event `seq` inside the opaque payload. Does the
-   ordering guarantee ride on the transport (TCP/WS in-order delivery) alone, or
-   should the envelope carry an explicit monotonic `batchSeq` so the server can
-   detect gaps/dupes across a reconnect? This matters specifically for backlog
-   replay after reconnect.
-3. **`seed` encoding.** The generator is `mulberry32` (a 32-bit PRNG). Is `seed`
-   a JSON number constrained to unsigned 32-bit, a larger integer, or a string?
-   (Documented above as a number; range/signedness unconfirmed.) JSON numbers
-   above 2^53 are unsafe, so if seeds can exceed 32 bits a string is required.
+1. **Reconnect token transport — RESOLVED.** `hello_ok` issues a `resumeToken`
+   (256-bit random, 64 hex chars); a reconnect is `hello {resumeToken}`. The
+   token is a secret capability distinct from the peer-visible `playerId`, so a
+   guessed `playerId` cannot hijack a seat. Logged-in users are additionally
+   covered by their auth session cookie. (See §3 `hello` / §4 `hello_ok`.)
+2. **`event_batch` sequence field — RESOLVED.** The envelope carries an explicit
+   `batchSeq` (monotonic, per-player, starting at 1). Transport order is
+   preserved by WebSocket/TCP; `batchSeq` exists so gaps and duplicates are
+   detectable during backlog replay after a reconnect. (See §3 `event_batch`.)
+3. **`seed` encoding — RESOLVED.** `seed` is an integer in `[0, 2³²−1]`
+   (mulberry32 is 32-bit; safely within JSON's 2⁵³ integer range). (See §4
+   `countdown`.)
 4. **`event_batch.version` semantics.** Confirmed as the **event-log** format
    version (log-v1 ⇒ 1), *not* the protocol version. Flagged only because the
    name collides conceptually with `protocolVersion`; the two version numbers

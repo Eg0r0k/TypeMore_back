@@ -231,6 +231,42 @@ simulation is ever required, that is the trigger for the native Go core port
 Planned flow: transport → match store → UI, living in `internal/match` within
 the same binary until scale forces extraction.
 
+### 6.1 Match timing model
+
+> This section consolidates the shared client↔server timing design into the
+> server architecture doc so it is self-contained. The **wire-level** contract
+> (exact frames and field names) lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md);
+> this is the *why* behind it.
+
+A multiplayer match needs every client to hit **the same `t=0` ("go") instant**
+despite each running on its own unsynchronised wall clock. The design keeps the
+server out of the real-time loop (per §6) while still coordinating a shared
+start:
+
+- **Server clock is the reference.** All shared instants (notably the countdown
+  `goAtServerMs`) are expressed in the server's wall clock. The server never
+  waits on clients to align; it just publishes an instant.
+- **Clients estimate their offset via an NTP-style handshake.** Before any
+  countdown a client exchanges ≥5 `ntp_ping`/`ntp_pong` pairs. Each pong carries
+  `t0` (client send, echoed), `t1` (server receive), `t2` (server send); the
+  client reads `t3` (its own receive) locally. Per pair,
+  `offset = ((t1−t0) + (t2−t3)) / 2` and `rtt = (t3−t0) − (t2−t1)`. The client
+  discards pairs whose RTT exceeds 3× the minimum observed RTT and takes the
+  **median** offset — a jitter-robust estimate of `serverClock − clientClock`.
+- **Countdown converts locally.** On `countdown{goAtServerMs, seed, dictHash,
+  lang, config}`, each client computes `localGoTime = goAtServerMs − offset` and
+  schedules its own 3-2-1 to fire at that local time. Because every client
+  subtracts its own offset from the *same* server instant, all the local "go"s
+  coincide on the real timeline.
+- **The core stays clock-free.** Per §2, `GameCore` takes time only through
+  events; the timing model lives entirely in the transport/scheduling layer, so
+  determinism and server-side replay are unaffected.
+
+Timestamps on the wire are integer milliseconds since the Unix epoch (UTC).
+Post-`go`, gameplay events flow as the relayed `event_batch`/`peer_batch`
+stream; timing plausibility of a finished run is checked post-hoc by the replay
+pipeline, not enforced live.
+
 ---
 
 ## 7. Non-goals

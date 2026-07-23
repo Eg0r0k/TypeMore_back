@@ -95,6 +95,11 @@ type Hello struct {
 	Type            string `json:"type"`
 	ProtocolVersion int    `json:"protocolVersion"`
 	Nick            string `json:"nick"`
+	// ResumeToken is optional: present only on a mid-match reconnect to reclaim
+	// a seat (see docs/PROTOCOL.md §6). It is the 256-bit secret handed out in a
+	// prior HelloOK, distinct from the peer-visible PlayerID. Wired in the relay
+	// phase.
+	ResumeToken string `json:"resumeToken,omitempty"`
 }
 
 // NTPPing carries the client's clock reading (t0) at send time. The server
@@ -126,9 +131,12 @@ type Ready struct {
 // events are opaque to the server in this phase (structurally validated in the
 // relay phase), hence json.RawMessage.
 type EventBatch struct {
-	Type     string            `json:"type"`
-	MatchID  string            `json:"matchId"`
-	PlayerID string            `json:"playerId"`
+	Type     string `json:"type"`
+	MatchID  string `json:"matchId"`
+	PlayerID string `json:"playerId"`
+	// BatchSeq is a monotonic, per-player counter (starting at 1) so the server
+	// can detect gaps/duplicates during backlog replay after a reconnect.
+	BatchSeq int               `json:"batchSeq"`
 	Version  int               `json:"version"`
 	Events   []json.RawMessage `json:"events"`
 }
@@ -140,12 +148,17 @@ type Leave struct {
 
 // --- Server -> client messages ---
 
-// HelloOK acknowledges a valid hello and assigns the player their server-issued
-// id (which doubles as the reconnect token in the relay phase).
+// HelloOK acknowledges a valid hello and assigns the player their peer-visible
+// server-issued id; the separate ResumeToken (relay phase) is the reconnect
+// capability.
 type HelloOK struct {
 	Type          string `json:"type"`
 	PlayerID      string `json:"playerId"`
 	ServerVersion int    `json:"serverVersion"`
+	// ResumeToken is a fresh 256-bit secret (64 hex chars) the client presents in
+	// a later Hello to reclaim its seat after a disconnect. Populated by the relay
+	// phase; empty (and omitted) otherwise.
+	ResumeToken string `json:"resumeToken,omitempty"`
 }
 
 // NewHelloOK builds a HelloOK for the given player id, stamping the current
