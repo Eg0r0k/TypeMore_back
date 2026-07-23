@@ -176,7 +176,7 @@ func TestOAuthCreateAndRelogin(t *testing.T) {
 	resp := h.get(mePath)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	created := decodeInto[meResponse](t, resp)
-	assert.Equal(t, "OAuth User", created.DisplayName) // from the provider's name field
+	assert.Equal(t, "OAuthUser", created.DisplayName) // provider name "OAuth User", sanitized
 
 	// Re-login with the same subject returns the same account (no duplicate).
 	loc = h.oauthLogin(t, auth.ProviderGoogle)
@@ -261,7 +261,7 @@ func TestMigrationsIdempotent(t *testing.T) {
 
 	var version int64
 	require.NoError(t, pool.QueryRow(ctx, `SELECT max(version_id) FROM goose_db_version`).Scan(&version))
-	assert.Equal(t, int64(1), version, "expected to be at migration version 1")
+	assert.Equal(t, int64(2), version, "expected to be at migration version 2")
 }
 
 // --- fake OAuth provider ---

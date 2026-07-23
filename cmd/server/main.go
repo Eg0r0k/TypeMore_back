@@ -19,11 +19,15 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"github.com/google/uuid"
+
 	"github.com/typemore/typemore-server/internal/auth"
 	"github.com/typemore/typemore-server/internal/auth/pgstore"
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/mail"
+	"github.com/typemore/typemore-server/internal/runs"
+	runspg "github.com/typemore/typemore-server/internal/runs/pgstore"
 	"github.com/typemore/typemore-server/internal/ws"
 )
 
@@ -71,6 +75,24 @@ func run() error {
 		auth.NewInMemoryRateLimiter(cfg.AuthRateEvery, cfg.AuthRateBurst),
 		authConfig(cfg), logger)
 
+	// Expiry janitor: periodically deletes expired sessions and stale email
+	// tokens. Tied to ctx, so the shutdown signal stops it with the server.
+	if cfg.AuthCleanupInterval > 0 {
+		go auth.RunJanitor(ctx, authStore, cfg.AuthCleanupInterval, logger)
+	}
+
+	// Build the runs domain: run ingestion + own-runs listing. It reuses the
+	// auth rate-limiter machinery (keyed per user) and reads the authenticated
+	// principal from the request context via an adapter over auth.UserFrom, so
+	// the domain imports no sibling package.
+	runsStore := runspg.New(pool)
+	runsSvc := runs.NewService(runsStore,
+		auth.NewInMemoryRateLimiter(cfg.RunsRateEvery, cfg.RunsRateBurst),
+		func(ctx context.Context) (uuid.UUID, bool) {
+			u, ok := auth.UserFrom(ctx)
+			return u.ID, ok
+		}, logger)
+
 	router := chi.NewRouter()
 	// RequestID tags each request; Recoverer turns a handler panic into a 500
 	// instead of crashing the process.
@@ -93,6 +115,14 @@ func run() error {
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
+		// Runs: session required (guests play client-only). RequireOrigin is a
+		// no-op on safe methods, so this group covers GET listing/detail and the
+		// Origin-checked POST ingestion alike.
+		r.Group(func(r chi.Router) {
+			r.Use(authSvc.RequireOrigin)
+			r.Use(authSvc.RequireAuth)
+			r.Mount("/runs", runsSvc.Routes())
+		})
 	})
 
 	srv := &http.Server{

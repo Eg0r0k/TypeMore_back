@@ -2,9 +2,10 @@
 // versions:
 //   sqlc v1.31.1
 
-package authdb
+package runsdb
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,9 +40,9 @@ type Run struct {
 	Lang          string
 	Seed          int64
 	DictHash      string
-	Setup         []byte
-	ClientMetrics []byte
-	ClientScore   []byte
+	Setup         json.RawMessage
+	ClientMetrics json.RawMessage
+	ClientScore   json.RawMessage
 	ScoreVersion  int16
 	Status        string
 	Log           []byte

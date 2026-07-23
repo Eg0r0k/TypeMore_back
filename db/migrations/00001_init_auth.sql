@@ -5,11 +5,18 @@
 
 -- citext gives case-insensitive email columns (equality/uniqueness ignore case).
 CREATE EXTENSION IF NOT EXISTS citext;
+-- btree_gist provides gist opclasses for scalar equality, required by the
+-- verified_email_one_user exclusion constraint on auth_identities below.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- A TypeMore account. Auth-agnostic on purpose.
 CREATE TABLE users (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    display_name text        NOT NULL,
+    -- citext makes names case-insensitively unique ('Egor' == 'egor'). Bounds
+    -- and charset are enforced here as the last line of defense; the service
+    -- validates first and returns name_taken / bad_request.
+    display_name citext      NOT NULL UNIQUE
+        CHECK (char_length(display_name) BETWEEN 3 AND 20 AND display_name ~ '^[a-zA-Z0-9_.-]+$'),
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
@@ -24,12 +31,26 @@ CREATE TABLE auth_identities (
     email            citext,
     email_verified   boolean     NOT NULL DEFAULT false,
     created_at       timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (provider, provider_subject)
+    UNIQUE (provider, provider_subject),
+    -- provider='email' stores the address itself as provider_subject, which is
+    -- plain text while email is citext. Require it lower-cased so 'Foo@x.com'
+    -- and 'foo@x.com' cannot slip past the UNIQUE above as two identities.
+    CONSTRAINT email_subject_lowercase
+        CHECK (provider <> 'email' OR provider_subject = lower(provider_subject))
 );
 CREATE INDEX auth_identities_user_id_idx ON auth_identities (user_id);
 -- Supports the no-auto-link collision check: "is there a VERIFIED identity with
 -- this email?" Partial index keeps it small and matches the query's predicate.
 CREATE INDEX auth_identities_verified_email_idx ON auth_identities (email) WHERE email_verified;
+-- Schema-level no-auto-link guarantee: an email may be VERIFIED for at most one
+-- user, enforced atomically by the index so two concurrent requests cannot both
+-- pass the application's "already verified elsewhere?" lookup. user_id WITH <>
+-- deliberately lets ONE user hold several verified identities with the same
+-- email (email identity + linked GitHub). citext has no gist opclass, so the
+-- constraint compares lower(email::text), which matches citext equality.
+ALTER TABLE auth_identities ADD CONSTRAINT verified_email_one_user
+    EXCLUDE USING gist ((lower(email::text)) WITH =, user_id WITH <>)
+    WHERE (email_verified);
 
 -- Password material for email-provider accounts. Separate table so accounts that
 -- only use OAuth carry no credential row at all.
@@ -71,4 +92,5 @@ DROP TABLE sessions;
 DROP TABLE user_credentials;
 DROP TABLE auth_identities;
 DROP TABLE users;
+DROP EXTENSION IF EXISTS btree_gist;
 DROP EXTENSION IF EXISTS citext;

@@ -2,14 +2,14 @@
 
 ## 0. Стек
 
-| Слой | Выбор |
-|---|---|
-| Язык | Go (один статический бинарь, отличные WebSocket, простой деплой) |
-| БД | PostgreSQL — источник истины |
-| Кэш / read-model | Redis — лидерборды (ZSET), сессии, rate limiting |
-| Очередь | river (job queue поверх Postgres, отдельный брокер не нужен) |
-| Replay ядра | goja (JS-интерпретатор на Go) исполняет бандл TS-ядра |
-| Деплой | docker compose (app + postgres + redis) на VPS |
+| Слой             | Выбор                                                            |
+| ---------------- | ---------------------------------------------------------------- |
+| Язык             | Go (один статический бинарь, отличные WebSocket, простой деплой) |
+| БД               | PostgreSQL — источник истины                                     |
+| Кэш / read-model | Redis — лидерборды (ZSET), сессии, rate limiting                 |
+| Очередь          | river (job queue поверх Postgres, отдельный брокер не нужен)     |
+| Replay ядра      | goja (JS-интерпретатор на Go) исполняет бандл TS-ядра            |
+| Деплой           | docker compose (app + postgres + redis) на VPS                   |
 
 ## 1. Ключевое решение: единое ядро без дрейфа
 
@@ -121,18 +121,18 @@ accepted:
 
 ## 7. Библиотеки
 
-| Задача | Либа |
-|---|---|
-| HTTP-роутер | chi (минимализм поверх stdlib) |
-| WebSocket | coder/websocket |
-| Postgres | pgx + sqlc (SQL → типобезопасный Go) |
-| Миграции | goose |
-| Redis | go-redis |
-| Очередь | river |
-| JS-рантайм | goja |
-| Конфиг | caarlos0/env |
-| Логи | slog (stdlib) |
-| Тесты | stdlib + testify + testcontainers-go |
+| Задача      | Либа                                 |
+| ----------- | ------------------------------------ |
+| HTTP-роутер | chi (минимализм поверх stdlib)       |
+| WebSocket   | coder/websocket                      |
+| Postgres    | pgx + sqlc (SQL → типобезопасный Go) |
+| Миграции    | goose                                |
+| Redis       | go-redis                             |
+| Очередь     | river                                |
+| JS-рантайм  | goja                                 |
+| Конфиг      | caarlos0/env                         |
+| Логи        | slog (stdlib)                        |
+| Тесты       | stdlib + testify + testcontainers-go |
 
 ## 8. Не забыть
 
@@ -155,3 +155,32 @@ accepted:
 5. daily challenge
 6. TP (rating)
 7. match (мультиплеер: комнаты, WS-релей, GhostCore на клиентах)
+
+## 10. Профиль и статистика (фаза после replay-воркера)
+
+Все метрики — производные от таблицы runs (accepted), новой сборки данных нет,
+кроме одного счётчика с клиента:
+
+- Heatmap активности: агрегат по date(created_at)
+- Общее время набора: сумма финальных t принятых логов
+- Начато/закончено: клиент присылает restartsSinceLastSubmit в payload
+  завершённого рана; сервер аккумулирует (недосчёт при закрытии вкладки — ок)
+- Статистика + фильтры по режимам: запросы по бакет-колонкам runs
+- Лидерборды по категориям: бакеты режим×длительность×язык (SCORING_CONCEPT §4)
+- Соревновательные поинты: TP (SCORING_CONCEPT §5, отдельная фаза rating)
+
+Эндпоинты: GET /api/v1/profile/{name}/stats, /heatmap, /runs (публичные),
+лидерборды — GET /api/v1/leaderboards/{bucket}. Redis ZSET как read-model
+появляется здесь (см. §0 — отложенное подключение Redis).
+
+## 11. Модерация и античит-сигналы
+
+- device_fingerprints(user_id, fp_hash, first_seen, last_seen) — visitor_id
+  FingerprintJS (OSS), хэшированный; пишется при логине и при POST /runs.
+  Мягкий сигнал: связывание мультиаккаунтов/ban-evasion для ручного ревью,
+  НИКОГДА не основание автобана.
+- bans(user_id, reason, issued_by, expires_at NULL=перманент) — забаненный
+  логинится, но раны не принимаются и скрыты из лидербордов.
+- Действия админа: скрыть/восстановить ран (runs.status manual-переходы),
+  бан/разбан, очередь flagged-ранов из replay-воркера, связанные аккаунты
+  по fp_hash. Privacy policy обязана раскрывать сбор отпечатков.

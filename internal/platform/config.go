@@ -94,6 +94,18 @@ type Config struct {
 	// bucket size, applied per client IP across the auth endpoints.
 	AuthRateEvery time.Duration `env:"AUTH_RATE_EVERY" envDefault:"1s"`
 	AuthRateBurst int           `env:"AUTH_RATE_BURST" envDefault:"10"`
+
+	// RunsRateEvery / RunsRateBurst are the per-user token bucket on POST /runs.
+	// A typing session is many runs, so the default is generous: burst 120 with
+	// one token refilled every 30s ≈ 120 runs/hour sustained.
+	RunsRateEvery time.Duration `env:"RUNS_RATE_EVERY" envDefault:"30s"`
+	RunsRateBurst int           `env:"RUNS_RATE_BURST" envDefault:"120"`
+
+	// --- Background cleanup ---
+
+	// AuthCleanupInterval is how often the janitor deletes expired sessions
+	// and stale email tokens. Zero or negative disables the janitor.
+	AuthCleanupInterval time.Duration `env:"AUTH_CLEANUP_INTERVAL" envDefault:"1h"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

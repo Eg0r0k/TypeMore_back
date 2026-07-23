@@ -126,6 +126,9 @@ type Store interface {
 	// VerifiedIdentityByEmail returns any verified identity owning the email
 	// (used for the no-auto-link collision check).
 	VerifiedIdentityByEmail(ctx context.Context, email string) (Identity, error)
+	// IdentitiesByUser lists all of a user's sign-in identities (used by the
+	// add-email / set-password flows to inspect what the account already has).
+	IdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]Identity, error)
 	// MarkEmailVerified marks a user's email-provider identity as verified.
 	MarkEmailVerified(ctx context.Context, userID uuid.UUID) error
 

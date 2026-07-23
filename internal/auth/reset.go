@@ -80,6 +80,12 @@ func (s *Service) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 	// Completing a reset proves control of the mailbox, so the email is now
 	// verified too (covers the "registered but never verified, then reset" case).
 	if err := s.store.MarkEmailVerified(ctx, tok.UserID); err != nil {
+		if errors.Is(err, ErrEmailOwnedByOtherUser) {
+			// Another account verified this email in the meantime; the
+			// exclusion constraint refuses a second owner.
+			s.writeError(w, r, apiErrAccountExistsUseLinking)
+			return
+		}
 		s.writeError(w, r, err)
 		return
 	}

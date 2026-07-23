@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/typemore/typemore-server/internal/auth"
@@ -25,10 +26,11 @@ type Store struct {
 	q    *authdb.Queries
 }
 
-// Compile-time checks that Store satisfies both consumer interfaces.
+// Compile-time checks that Store satisfies the consumer interfaces.
 var (
 	_ auth.Store        = (*Store)(nil)
 	_ auth.SessionStore = (*Store)(nil)
+	_ auth.Cleaner      = (*Store)(nil)
 )
 
 // New builds a Store from a pgx pool.
@@ -36,11 +38,22 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, q: authdb.New(pool)}
 }
 
-// mapErr translates pgx's no-rows sentinel into the domain's ErrNotFound and
-// leaves everything else as a wrapped error.
+// mapErr translates pgx's no-rows sentinel and the schema's named constraint
+// violations into domain errors, leaving everything else as-is.
 func mapErr(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.ErrNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.ConstraintName {
+		case "users_display_name_key":
+			return auth.ErrDisplayNameTaken
+		case "verified_email_one_user":
+			return auth.ErrEmailOwnedByOtherUser
+		case "auth_identities_provider_provider_subject_key":
+			return auth.ErrIdentityExists
+		}
 	}
 	return err
 }
@@ -97,7 +110,7 @@ func (s *Store) CreateEmailAccount(ctx context.Context, p auth.EmailAccountParam
 	err := s.tx(ctx, func(q *authdb.Queries) error {
 		u, err := q.CreateUser(ctx, p.DisplayName)
 		if err != nil {
-			return fmt.Errorf("create user: %w", err)
+			return fmt.Errorf("create user: %w", mapErr(err))
 		}
 		id, err := q.CreateIdentity(ctx, authdb.CreateIdentityParams{
 			UserID:          u.ID,
@@ -107,7 +120,7 @@ func (s *Store) CreateEmailAccount(ctx context.Context, p auth.EmailAccountParam
 			EmailVerified:   false,
 		})
 		if err != nil {
-			return fmt.Errorf("create identity: %w", err)
+			return fmt.Errorf("create identity: %w", mapErr(err))
 		}
 		if err := q.UpsertCredential(ctx, authdb.UpsertCredentialParams{
 			UserID:       u.ID,
@@ -130,7 +143,7 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, p auth.OAuthAccountParam
 	err := s.tx(ctx, func(q *authdb.Queries) error {
 		u, err := q.CreateUser(ctx, p.DisplayName)
 		if err != nil {
-			return fmt.Errorf("create user: %w", err)
+			return fmt.Errorf("create user: %w", mapErr(err))
 		}
 		id, err := q.CreateIdentity(ctx, authdb.CreateIdentityParams{
 			UserID:          u.ID,
@@ -140,7 +153,7 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, p auth.OAuthAccountParam
 			EmailVerified:   p.EmailVerified,
 		})
 		if err != nil {
-			return fmt.Errorf("create identity: %w", err)
+			return fmt.Errorf("create identity: %w", mapErr(err))
 		}
 		user, identity = toUser(u), toIdentity(id)
 		return nil
@@ -192,6 +205,18 @@ func (s *Store) VerifiedIdentityByEmail(ctx context.Context, email string) (auth
 	return toIdentity(id), nil
 }
 
+func (s *Store) IdentitiesByUser(ctx context.Context, userID uuid.UUID) ([]auth.Identity, error) {
+	rows, err := s.q.ListIdentitiesByUser(ctx, userID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]auth.Identity, len(rows))
+	for i := range rows {
+		out[i] = toIdentity(rows[i])
+	}
+	return out, nil
+}
+
 func (s *Store) MarkEmailVerified(ctx context.Context, userID uuid.UUID) error {
 	return mapErr(s.q.VerifyEmailIdentityByUser(ctx, userID))
 }
@@ -233,6 +258,19 @@ func (s *Store) DeleteUserTokens(ctx context.Context, userID uuid.UUID, purpose 
 		UserID:  userID,
 		Purpose: purpose,
 	}))
+}
+
+// DeleteExpiredSessions removes sessions past their expiry (janitor sweep).
+func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	n, err := s.q.DeleteExpiredSessions(ctx)
+	return n, mapErr(err)
+}
+
+// DeleteStaleEmailTokens removes email tokens that expired or were consumed
+// more than 24 hours ago (janitor sweep).
+func (s *Store) DeleteStaleEmailTokens(ctx context.Context) (int64, error) {
+	n, err := s.q.DeleteStaleEmailTokens(ctx)
+	return n, mapErr(err)
 }
 
 func (s *Store) UseEmailToken(ctx context.Context, tokenHash []byte, purpose string) (auth.EmailToken, error) {

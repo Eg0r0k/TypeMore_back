@@ -33,6 +33,8 @@ func (s *Service) AuthRoutes() http.Handler {
 		r.Use(s.RequireAuth)
 		r.Post("/logout", s.handleLogout)
 		r.Post("/link/{provider}/start", s.handleLinkStart)
+		r.Post("/email/add", s.handleAddEmail)
+		r.Post("/password/set", s.handleSetPassword)
 	})
 	return r
 }

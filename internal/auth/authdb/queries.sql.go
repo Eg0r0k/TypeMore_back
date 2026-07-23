@@ -123,13 +123,16 @@ func (q *Queries) CreateUser(ctx context.Context, displayName string) (User, err
 	return i, err
 }
 
-const deleteExpiredSessions = `-- name: DeleteExpiredSessions :exec
+const deleteExpiredSessions = `-- name: DeleteExpiredSessions :execrows
 DELETE FROM sessions WHERE expires_at < now()
 `
 
-func (q *Queries) DeleteExpiredSessions(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteExpiredSessions)
-	return err
+func (q *Queries) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredSessions)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteSessionByTokenHash = `-- name: DeleteSessionByTokenHash :exec
@@ -139,6 +142,23 @@ DELETE FROM sessions WHERE token_hash = $1
 func (q *Queries) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) error {
 	_, err := q.db.Exec(ctx, deleteSessionByTokenHash, tokenHash)
 	return err
+}
+
+const deleteStaleEmailTokens = `-- name: DeleteStaleEmailTokens :execrows
+DELETE FROM email_tokens
+WHERE expires_at < now() - interval '24 hours'
+   OR used_at   < now() - interval '24 hours'
+`
+
+// Janitor sweep: tokens that expired, or were consumed, more than 24 hours ago.
+// Recently expired/used rows are kept briefly for debugging; UseEmailToken
+// already refuses them regardless.
+func (q *Queries) DeleteStaleEmailTokens(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteStaleEmailTokens)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteUser = `-- name: DeleteUser :exec

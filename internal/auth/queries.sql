@@ -70,7 +70,7 @@ DELETE FROM sessions WHERE token_hash = $1;
 -- name: DeleteUserSessions :exec
 DELETE FROM sessions WHERE user_id = $1;
 
--- name: DeleteExpiredSessions :exec
+-- name: DeleteExpiredSessions :execrows
 DELETE FROM sessions WHERE expires_at < now();
 
 -- name: CreateEmailToken :one
@@ -80,6 +80,14 @@ RETURNING *;
 
 -- name: DeleteUserTokensByPurpose :exec
 DELETE FROM email_tokens WHERE user_id = $1 AND purpose = $2;
+
+-- name: DeleteStaleEmailTokens :execrows
+-- Janitor sweep: tokens that expired, or were consumed, more than 24 hours ago.
+-- Recently expired/used rows are kept briefly for debugging; UseEmailToken
+-- already refuses them regardless.
+DELETE FROM email_tokens
+WHERE expires_at < now() - interval '24 hours'
+   OR used_at   < now() - interval '24 hours';
 
 -- name: UseEmailToken :one
 -- Atomically consume a token: marks it used only if unused, unexpired, and of

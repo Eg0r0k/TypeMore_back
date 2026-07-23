@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,12 +18,19 @@ const (
 	resetTokenTTL  = 1 * time.Hour
 )
 
-// Display-name / password bounds.
+// Display-name / password bounds. Display names are 3–20 characters from a
+// conservative charset and unique case-insensitively; the users table enforces
+// the same rules (citext UNIQUE + CHECK) as the last line of defense.
 const (
-	displayNameMaxLen = 32
+	displayNameMinLen = 3
+	displayNameMaxLen = 20
 	passwordMinLen    = 8
 	passwordMaxLen    = 128
 )
+
+// displayNameRe is the allowed display-name charset; mirrors the display_name
+// CHECK constraint in the schema.
+var displayNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 
 // Config is the auth service configuration, populated at the composition root
 // from platform.Config. Keeping it here (not importing platform) leaves the
@@ -145,21 +153,54 @@ func validatePassword(pw string) *apiError {
 	return nil
 }
 
-// validateDisplayName trims and bounds the display name, defaulting to the email
-// local-part when empty.
+// cleanDisplayName trims and validates a display name against the schema rules
+// (3–20 characters of [a-zA-Z0-9_.-]). An empty name falls back to a name
+// derived from the email local-part; when that derivation is unusable the user
+// must pick a name explicitly.
 func cleanDisplayName(name, email string) (string, *apiError) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		if at := strings.IndexByte(email, '@'); at > 0 {
-			name = email[:at]
-		} else {
-			name = "player"
+			name = sanitizeDisplayName(email[:at])
 		}
+		if name == "" {
+			return "", apiErrBadRequest("please choose a display name: 3-20 characters using letters, digits, '_', '.', '-'")
+		}
+		return name, nil
 	}
-	if utf8.RuneCountInString(name) > displayNameMaxLen {
-		return "", apiErrBadRequest("display name must be at most 32 characters")
+	if !validDisplayName(name) {
+		return "", apiErrBadRequest("display name must be 3-20 characters using only letters, digits, '_', '.', '-'")
 	}
 	return name, nil
+}
+
+// validDisplayName reports whether name satisfies the display-name rules. The
+// charset is ASCII-only, so byte length equals character count once the
+// pattern matches.
+func validDisplayName(name string) bool {
+	return len(name) >= displayNameMinLen && len(name) <= displayNameMaxLen &&
+		displayNameRe.MatchString(name)
+}
+
+// sanitizeDisplayName reduces an arbitrary string (OAuth profile name, email
+// local-part) to the display-name charset, truncated to the maximum length.
+// It returns "" when the result would be too short to be a valid name.
+func sanitizeDisplayName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		}
+		if b.Len() == displayNameMaxLen {
+			break
+		}
+	}
+	if b.Len() < displayNameMinLen {
+		return ""
+	}
+	return b.String()
 }
 
 // userView is the public JSON shape of a user (GET /me, and returned by flows).

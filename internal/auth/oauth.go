@@ -278,14 +278,15 @@ func (s *Service) completeLogin(w http.ResponseWriter, r *http.Request, p *oauth
 		}
 	}
 
-	user, _, err := s.store.CreateOAuthAccount(ctx, OAuthAccountParams{
-		DisplayName:   oauthDisplayName(info),
-		Provider:      p.name,
-		Subject:       info.Subject,
-		Email:         info.Email,
-		EmailVerified: info.EmailVerified,
-	})
+	user, err := s.createOAuthAccountWithName(ctx, oauthDisplayName(info), p.name, info)
 	if err != nil {
+		if errors.Is(err, ErrEmailOwnedByOtherUser) {
+			// Lost the race against a concurrent verification of this email:
+			// the verified_email_one_user exclusion constraint is the atomic
+			// backstop of the lookup above.
+			s.redirectResult(w, r, "account_exists_use_linking")
+			return
+		}
 		s.writeError(w, r, err)
 		return
 	}
@@ -322,19 +323,66 @@ func (s *Service) completeLink(w http.ResponseWriter, r *http.Request, p *oauthP
 		Email:         info.Email,
 		EmailVerified: info.EmailVerified,
 	}); err != nil {
+		if errors.Is(err, ErrEmailOwnedByOtherUser) {
+			// This verified email already belongs to a DIFFERENT user; linking
+			// it here would leave one address verified under two accounts.
+			s.redirectResult(w, r, "account_exists_use_linking")
+			return
+		}
 		s.writeError(w, r, err)
 		return
 	}
 	s.redirectResultParams(w, r, url.Values{"linked": {p.name}})
 }
 
-// oauthDisplayName picks a sensible display name from a profile.
+// maxNameSuffix bounds the collision-suffix search for OAuth-derived display
+// names (name, name1, ... name99) before giving up.
+const maxNameSuffix = 99
+
+// createOAuthAccountWithName creates the OAuth account, finding a free display
+// name by suffixing the base on collisions: name, name1, name2, ... The DB's
+// case-insensitive unique constraint is the arbiter, so concurrent signups
+// cannot both take the same name.
+func (s *Service) createOAuthAccountWithName(ctx context.Context, base, provider string, info oauthUser) (User, error) {
+	for i := 0; ; i++ {
+		user, _, err := s.store.CreateOAuthAccount(ctx, OAuthAccountParams{
+			DisplayName:   suffixedName(base, i),
+			Provider:      provider,
+			Subject:       info.Subject,
+			Email:         info.Email,
+			EmailVerified: info.EmailVerified,
+		})
+		if errors.Is(err, ErrDisplayNameTaken) && i < maxNameSuffix {
+			continue
+		}
+		return user, err
+	}
+}
+
+// suffixedName returns base unchanged for i==0 and base<i> otherwise, trimming
+// base so the result stays within the display-name length limit.
+func suffixedName(base string, i int) string {
+	if i == 0 {
+		return base
+	}
+	suffix := strconv.Itoa(i)
+	if len(base)+len(suffix) > displayNameMaxLen {
+		base = base[:displayNameMaxLen-len(suffix)]
+	}
+	return base + suffix
+}
+
+// oauthDisplayName derives a display-name base from a provider profile,
+// reduced to the allowed charset: profile name, then email local-part, then a
+// generic fallback. Collisions get a numeric suffix on create.
 func oauthDisplayName(info oauthUser) string {
-	if info.Name != "" {
-		return info.Name
+	if name := sanitizeDisplayName(info.Name); name != "" {
+		return name
 	}
 	if at := strings.IndexByte(info.Email, '@'); at > 0 {
-		return info.Email[:at]
+		if name := sanitizeDisplayName(info.Email[:at]); name != "" {
+			return name
+		}
 	}
 	return "player"
 }

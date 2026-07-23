@@ -72,6 +72,13 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		PasswordHash: hash,
 	})
 	if createErr != nil {
+		if errors.Is(createErr, ErrDisplayNameTaken) {
+			// Display names are public, so unlike the email path a collision
+			// may be revealed. The DB's citext UNIQUE is the authority; there
+			// is no pre-check, so a race still lands here.
+			s.writeError(w, r, apiErrNameTaken)
+			return
+		}
 		s.writeError(w, r, createErr)
 		return
 	}
@@ -113,6 +120,12 @@ func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.MarkEmailVerified(ctx, tok.UserID); err != nil {
+		if errors.Is(err, ErrEmailOwnedByOtherUser) {
+			// Someone else verified this email first (e.g. an OAuth account):
+			// the no-auto-link exclusion constraint refuses a second owner.
+			s.writeError(w, r, apiErrAccountExistsUseLinking)
+			return
+		}
 		s.writeError(w, r, err)
 		return
 	}

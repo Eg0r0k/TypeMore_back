@@ -10,6 +10,22 @@ import (
 // generic failure, to avoid leaking existence — see the anti-enumeration notes).
 var ErrNotFound = errors.New("auth: not found")
 
+// ErrDisplayNameTaken is returned by Store writes that collide with the
+// case-insensitive unique display_name (users_display_name_key).
+var ErrDisplayNameTaken = errors.New("auth: display name taken")
+
+// ErrEmailOwnedByOtherUser is returned by Store writes that would leave the
+// same email verified under two different users (the verified_email_one_user
+// exclusion constraint). It is the DB-level backstop for the no-auto-link
+// policy; handlers surface it as account_exists_use_linking.
+var ErrEmailOwnedByOtherUser = errors.New("auth: verified email belongs to another user")
+
+// ErrIdentityExists is returned by Store writes that collide with the
+// unique(provider, provider_subject) constraint — the (provider, subject) pair
+// already identifies some account. Handlers surface it as
+// account_exists_use_linking (an email whose 'email' identity already exists).
+var ErrIdentityExists = errors.New("auth: identity already exists")
+
 // errInvalidToken is an internal sentinel for a malformed token string; it is
 // surfaced to clients as apiErrInvalidToken.
 var errInvalidToken = errors.New("auth: invalid token")
@@ -49,6 +65,16 @@ var (
 		"unknown or unconfigured OAuth provider")
 	apiErrInternal = newAPIError(http.StatusInternalServerError, "internal",
 		"an unexpected error occurred")
+	apiErrNameTaken = newAPIError(http.StatusConflict, "name_taken",
+		"that display name is already in use")
+	apiErrAccountExistsUseLinking = newAPIError(http.StatusConflict, "account_exists_use_linking",
+		"this email already belongs to another account; sign in there and link providers explicitly")
+	apiErrEmailAlreadySet = newAPIError(http.StatusConflict, "email_already_set",
+		"this account already has an email identity")
+	apiErrNoVerifiedEmail = newAPIError(http.StatusConflict, "no_verified_email",
+		"add and verify an email address before setting a password")
+	apiErrPasswordAlreadySet = newAPIError(http.StatusConflict, "password_already_set",
+		"a password is already set; use the reset flow to change it")
 )
 
 // apiErrBadRequest is a helper for input-validation failures with a custom
