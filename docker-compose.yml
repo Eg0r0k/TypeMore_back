@@ -1,8 +1,10 @@
-# App-only compose for this phase (no Postgres/Redis yet — they arrive in later
-# stages). Brings up the server on http://localhost:8080.
+# Local stack: the server + Postgres (source of truth) + Mailpit (dev SMTP sink).
+# Redis/river/etc. arrive in later stages.
 #
 #   docker compose up --build
-#   curl http://localhost:8080/healthz
+#   curl http://localhost:8080/healthz         # liveness
+#   curl http://localhost:8080/readyz          # liveness + DB ping
+#   open  http://localhost:8025                # Mailpit web UI (sent emails)
 services:
   app:
     build:
@@ -20,4 +22,53 @@ services:
       # Empty = allow any WebSocket Origin (development default). Set an
       # allow-list (comma-separated) in production.
       TYPEMORE_ALLOWED_ORIGINS: ""
+      # Reach Postgres/Mailpit by their compose service names.
+      TYPEMORE_DATABASE_URL: "postgres://typemore:typemore@postgres:5432/typemore?sslmode=disable"
+      TYPEMORE_SMTP_HOST: "mailpit"
+      TYPEMORE_SMTP_PORT: "1025"
+      TYPEMORE_SMTP_FROM: "no-reply@typemore.local"
+      TYPEMORE_FRONTEND_ORIGIN: "http://localhost:5173"
+      TYPEMORE_COOKIE_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+  # Runs `goose up` against Postgres, then exits. `app` does not run migrations
+  # itself (keeps startup dumb); bring the schema up with this one-shot.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    environment:
+      TYPEMORE_DATABASE_URL: "postgres://typemore:typemore@postgres:5432/typemore?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: typemore
+      POSTGRES_PASSWORD: typemore
+      POSTGRES_DB: typemore
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U typemore -d typemore"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # web UI
+    restart: unless-stopped
+
+volumes:
+  pgdata:

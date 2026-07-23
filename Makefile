@@ -16,6 +16,10 @@ BINARY := typemore-server
 PKG    := github.com/typemore/typemore-server
 CMD    := ./cmd/server
 
+# Database URL for the goose CLI targets (migrate-create). The migrate-up/down
+# targets go through cmd/migrate, which reads TYPEMORE_DATABASE_URL itself.
+DATABASE_URL ?= postgres://typemore:typemore@localhost:5432/typemore?sslmode=disable
+
 # Windows produces .exe binaries; keep the output runnable on both OSes.
 ifeq ($(OS),Windows_NT)
 EXE := .exe
@@ -33,7 +37,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy tools help
+.PHONY: run test test-race lint build tidy sqlc migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -59,9 +63,31 @@ build:
 tidy:
 	go mod tidy
 
-## tools: install pinned dev tooling
+## sqlc: regenerate type-safe DB code from internal/auth/queries.sql
+sqlc:
+	sqlc generate
+
+## migrate-up: apply all pending migrations (uses TYPEMORE_DATABASE_URL)
+migrate-up:
+	go run ./cmd/migrate up
+
+## migrate-down: roll back the most recent migration
+migrate-down:
+	go run ./cmd/migrate down
+
+## migrate-status: show migration status
+migrate-status:
+	go run ./cmd/migrate status
+
+## migrate-create: scaffold a new migration file (name=... ), needs goose CLI
+migrate-create:
+	goose -dir db/migrations create $(name) sql
+
+## tools: install pinned dev tooling (golangci-lint, sqlc, goose)
 tools:
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+	go install github.com/pressly/goose/v3/cmd/goose@latest
 
 ## help: list targets
 help:

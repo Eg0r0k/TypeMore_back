@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+# One-shot migration runner: builds cmd/migrate and runs `migrate up` on start.
+# Used by the docker-compose `migrate` service.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate
+
+FROM gcr.io/distroless/static:nonroot AS runtime
+COPY --from=build /out/migrate /migrate
+USER nonroot:nonroot
+ENTRYPOINT ["/migrate"]
+CMD ["up"]

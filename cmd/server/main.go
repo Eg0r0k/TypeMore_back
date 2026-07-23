@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/typemore/typemore-server/internal/platform"
+	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/ws"
 )
 
@@ -50,6 +51,14 @@ func run() error {
 	// slog.Default() (and our own convenience calls) is consistent.
 	slog.SetDefault(logger)
 
+	// Connect to Postgres up front; a bad DB is a startup failure, not a
+	// first-request surprise. The pool is closed on the way out.
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
 	router := chi.NewRouter()
 	// RequestID tags each request; Recoverer turns a handler panic into a 500
 	// instead of crashing the process.
@@ -57,6 +66,7 @@ func run() error {
 	router.Use(middleware.Recoverer)
 
 	router.Get("/healthz", platform.HealthHandler())
+	router.Get("/readyz", platform.ReadyHandler(pool))
 	router.Handle("/ws", ws.NewHandler(logger, cfg.AllowedOrigins))
 
 	srv := &http.Server{

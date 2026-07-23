@@ -44,6 +44,56 @@ type Config struct {
 	// (e.g. "*.typemore.gg"). When empty, all origins are allowed — convenient
 	// for local development but you SHOULD set it in production.
 	AllowedOrigins []string `env:"ALLOWED_ORIGINS" envSeparator:","`
+
+	// --- Persistence ---
+
+	// DatabaseURL is the PostgreSQL connection string (pgx DSN/URL form).
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://typemore:typemore@localhost:5432/typemore?sslmode=disable"`
+	// DBMaxConns caps the pgx connection pool size.
+	DBMaxConns int32 `env:"DB_MAX_CONNS" envDefault:"10"`
+
+	// --- Sessions & CSRF ---
+
+	// FrontendOrigin is the browser origin of the SPA. It is the allowed CORS
+	// origin, the Origin header value mutating endpoints require (CSRF defense),
+	// and the base URL for links embedded in emails.
+	FrontendOrigin string `env:"FRONTEND_ORIGIN" envDefault:"http://localhost:5173"`
+	// CookieName is the session cookie name.
+	CookieName string `env:"COOKIE_NAME" envDefault:"tm_session"`
+	// CookieDomain scopes the session cookie; empty = host-only (dev default).
+	CookieDomain string `env:"COOKIE_DOMAIN"`
+	// CookieSecure sets the Secure attribute; true in prod (HTTPS), false for
+	// plain-HTTP local dev.
+	CookieSecure bool `env:"COOKIE_SECURE" envDefault:"true"`
+	// SessionTTL is the sliding session lifetime (each use extends it).
+	SessionTTL time.Duration `env:"SESSION_TTL" envDefault:"720h"` // 30 days
+
+	// --- OAuth ---
+
+	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
+	GitHubClientSecret string `env:"GITHUB_CLIENT_SECRET"`
+	GoogleClientID     string `env:"GOOGLE_CLIENT_ID"`
+	GoogleClientSecret string `env:"GOOGLE_CLIENT_SECRET"`
+	// OAuthRedirectBase is the public base URL of THIS server, used to build the
+	// provider redirect URIs (must match what is registered with the provider).
+	OAuthRedirectBase string `env:"OAUTH_REDIRECT_BASE" envDefault:"http://localhost:8080"`
+
+	// --- Email / SMTP ---
+
+	// SMTPHost empty disables real mail sending (the server logs the link
+	// instead — handy for tests/dev without Mailpit).
+	SMTPHost     string `env:"SMTP_HOST"`
+	SMTPPort     int    `env:"SMTP_PORT" envDefault:"1025"`
+	SMTPUsername string `env:"SMTP_USERNAME"`
+	SMTPPassword string `env:"SMTP_PASSWORD"`
+	SMTPFrom     string `env:"SMTP_FROM" envDefault:"no-reply@typemore.local"`
+
+	// --- Abuse control ---
+
+	// AuthRateEvery is the token-bucket refill interval and AuthRateBurst the
+	// bucket size, applied per client IP across the auth endpoints.
+	AuthRateEvery time.Duration `env:"AUTH_RATE_EVERY" envDefault:"1s"`
+	AuthRateBurst int           `env:"AUTH_RATE_BURST" envDefault:"10"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

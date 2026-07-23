@@ -1,0 +1,45 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # Schema is read from the goose migration files (sqlc understands the goose
+    # up/down annotations), so there is a single source of truth for the schema.
+    schema: db/migrations
+    queries: internal/auth/queries.sql
+    gen:
+      go:
+        package: authdb
+        out: internal/auth/authdb
+        sql_package: pgx/v5
+        emit_json_tags: false
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          # Use google/uuid.UUID (registered as a pgx codec) instead of the
+          # clunky pgtype.UUID, so domain code handles ids naturally.
+          - db_type: uuid
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          # citext is just a case-insensitive text; map it to string.
+          - db_type: citext
+            go_type: string
+          - db_type: citext
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
+          # timestamptz -> time.Time (pgx scans/encodes it natively), avoiding
+          # the pgtype.Timestamptz wrapper in domain code.
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
