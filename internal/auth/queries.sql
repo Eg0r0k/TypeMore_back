@@ -41,6 +41,9 @@ ORDER BY created_at;
 -- name: SetIdentityEmailVerified :exec
 UPDATE auth_identities SET email_verified = true WHERE id = $1;
 
+-- name: VerifyEmailIdentityByUser :exec
+UPDATE auth_identities SET email_verified = true WHERE user_id = $1 AND provider = 'email';
+
 -- name: UpsertCredential :exec
 INSERT INTO user_credentials (user_id, argon2id_hash)
 VALUES ($1, $2)

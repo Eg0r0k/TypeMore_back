@@ -386,3 +386,12 @@ func (q *Queries) UseEmailToken(ctx context.Context, arg UseEmailTokenParams) (E
 	)
 	return i, err
 }
+
+const verifyEmailIdentityByUser = `-- name: VerifyEmailIdentityByUser :exec
+UPDATE auth_identities SET email_verified = true WHERE user_id = $1 AND provider = 'email'
+`
+
+func (q *Queries) VerifyEmailIdentityByUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, verifyEmailIdentityByUser, userID)
+	return err
+}

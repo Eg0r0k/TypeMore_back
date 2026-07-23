@@ -1,0 +1,174 @@
+package auth
+
+import (
+	"context"
+	"log/slog"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+)
+
+// Token lifetimes. Verification links last a day; reset links are short-lived
+// because a reset grants a password change.
+const (
+	verifyTokenTTL = 24 * time.Hour
+	resetTokenTTL  = 1 * time.Hour
+)
+
+// Display-name / password bounds.
+const (
+	displayNameMaxLen = 32
+	passwordMinLen    = 8
+	passwordMaxLen    = 128
+)
+
+// Config is the auth service configuration, populated at the composition root
+// from platform.Config. Keeping it here (not importing platform) leaves the
+// domain independent of env parsing.
+type Config struct {
+	// FrontendOrigin is the SPA origin: the required Origin for mutating
+	// requests (CSRF) and the base URL for links in emails.
+	FrontendOrigin string
+	// Session cookie attributes.
+	CookieName   string
+	CookieDomain string
+	CookieSecure bool
+	// SessionTTL is the sliding session lifetime.
+	SessionTTL time.Duration
+	// OAuthRedirectBase is this server's public base URL for provider callbacks.
+	OAuthRedirectBase string
+	// Providers holds OAuth client credentials keyed by provider name
+	// (ProviderGitHub, ProviderGoogle). A provider absent here is disabled.
+	Providers map[string]ProviderCredentials
+}
+
+// ProviderCredentials are one OAuth provider's client id/secret.
+type ProviderCredentials struct {
+	ClientID     string
+	ClientSecret string
+	// Optional endpoint overrides. Empty values use the provider's well-known
+	// endpoints; tests point these at a fake provider's httptest server.
+	AuthURL     string
+	TokenURL    string
+	UserInfoURL string
+	// EmailsURL is GitHub-specific (its verified-email list endpoint).
+	EmailsURL string
+}
+
+// Mailer sends a plain-text email. It is consumer-declared here; SMTP and
+// test/recorder implementations live in the platform / test layers.
+type Mailer interface {
+	Send(ctx context.Context, msg Mail) error
+}
+
+// Mail is a plain-text message.
+type Mail struct {
+	To      string
+	Subject string
+	Body    string
+}
+
+// RateLimiter decides whether an action keyed by a string (typically a client
+// IP) may proceed. Consumer-declared so an in-memory bucket now can become a
+// Redis limiter later.
+type RateLimiter interface {
+	// Allow reports whether the action for key is permitted right now.
+	Allow(key string) bool
+}
+
+// Service holds the auth business logic. Handlers call it; it calls the store,
+// mailer, and limiter interfaces.
+type Service struct {
+	store    Store
+	sessions SessionStore
+	mailer   Mailer
+	limiter  RateLimiter
+	cfg      Config
+	log      *slog.Logger
+	// now is time.Now in production; tests may override it.
+	now func() time.Time
+	// oauth holds the per-provider OAuth configuration built from cfg.Providers.
+	oauth map[string]*oauthProvider
+	// dummyHash is a valid argon2id hash of a random secret. Login verifies
+	// against it when the email is unknown so an attacker cannot distinguish
+	// "no such user" from "wrong password" by timing (both pay the hash cost).
+	dummyHash string
+}
+
+// NewService wires the auth service. store and sessions may be the same
+// concrete value (the Postgres adapter) or different (e.g. Redis sessions
+// later).
+func NewService(store Store, sessions SessionStore, mailer Mailer, limiter RateLimiter, cfg Config, log *slog.Logger) *Service {
+	s := &Service{
+		store:    store,
+		sessions: sessions,
+		mailer:   mailer,
+		limiter:  limiter,
+		cfg:      cfg,
+		log:      log,
+		now:      time.Now,
+	}
+	// Precompute the timing-decoy hash once. If hashing fails at startup we
+	// fall back to an empty string; VerifyPassword against it simply returns
+	// false without panicking.
+	if h, err := HashPassword(uuid.NewString()); err == nil {
+		s.dummyHash = h
+	}
+	s.oauth = s.buildProviders()
+	return s
+}
+
+// normalizeEmail canonicalizes an address for storage and comparison: trimmed
+// and lower-cased. citext makes the column case-insensitive too, but we
+// normalize on write so provider_subject (plain text) is canonical as well.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// validateEmail does a cheap structural check — a full RFC validation is
+// pointless since deliverability is proven by the verification email.
+func validateEmail(email string) bool {
+	at := strings.IndexByte(email, '@')
+	// need something before '@', a '.' after it, and no spaces
+	return at > 0 && strings.IndexByte(email[at+1:], '.') >= 0 &&
+		!strings.ContainsAny(email, " \t\r\n") && utf8.RuneCountInString(email) <= 254
+}
+
+// validatePassword enforces length bounds. Composition rules are deliberately
+// not imposed (length is what matters); the argon2id cost does the rest.
+func validatePassword(pw string) *apiError {
+	if n := len(pw); n < passwordMinLen || n > passwordMaxLen {
+		return apiErrBadRequest("password must be between 8 and 128 characters")
+	}
+	return nil
+}
+
+// validateDisplayName trims and bounds the display name, defaulting to the email
+// local-part when empty.
+func cleanDisplayName(name, email string) (string, *apiError) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		if at := strings.IndexByte(email, '@'); at > 0 {
+			name = email[:at]
+		} else {
+			name = "player"
+		}
+	}
+	if utf8.RuneCountInString(name) > displayNameMaxLen {
+		return "", apiErrBadRequest("display name must be at most 32 characters")
+	}
+	return name, nil
+}
+
+// userView is the public JSON shape of a user (GET /me, and returned by flows).
+type userView struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"displayName"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+func toUserView(u User) userView {
+	return userView(u)
+}

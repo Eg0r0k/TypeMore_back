@@ -17,9 +17,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 
+	"github.com/typemore/typemore-server/internal/auth"
+	"github.com/typemore/typemore-server/internal/auth/pgstore"
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
+	"github.com/typemore/typemore-server/internal/platform/mail"
 	"github.com/typemore/typemore-server/internal/ws"
 )
 
@@ -59,15 +63,37 @@ func run() error {
 	}
 	defer pool.Close()
 
+	// Build the auth domain. One Postgres store backs both the general store and
+	// (this phase) the session store; email goes through SMTP or, when unset,
+	// the dev log sender. See internal/auth for the session-storage deviation.
+	authStore := pgstore.New(pool)
+	authSvc := auth.NewService(authStore, authStore, newMailer(cfg, logger),
+		auth.NewInMemoryRateLimiter(cfg.AuthRateEvery, cfg.AuthRateBurst),
+		authConfig(cfg), logger)
+
 	router := chi.NewRouter()
 	// RequestID tags each request; Recoverer turns a handler panic into a 500
 	// instead of crashing the process.
 	router.Use(middleware.RequestID)
 	router.Use(middleware.Recoverer)
+	// CORS for the browser SPA: allow exactly the configured frontend origin and
+	// let it send the session cookie (credentials).
+	router.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{cfg.FrontendOrigin},
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowedHeaders:   []string{"Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
 
 	router.Get("/healthz", platform.HealthHandler())
 	router.Get("/readyz", platform.ReadyHandler(pool))
 	router.Handle("/ws", ws.NewHandler(logger, cfg.AllowedOrigins))
+
+	router.Route("/api/v1", func(r chi.Router) {
+		r.Mount("/auth", authSvc.AuthRoutes())
+		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -86,4 +112,51 @@ func run() error {
 	)
 
 	return platform.RunHTTPServer(ctx, srv, logger, cfg.ShutdownTimeout)
+}
+
+// mailerAdapter adapts a platform mail.Sender to the auth.Mailer interface. It
+// lives here (the composition root) so platform stays free of any auth import.
+type mailerAdapter struct{ sender mail.Sender }
+
+func (m mailerAdapter) Send(ctx context.Context, msg auth.Mail) error {
+	return m.sender.Send(ctx, mail.Message{To: msg.To, Subject: msg.Subject, Body: msg.Body})
+}
+
+// newMailer picks the SMTP sender when a host is configured, otherwise the dev
+// log sender (which prints the verification/reset link to the logs).
+func newMailer(cfg platform.Config, log *slog.Logger) auth.Mailer {
+	var sender mail.Sender
+	if cfg.SMTPHost != "" {
+		sender = mail.NewSMTPSender(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	} else {
+		sender = mail.NewLogSender(log)
+	}
+	return mailerAdapter{sender: sender}
+}
+
+// authConfig translates platform.Config into the auth domain's own config,
+// enabling only the OAuth providers that have credentials set.
+func authConfig(cfg platform.Config) auth.Config {
+	providers := map[string]auth.ProviderCredentials{}
+	if cfg.GitHubClientID != "" {
+		providers[auth.ProviderGitHub] = auth.ProviderCredentials{
+			ClientID:     cfg.GitHubClientID,
+			ClientSecret: cfg.GitHubClientSecret,
+		}
+	}
+	if cfg.GoogleClientID != "" {
+		providers[auth.ProviderGoogle] = auth.ProviderCredentials{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+		}
+	}
+	return auth.Config{
+		FrontendOrigin:    cfg.FrontendOrigin,
+		CookieName:        cfg.CookieName,
+		CookieDomain:      cfg.CookieDomain,
+		CookieSecure:      cfg.CookieSecure,
+		SessionTTL:        cfg.SessionTTL,
+		OAuthRedirectBase: cfg.OAuthRedirectBase,
+		Providers:         providers,
+	}
 }
