@@ -50,11 +50,14 @@ linters:
       - comments
       - std-error-handling
     rules:
-      # Test files may be a little looser: no exported-doc or unparam nagging.
+      # Test files may be a little looser: helpers close bodies and drive
+      # httptest servers, so these production-grade checks add only noise.
       - path: _test\.go
         linters:
           - revive
           - unparam
+          - bodyclose
+          - noctx
 
 formatters:
   enable:
