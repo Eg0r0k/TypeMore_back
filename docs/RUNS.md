@@ -35,10 +35,10 @@ The bucket fields are lifted top-level to populate indexed columns; `setup`,
   "lang": "en",
   "seed": 2864901,
   "dictHash": "a1b2c3d4",
-  "scoreVersion": 1,
+  "scoreVersion": 2,
   "setup":         { "...": "full CoreConfig+GenerationConfig snapshot" },
   "clientMetrics": { "wpm": 80, "raw": 85, "acc": 0.97 },
-  "clientScore":   { "version": 1, "total": 1234 },
+  "clientScore":   { "version": 2, "total": 1234 },
   "log": { "version": 1, "events": [ { "kind": "insert", "seq": 1, "t": 12, "text": "t" } ] }
 }
 ```
@@ -73,7 +73,7 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 | Check | Limit / rule | Failure |
 |---|---|---|
 | Raw body size | ≤ 2 MB | `413 payload_too_large` |
-| `scoreVersion` | must equal `1` | `422 unsupported_score_version` |
+| `scoreVersion` | one of `KnownScoreVersions` = `{1, 2}` | `422 unsupported_score_version` |
 | `log.version` | must equal `1` | `422 unsupported_log_version` |
 | Event count | 1 … 50 000 | `422 empty_log` / `422 too_many_events` |
 | `seq` | strictly increasing, non-negative start (cheap linear scan) | `422 non_monotonic_seq` |
@@ -81,6 +81,11 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 | Dimensions | exactly one of `durationMs` (1…3 600 000) / `wordCount` (1…10 000) | `422 invalid_dimensions` |
 | `mode` / `lang` / `dictHash` | present, ≤ 32/32/64 chars | `400 bad_request` |
 | `setup` / `clientMetrics` / `clientScore` / `log` | present | `400 bad_request` |
+
+`scoreVersion` is checked against `KnownScoreVersions` (the exported allow-list
+in `internal/runs`, currently `{1, 2}`) — the single source of truth shared by
+this rule and the validator, so widening it is a one-line change. The current
+client ships score formula **v2**; **v1** stays accepted for older builds.
 
 The gzip log round-trips **byte-for-byte**: `log` is captured as raw bytes,
 gzip-compressed (stdlib, best-speed), and stored; `log_bytes` records the

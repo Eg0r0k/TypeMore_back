@@ -2,6 +2,7 @@ package runs
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 
 	"github.com/google/uuid"
@@ -14,8 +15,6 @@ const (
 	// supportedLogVersion is the only EventLog wire version this server accepts
 	// (frontend core: EVENT_LOG_VERSION). Bumped in lockstep with the client.
 	supportedLogVersion = 1
-	// supportedScoreVersion is the only ScoreResult version accepted for now.
-	supportedScoreVersion = 1
 
 	// Event-count bounds: a real run has at least one event, and 50k is far
 	// above any legitimate session (10k words × a few keystrokes) while still
@@ -38,6 +37,22 @@ const (
 	maxLangLen     = 32
 	maxDictHashLen = 64
 )
+
+// KnownScoreVersions enumerates the ScoreResult formula versions this server
+// accepts. It is the single source of truth for the scoreVersion structural
+// check (below) and docs/RUNS.md: v1 is the original formula, v2 is the current
+// client's scoreV2. Anything outside this set is rejected as unsupported.
+var KnownScoreVersions = []int16{1, 2}
+
+// isKnownScoreVersion reports whether v is an accepted score-formula version.
+func isKnownScoreVersion(v int) bool {
+	for _, known := range KnownScoreVersions {
+		if int(known) == v {
+			return true
+		}
+	}
+	return false
+}
 
 // Structural-validation error codes (HTTP 422). Distinct per rule so the client
 // can react precisely; documented in docs/RUNS.md.
@@ -99,11 +114,11 @@ func validateIngest(userID uuid.UUID, req *ingestRequest) (CreateRunParams, *api
 		return CreateRunParams{}, apiErrBadRequest("log is required")
 	}
 
-	// scoreVersion gate: only v1 is understood; anything else is a client the
-	// server cannot score yet.
-	if req.ScoreVersion == nil || *req.ScoreVersion != supportedScoreVersion {
+	// scoreVersion gate: only versions the server can eventually score are
+	// accepted (KnownScoreVersions); anything else is a client too new/old.
+	if req.ScoreVersion == nil || !isKnownScoreVersion(*req.ScoreVersion) {
 		return CreateRunParams{}, apiErrUnprocessable(codeUnsupportedScoreVersion,
-			"unsupported score version; this server accepts scoreVersion 1")
+			fmt.Sprintf("unsupported score version; accepted versions are %v", KnownScoreVersions))
 	}
 
 	// Bucket string fields: present and small.
@@ -152,7 +167,7 @@ func validateIngest(userID uuid.UUID, req *ingestRequest) (CreateRunParams, *api
 		Setup:         req.Setup,
 		ClientMetrics: req.ClientMetrics,
 		ClientScore:   req.ClientScore,
-		ScoreVersion:  int16(supportedScoreVersion),
+		ScoreVersion:  int16(*req.ScoreVersion),
 		Log:           gz,
 		LogBytes:      int32(len(req.Log)),
 	}, nil

@@ -169,12 +169,21 @@ func TestIngestTooManyEvents(t *testing.T) {
 	assert.Equal(t, "too_many_events", decodeInto[errResp](t, resp).Error)
 }
 
-func TestIngestUnsupportedScoreVersion(t *testing.T) {
+func TestIngestScoreVersionMembership(t *testing.T) {
 	h := newHarness(t)
 	h.login("score@example.com", "password-123", "Score")
 
+	// Every KnownScoreVersions member ({1, 2}) is accepted.
+	for _, v := range []int{1, 2} {
+		body := validRun()
+		body["scoreVersion"] = v
+		resp := h.post("/api/v1/runs", body)
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode, "scoreVersion %d must be accepted", v)
+	}
+
+	// A version outside the set is rejected as unsupported.
 	body := validRun()
-	body["scoreVersion"] = 2
+	body["scoreVersion"] = 3
 	resp := h.post("/api/v1/runs", body)
 	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 	assert.Equal(t, "unsupported_score_version", decodeInto[errResp](t, resp).Error)
