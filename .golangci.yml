@@ -1,0 +1,66 @@
+# golangci-lint v2 configuration. Strict-but-sane defaults for a small,
+# idiomatic Go service. Run with `make lint` (or `golangci-lint run`).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Start from the curated "standard" set and add a focused strictness layer.
+  default: standard
+  enable:
+    - bodyclose      # HTTP/WS response bodies must be closed
+    - errorlint      # correct error wrapping / comparison (errors.Is/As)
+    - gocritic       # opinionated correctness & style checks
+    - misspell       # catch typos in comments/strings
+    - noctx          # no HTTP requests without a context
+    - nolintlint     # keep //nolint directives honest
+    - revive         # golint successor: exported docs, naming, etc.
+    - unconvert      # remove redundant type conversions
+    - unparam        # report unused function parameters/results
+    - whitespace     # leading/trailing whitespace hygiene
+
+  settings:
+    revive:
+      rules:
+        - name: package-comments
+        - name: exported
+        - name: var-naming
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: if-return
+        - name: indent-error-flow
+        - name: unexported-return
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # Passing the (small, immutable) Config by value once at startup is a
+        # deliberate, idiomatic choice, not a hot path.
+        - hugeParam
+        # Naming (string, []byte) style tuple results adds noise, not clarity.
+        - unnamedResult
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Test files may be a little looser: no exported-doc or unparam nagging.
+      - path: _test\.go
+        linters:
+          - revive
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/typemore/typemore-server

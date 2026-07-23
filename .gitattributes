@@ -1,0 +1,9 @@
+# Normalize line endings. LF everywhere so the Dockerfile, Makefile, and shell
+# scripts stay valid when built/run on Linux (CRLF breaks them), regardless of
+# the contributor's OS or core.autocrlf setting.
+* text=auto eol=lf
+
+# Binary-ish assets that must never be munged.
+*.png binary
+*.jpg binary
+*.ico binary

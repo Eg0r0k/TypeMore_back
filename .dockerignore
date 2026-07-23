@@ -1,0 +1,9 @@
+.git
+.github
+bin
+.env
+*.md
+docs
+Dockerfile
+docker-compose.yml
+.golangci.yml

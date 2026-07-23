@@ -1,0 +1,14 @@
+# Build output
+/bin/
+
+# Local environment
+.env
+
+# Go test/coverage artifacts
+*.out
+*.test
+
+# Editor/OS cruft
+.DS_Store
+.idea/
+.vscode/

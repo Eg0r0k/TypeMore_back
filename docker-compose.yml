@@ -1,0 +1,23 @@
+# App-only compose for this phase (no Postgres/Redis yet — they arrive in later
+# stages). Brings up the server on http://localhost:8080.
+#
+#   docker compose up --build
+#   curl http://localhost:8080/healthz
+services:
+  app:
+    build:
+      context: .
+      args:
+        VERSION: dev
+        COMMIT: none
+        BUILD_DATE: compose
+    ports:
+      - "8080:8080"
+    environment:
+      TYPEMORE_ADDR: ":8080"
+      TYPEMORE_LOG_FORMAT: "json"
+      TYPEMORE_LOG_LEVEL: "info"
+      # Empty = allow any WebSocket Origin (development default). Set an
+      # allow-list (comma-separated) in production.
+      TYPEMORE_ALLOWED_ORIGINS: ""
+    restart: unless-stopped
