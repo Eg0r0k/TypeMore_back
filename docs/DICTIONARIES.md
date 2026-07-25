@@ -17,6 +17,22 @@ Two reasons the server owns them:
 
 Files: `internal/replay/dicts/*.json`, compiled into the binary with `go:embed`.
 
+**Provenance.** The word lists are vendored from
+[monkeytype](https://github.com/monkeytypegame/monkeytype)'s
+`frontend/static/languages`, normalised to the shape above: LF endings (enforced
+by `.gitattributes`, because the body is served byte-for-byte and its `bytes` is
+published in the catalogue), and upstream-only metadata dropped — `english`
+arrived carrying `noLazyMode` and `orderedByFrequency`, which mean nothing here
+and would have been served to every client forever. Only `name`, `words` and,
+where upstream supplies one, `bcp47` are kept. Nothing is invented: a language
+with no upstream `bcp47` does not get one, which is why its runs and board
+buckets are keyed by the language code (`german`, `css_code`) rather than a tag.
+
+Adding one is a **vendored file plus a binary rebuild** — see "Adding a
+language" below. There is no runtime loading path and deliberately so: a
+dictionary the server could pick up without a deploy is a dictionary whose hash
+nobody froze.
+
 ## Endpoints
 
 Both are **public** — no session, no `Origin` check. Dictionaries are static

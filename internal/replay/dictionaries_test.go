@@ -122,6 +122,8 @@ var publishedHashes = map[string]string{
 	"arabian":             "09fa6ceb",
 	"chinese":             "2557d6b5",
 	"css_code":            "55ccd317",
+	"english":             "be99aa1a",
+	"french":              "3a153572",
 	"german":              "804728e8",
 	"japanese":            "92ed2422",
 	"russian":             "f5aacfd2",
