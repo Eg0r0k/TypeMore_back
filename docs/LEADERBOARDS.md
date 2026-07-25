@@ -168,14 +168,15 @@ source of truth.
 
 All under `/api/v1`, all **public** — a board nobody can read without an account
 is a board nobody links to. `/{bucket}/me` is the exception that needs a session,
-and it says so itself rather than dragging the other two behind middleware.
+and it says so itself rather than dragging the others behind middleware.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/v1/leaderboards` | — | Buckets that hold at least one visible entry, with counts |
 | GET | `/api/v1/leaderboards/{bucket}?cursor=&limit=` | — | One page of a ranking |
 | GET | `/api/v1/leaderboards/{bucket}/me` | session | The caller's rank and entry, or `204` |
-| GET | `/api/v1/runs/{id}/replay` | — | One accepted run, for playback |
+| GET | `/api/v1/runs/{id}/replay` | — | One accepted run's playback metadata |
+| GET | `/api/v1/runs/{id}/replay/log` | — | The same run's event log, as stored gzip |
 
 The session on `/me` is resolved by `auth.OptionalAuth` — it attaches the user
 when a cookie is present and never rejects, which is what lets a public subtree
@@ -197,6 +198,12 @@ to know that "the number" means milliseconds here and words there. Empty buckets
 are absent rather than enumerated: which shapes are ranked is a property of the
 schema, and a board with nothing in it is not news.
 
+`entries` is an integer count of the bucket's **visible** rows — the query is
+`count(*) … FROM leaderboard_rows GROUP BY bucket_key`, and `leaderboard_rows`
+is the ban-filtered view, so a bucket whose only player is banned does not report
+one, it disappears (`TestBanHidesTheEntryEverywhereAndKeepsIt`). It is a count of
+*players*, not of runs: one slot per player per bucket.
+
 ### `GET /api/v1/leaderboards/{bucket}`
 
 ```json
@@ -217,6 +224,17 @@ schema, and a board with nothing in it is not news.
 
 `limit` defaults to **50**, clamped to **100**. An unparseable bucket key is
 `404`; a well-formed but unpopulated one is an empty page.
+
+**`mods` is the RAW verifiable-mods slice of the run's setup, by design.** It is
+`run_mods(setup)` — field selection, nothing else — and the client owns what the
+combination *means*. There is deliberately no server-side "chips" or display
+distillation: that would be a second copy of mod semantics living in SQL and Go,
+and keeping it honest would need goja-fenced agreement tests against the vendored
+bundle exactly like `grade` has
+(`internal/leaderboard/core_agreement_test.go`, `TestGradeMatchesTheCore`). One
+such fence exists because `run_grade` must be reproducible from Postgres alone
+for the rebuild; a display string has no such requirement, so it does not earn
+the second copy. The score column already has the multipliers folded in.
 
 **Ordering:** `score DESC, achieved_at ASC, user_id ASC`. Ties go to whoever got
 there first; `user_id` is an arbitrary final tiebreak whose only job is to make
@@ -240,29 +258,91 @@ key that cannot name a board.
 A banned caller gets `204` — the same answer as someone who never played it. A
 board must not leak who is banned, not even to them.
 
-### `GET /api/v1/runs/{id}/replay`
+### `GET /api/v1/runs/{id}/replay` and `…/replay/log`
 
-The other half of a watchable board: a row carries a `runId`, and this returns
-everything needed to play it back, in one request.
+The other half of a watchable board: a row carries a `runId`, and these two
+return everything needed to play it back.
+
+**Why two requests.** It used to be one, with the event log inlined as a JSON
+field. `docs/PERFORMANCE.md` zone 6 measured what that cost: the stored 373 KiB
+gzip blob was gunzipped into a 2.0 MiB `[]byte`, wrapped as a `json.RawMessage`,
+and then compacted by `json.NewEncoder` into a third buffer before a byte reached
+the socket — **7.5 MiB allocated and 5.5 MiB live per request**, with nothing
+written until the whole envelope was assembled. Since the route needs no session
+and the rate limit is per IP, four cooperating clients could exhaust a 512 MiB
+instance without tripping it. `Content-Encoding: gzip` passthrough was the
+cheapest fix on the table (~0.4 MiB) at one price: a gzip stream cannot be a
+field inside a JSON object, so the endpoint's **"one request to watch a row"
+property was traded for it**. That trade is deliberate and this is what it looks
+like.
+
+#### Metadata — `GET /api/v1/runs/{id}/replay`
 
 ```json
 {
   "runId": "e865dae0-…", "displayName": "boardsmoke",
   "mode": "words", "wordCount": 25, "lang": "ru-RU",
+  "seed": 20260724, "dictHash": "804728e8",
   "setup": { "config": {…}, "generation": {…}, "declaration": {…} },
   "serverMetrics": { "wpm": 83.24, "raw": 83.24, "accuracy": 1, "…": "…" },
   "serverScore": { "version": 2, "total": 2864, "…": "…" },
-  "grade": "SS", "achievedAt": "2026-07-25T13:43:14.772724Z",
-  "log": { "version": 1, "events": [ … ] }
+  "grade": "SS", "achievedAt": "2026-07-25T13:43:14.772724Z"
 }
 ```
+
+`durationMs` and `wordCount` are mutually exclusive — the run carries whichever
+its mode gives it, and the other is absent. There is **no `log` field**.
+
+**There is no word list either, and that is the point of `seed` + `dictHash`.**
+The client regenerates the exact text with the core's own generator from the seed
+and `setup.generation`, after checking that the dictionary it holds hashes to
+`dictHash` — the same check the live match path makes before it trusts a
+regenerated word. Serialising the words instead would put a second copy of the
+generator's output on the wire for the server to keep in step with the core, and
+it is the same principle as the `mods` note above: the client owns the semantics.
+Both fields are already on the owner's authenticated summary
+([`RUNS.md`](RUNS.md)), so exposing them here is reach, not disclosure.
 
 It carries the verdict's *result*, never its reasoning: no `validation`, no
 `clientScore`, no `clientMetrics`. A spectator has no business reading the
 moderation trail.
 
-**Access matrix.** Every failure is the same `404` — a spectator must not be able
-to tell "under review" from "never existed":
+#### Log — `GET /api/v1/runs/{id}/replay/log`
+
+The body is **the stored gzip bytes, verbatim** — the blob ingestion wrote,
+neither decompressed nor re-compressed on the way out — served as:
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `application/json` |
+| `Content-Encoding` | `gzip` |
+| `Content-Length` | the length of the **compressed** bytes |
+| `Cache-Control` | `public, max-age=31536000, immutable` |
+| `ETag` | `"<run id>"` (strong) |
+
+**Callers see plain JSON.** `Content-Encoding` describes how the representation
+arrived, `Content-Type` describes what it is once decoded; browsers, `fetch`,
+Go's `http.Transport` and `curl --compressed` all decompress it transparently and
+hand over the same `{ "version": 1, "events": [ … ] }` the inlined field used to
+carry. **There is no base64 anywhere** — the bytes are binary on the wire, which
+is exactly why they are ~5× smaller than the JSON they decode to.
+
+There is no `Vary: Accept-Encoding`. The dictionary asset routes need it because
+they choose between two representations; this route has exactly one, always gzip,
+so claiming the response varies would be false.
+
+**Immutable, keyed by run id.** A run's log is written once at ingestion and
+never updated — revalidation moves only the verdict columns — so the id alone
+identifies the bytes forever. A conditional request with a matching
+`If-None-Match` gets **`304`** with no body; a stale validator gets the full
+response again. The 404 rules below are evaluated *before* the conditional check,
+so a run the caller may not watch is never told "not modified".
+
+#### Shared access matrix
+
+Every failure is the same `404`, on **both** routes — a spectator must not be
+able to tell "under review" from "never existed", nor learn it from whichever
+route was left behind:
 
 | Run | Response |
 |---|---|
@@ -273,13 +353,18 @@ to tell "under review" from "never existed":
 | accepted, owner banned | `404` |
 | nonexistent / not a uuid | `404` |
 
-All three rules live in the query's `WHERE` clause, so no caller can reach the
-data without them. The owner gets the same public answer here; their own runs
-stay reachable at any status through the authenticated `GET /runs/{id}?log=1`,
-which is untouched.
+All three rules live in the `WHERE` clause of both queries — the same three
+predicates, spelled the same way, join to `users` included — so no caller can
+reach the data without them and the pair cannot drift into two access matrices.
+The owner gets the same public answer here; their own runs stay reachable at any
+status through the authenticated `GET /runs/{id}?log=1`, which is untouched.
 
-**Rate limited per IP** (default: burst 30, one token every 2 s). The event log
-is the heaviest payload this server serves and the route needs no session.
+**Rate limited per IP** (default: burst 30, one token every 2 s), and **the two
+routes share one bucket**. Splitting the payload must not double what an
+anonymous IP may command, so each route spends a token from the same bucket: a
+spectator pays two tokens per run watched, making the default burst 15 runs
+rather than 30. The memory that burst can command went *down* — the metadata
+envelope is kilobytes and the log is passthrough.
 
 ## Schema
 
@@ -381,8 +466,8 @@ database, or ranking latency showing up in traces — not a diagram.
 | Variable | Default | Meaning |
 |---|---|---|
 | `TYPEMORE_LEADERBOARD_REQUIRE_VERIFIED_EMAIL` | `true` | Require a verified email identity to hold a board slot. Takes effect on already-judged runs only after `make rebuild-leaderboards`. |
-| `TYPEMORE_LEADERBOARD_REPLAY_RATE_EVERY` | `2s` | Per-IP refill interval for `GET /runs/{id}/replay` |
-| `TYPEMORE_LEADERBOARD_REPLAY_RATE_BURST` | `30` | Per-IP bucket size for the same |
+| `TYPEMORE_LEADERBOARD_REPLAY_RATE_EVERY` | `2s` | Per-IP refill interval for the public replay pair |
+| `TYPEMORE_LEADERBOARD_REPLAY_RATE_BURST` | `30` | Per-IP bucket size for the same. ONE bucket across both `/replay` and `/replay/log`, so a watch costs two tokens |
 
 ## Deliberately deferred
 
