@@ -2,13 +2,13 @@
 // versions:
 //   sqlc v1.31.1
 
-package leaderboarddb
+package quotedb
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type ActiveBan struct {
@@ -52,10 +52,10 @@ type LeaderboardEligibleRun struct {
 	Lang           string
 	TextSourceKind string
 	Score          int64
-	Wpm            float64
-	Raw            float64
-	Acc            float64
-	Mods           json.RawMessage
+	Wpm            pgtype.Numeric
+	Raw            pgtype.Numeric
+	Acc            pgtype.Numeric
+	Mods           []byte
 	AchievedAt     time.Time
 }
 
@@ -64,11 +64,11 @@ type LeaderboardEntry struct {
 	UserID     uuid.UUID
 	RunID      uuid.UUID
 	Score      int64
-	Wpm        float64
-	Raw        float64
-	Acc        float64
+	Wpm        pgtype.Numeric
+	Raw        pgtype.Numeric
+	Acc        pgtype.Numeric
 	Grade      string
-	Mods       json.RawMessage
+	Mods       []byte
 	AchievedAt time.Time
 }
 
@@ -78,11 +78,11 @@ type LeaderboardRow struct {
 	DisplayName string
 	RunID       uuid.UUID
 	Score       int64
-	Wpm         float64
-	Raw         float64
-	Acc         float64
+	Wpm         pgtype.Numeric
+	Raw         pgtype.Numeric
+	Acc         pgtype.Numeric
 	Grade       string
-	Mods        json.RawMessage
+	Mods        []byte
 	AchievedAt  time.Time
 }
 
@@ -90,8 +90,8 @@ type Match struct {
 	ID        string
 	RoomCode  string
 	Name      string
-	Settings  json.RawMessage
-	Freemods  json.RawMessage
+	Settings  []byte
+	Freemods  []byte
 	Seed      int64
 	DictHash  string
 	Lang      string
@@ -106,7 +106,7 @@ type MatchRun struct {
 	PlayerID    string
 	Nick        string
 	UserID      *uuid.UUID
-	Freemods    json.RawMessage
+	Freemods    []byte
 	Log         []byte
 	BatchCount  int32
 	FinalStatus string
@@ -135,9 +135,9 @@ type Run struct {
 	Lang          string
 	Seed          int64
 	DictHash      string
-	Setup         json.RawMessage
-	ClientMetrics json.RawMessage
-	ClientScore   json.RawMessage
+	Setup         []byte
+	ClientMetrics []byte
+	ClientScore   []byte
 	ScoreVersion  int16
 	Status        string
 	Log           []byte

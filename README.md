@@ -24,6 +24,7 @@ caching contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
 | `/api/v1/auth/*`, `GET /api/v1/me` | Auth + sessions — see [`docs/AUTH.md`](docs/AUTH.md) |
 | `/api/v1/runs*` | Run ingestion, own-runs feed, public replay — see [`docs/RUNS.md`](docs/RUNS.md) |
 | `/api/v1/leaderboards*` | Public bucketed score boards — see [`docs/LEADERBOARDS.md`](docs/LEADERBOARDS.md) |
+| `/api/v1/quotes*` | Public fixed-text corpus — see [`docs/QUOTES.md`](docs/QUOTES.md) |
 | `GET /api/v1/dictionaries` | Public dictionary catalogue — see [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md) |
 | `GET /static/dictionaries/{dictHash}.json` | Dictionary body, content-addressed and `immutable` |
 
@@ -151,6 +152,7 @@ cmd/
   migrate/             # goose migration runner (embedded SQL)
   replayctl/           # operator tool: calibrate / revalidate the review policy
   leaderboardctl/      # operator tool: rebuild / show the boards
+  quotectl/            # operator tool: publish the vendored quote corpora
 internal/
   platform/            # config, logging, HTTP lifecycle, health/build (no domain deps)
     db/                # pgx pool          migrate/  # goose runner
@@ -172,10 +174,16 @@ internal/
   leaderboard/         # bucket keys, board read model, projection from accepted runs
     leaderboarddb/     # sqlc-generated queries (committed)
     pgstore/           # projector (runs in the worker's tx) + reads + rebuild
+  quote/               # fixed-text corpus: browse, draw, resolve by id
+    quotes/            # vendored upstream corpora + MANIFEST.json (the import source)
+    corpus/            # manifest-driven loader (import only; not linked into the server)
+    quotedb/           # sqlc-generated queries (committed)
+    pgstore/           # reads + the immutability-preserving import
 db/migrations/         # goose SQL migrations (embedded)
 docs/PROTOCOL.md       # realtime contract      docs/AUTH.md          # auth/HTTP contract
 docs/RUNS.md           # run ingestion          docs/DICTIONARIES.md  # dictionary service
 docs/REPLAY.md         # replay worker          docs/LEADERBOARDS.md  # score boards
+docs/QUOTES.md         # quote registry
 ```
 
 The package layout follows `BACKEND.md §2`; only the packages this phase needs

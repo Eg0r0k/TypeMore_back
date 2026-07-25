@@ -30,6 +30,8 @@ import (
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/mail"
+	"github.com/typemore/typemore-server/internal/quote"
+	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
 	"github.com/typemore/typemore-server/internal/runs"
@@ -121,6 +123,12 @@ func run() error {
 			u, ok := auth.UserFrom(ctx)
 			return u.ID, ok
 		}, logger)
+
+	// Quotes: the fixed-text corpus (SCORING_CONCEPT §6, docs/QUOTES.md). Read
+	// only, and unauthenticated like the boards and the dictionaries — a guest
+	// picking a text to type has no account yet. The corpus itself is published
+	// out of band by `make import-quotes`; nothing on this path can write.
+	quoteSvc := quote.NewService(quotepg.New(pool), logger)
 
 	// Dictionaries: the server is the single source of the word lists the client
 	// generates text from. The registry is seeded once here — every fingerprint
@@ -222,6 +230,10 @@ func run() error {
 		// requiring one, which is what lets /{bucket}/me answer "your rank" on
 		// an otherwise anonymous surface.
 		r.With(authSvc.OptionalAuth).Mount("/leaderboards", boardSvc.Routes())
+		// Quotes need no session at all — not even an optional one. Nothing on
+		// this subtree varies by who is asking, so it is mounted bare rather
+		// than behind OptionalAuth like the boards.
+		r.Mount("/quotes", quoteSvc.Routes())
 	})
 
 	srv := &http.Server{

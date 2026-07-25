@@ -1,0 +1,102 @@
+{
+  "_comment": [
+    "Vendored quote corpora — the re-import source of truth. The rows below are",
+    "the ONLY files `make import-quotes` reads; adding a language is one entry",
+    "here plus its upstream JSON beside this file.",
+    "",
+    "`lang` is OUR language id — the same id the dictionary catalogue uses, so a",
+    "quote and a seeded run in the same language agree on what that language is",
+    "called. Upstream names its files differently for several of them, which is",
+    "why this mapping exists rather than a directory listing.",
+    "",
+    "`groups` is NOT global: each corpus carries its own short/medium/long/thicc",
+    "thresholds, and chinese_simplified genuinely differs from the rest. The",
+    "importer MUST read each file's own `groups` array to assign len_group.",
+    "Recording them here too lets a test assert the vendored copy still matches",
+    "upstream instead of trusting a constant."
+  ],
+  "upstream": {
+    "repo": "https://github.com/monkeytypegame/monkeytype",
+    "commit": "e113dff1cfc27cc624f47ac9899d6e287c3fc33f",
+    "path": "frontend/static/quotes"
+  },
+  "languages": [
+    {
+      "lang": "english",
+      "file": "english.json",
+      "quotes": 6488,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "served dictionary (english)"
+    },
+    {
+      "lang": "french",
+      "file": "french.json",
+      "quotes": 1107,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "served dictionary (french)"
+    },
+    {
+      "lang": "russian",
+      "file": "russian.json",
+      "quotes": 1163,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "served dictionary (russian)"
+    },
+    {
+      "lang": "german",
+      "file": "german.json",
+      "quotes": 560,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "served dictionary (german)"
+    },
+    {
+      "lang": "arabian",
+      "file": "arabic.json",
+      "quotes": 89,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "served dictionary (arabian); upstream calls it arabic"
+    },
+    {
+      "lang": "chinese",
+      "file": "chinese_simplified.json",
+      "quotes": 330,
+      "groups": [[0, 30], [31, 80], [81, 200], [201, 9999]],
+      "why": "served dictionary (chinese); upstream calls it chinese_simplified. NOTE the thresholds differ from every other corpus."
+    },
+    {
+      "lang": "css_code",
+      "file": "code_css.json",
+      "quotes": 21,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "served dictionary (css_code); upstream calls it code_css"
+    },
+    {
+      "lang": "code_python",
+      "file": "code_python.json",
+      "quotes": 76,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "no seeded dictionary — quote-only language, added explicitly"
+    },
+    {
+      "lang": "code_javascript",
+      "file": "code_javascript.json",
+      "quotes": 47,
+      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "why": "no seeded dictionary — quote-only language, added explicitly"
+    }
+  ],
+  "excluded": [
+    {
+      "lang": "japanese",
+      "why": "served dictionary, but upstream publishes no japanese quote corpus"
+    },
+    {
+      "lang": "traditional_chinese",
+      "why": "served dictionary, but upstream publishes no chinese_traditional corpus"
+    },
+    {
+      "lang": "russian_empire",
+      "why": "served dictionary (pre-reform orthography); no upstream counterpart"
+    }
+  ]
+}

@@ -113,6 +113,19 @@ type MatchRun struct {
 	CreatedAt   time.Time
 }
 
+type Quote struct {
+	ID         uuid.UUID
+	Lang       string
+	UpstreamID int32
+	Text       string
+	Source     string
+	Length     int32
+	LenGroup   int16
+	TextHash   string
+	Superseded bool
+	CreatedAt  time.Time
+}
+
 type Run struct {
 	ID            uuid.UUID
 	UserID        uuid.UUID

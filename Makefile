@@ -17,6 +17,7 @@
 #   make revalidate  re-judge runs behind the current policy OR core bundle
 #   make rebuild-leaderboards  recompute the boards from accepted runs
 #   make leaderboards          print the board index (bucket=KEY for one board)
+#   make import-quotes         publish the vendored quote corpora into Postgres
 #   make load        run the performance & load suite (docs/PERFORMANCE.md)
 #   make bench       run the Go benchmarks
 
@@ -48,7 +49,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate rebuild-leaderboards leaderboards load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -118,6 +119,16 @@ rebuild-leaderboards:
 ## leaderboards: print the board index (or one bucket with bucket=KEY)
 leaderboards:
 	go run ./cmd/leaderboardctl show $(if $(bucket),-bucket $(bucket),)
+
+## import-quotes: publish the vendored quote corpora into Postgres (lang=ID for one)
+# Driven by internal/quote/quotes/MANIFEST.json, never by a directory listing:
+# a corpus with no manifest row is not imported. Idempotent — running it twice
+# reports every quote unchanged, which is the proof that a re-import cannot
+# quietly rewrite published text. When upstream DOES change a text, the new
+# bytes land as a new row and the old one is retired but stays resolvable by
+# id, because runs played on it must replay forever. See docs/QUOTES.md.
+import-quotes:
+	go run ./cmd/quotectl import $(if $(lang),-lang $(lang),)
 
 ## load: run the performance & load suite (heavy; needs Docker)
 # Everything behind the `load` build tag: realistic-volume seeds, latency and
