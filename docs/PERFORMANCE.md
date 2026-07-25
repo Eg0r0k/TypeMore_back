@@ -92,7 +92,7 @@ Three properties of this rig shape every figure:
 | 1 | 200 concurrent logins, gated(8) | 463 MiB, `PeakInFlight` 8/8 | ≤ ½ the ungated peak, same run | PASS (48%) |
 | 1 | saturated gate(4), 200 concurrent | 160.3 MiB | 292 MiB | PASS (55%) |
 | 1 | shed contract | 156 × 503 ≡ 156 sheds, 0 × 500 | exact | PASS |
-| 2 | max submittable run (39 914 ev) | **76.5 s** | 5 s (`REPLAY_TIMEOUT`) | **MISSED 15.3×** |
+| 2 | max submittable run (39 914 ev) | **76.5 s** | 5 s (`REPLAY_TIMEOUT`, the default then) | **MISSED 15.3×** |
 | 2 | …same run on a production 5 s core | **`flagged` / `replay_timeout`** | must not time out | **MISSED — honest run punished** |
 | 2 | documented cap (50 000 ev) | **121.9 s** | 5 s | **MISSED 24.4×** |
 | 2 | realistic 60 s run (483 ev) | 170 ms p99 | 50 ms | **MISSED 3.4×** |
@@ -133,9 +133,13 @@ Three properties of this rig shape every figure:
 | 8 | unrelated request p99 during burst | 28 ms | 50 ms | PASS |
 | 8 | …its degradation vs baseline | **4.30×** (6.5 → 28 ms) | ≤ 3× | **MISSED 1.4×** |
 
-**11 budget rows missed, 0 hidden.** One fix was implemented during this phase
-(zone 4, below) because it was a defect in code shipped in the previous phase;
-everything else is reported.
+**11 budget rows missed, 0 hidden.** Two fixes have since been implemented: the
+zone 4 defect below (a defect in code shipped in the previous phase) and zone 2's
+config stop-gap, which is now the shipped default — `REPLAY_TIMEOUT` 300 s,
+`REPLAY_CONCURRENCY` 4, `REPLAY_BATCH_SIZE` 2, `REPLAY_SHUTDOWN_GRACE` 630 s. The
+zone 2 rows above are left as measured against the 5 s budget that produced them;
+the arithmetic behind the new numbers is in that zone's Recommendation.
+Everything else is reported.
 
 ---
 
@@ -143,10 +147,11 @@ everything else is reported.
 
 ### Fix now
 
-1. **Zone 2 — the replay timeout is 15× too small for a legal run.**
-   Any run above ~8 100 events is flagged `replay_timeout` today. The server
+1. **Zone 2 — the replay timeout was 15× too small for a legal run.**
+   Any run above ~8 100 events was flagged `replay_timeout`. The server
    punishing honest players for its own slowness is the worst failure mode this
-   pipeline has. Config-only mitigation available immediately.
+   pipeline has. **Mitigated in config** (see the zone's Recommendation); the
+   real fix is the core's quadratic fold, item 3 there.
 2. **Zone 4 — `rebuild-leaderboards` takes every board offline for its whole run.**
    7–11 minutes at 1 M runs, and `TRUNCATE` holds `ACCESS EXCLUSIVE` throughout,
    so the wall time *is* downtime. Fixable independently of the speed.
@@ -333,7 +338,7 @@ Compounding it: the log is folded **five times** per replay (`validateLog` three
 `scoreV2OfLog` two) and the words are generated **twice**. The measured 3:2 phase
 split matches exactly at both sizes.
 
-### Recommendation
+### Recommendation — item 1 is now APPLIED
 
 The brief asks whether the margin is 2×. **It is 0.065×.** Neither knob fixes
 this alone at a sane value:
@@ -344,21 +349,44 @@ this alone at a sane value:
 | 2× | ~5 100 events |
 | 3× | ~3 700 events |
 
-1. **Now, config only: `TYPEMORE_REPLAY_TIMEOUT` 5 s → 300 s and
-   `TYPEMORE_REPLAY_CONCURRENCY` 1 → 4.** 300 s is 3.9× the measured worst case
-   at the real ceiling. This is the only change that stops honest players being
-   flagged today. Cost: a deliberate 2 MiB submission can park one worker for
-   5 minutes; at concurrency 4 three remain, and the durable queue makes a slow
-   verdict *latency*, not loss.
+1. **APPLIED — the config stop-gap is now the default.** `REPLAY_TIMEOUT`
+   5 s → **300 s** and `REPLAY_CONCURRENCY` 1 → **4**, in
+   `internal/platform/config.go` and `.env.example`. 300 s is 3.9× the measured
+   worst case at the real ceiling; it is the only change that stops honest
+   players being flagged today. Cost: a deliberate 2 MiB submission can park one
+   worker for five minutes; at concurrency 4 three remain, and the durable queue
+   makes a slow verdict *latency*, not loss.
+
+   Two defaults had to move with it, because a longer timeout is not a free
+   parameter:
+
+   - **`REPLAY_BATCH_SIZE` 20 → 2.** The claim, every verdict and the commit
+     share ONE transaction (`FOR UPDATE SKIP LOCKED`, no `processing` status),
+     so the row locks are held for **batchSize × timeout**. At 20 × 5 s that was
+     100 s. At 20 × 300 s it would be **100 minutes** of held locks on judged
+     rows, inside the same transaction the leaderboard projection runs in.
+     2 × 300 s = **10 minutes**, which is the ceiling accepted here.
+   - **`REPLAY_SHUTDOWN_GRACE` 30 s → 630 s.** It is not only the shutdown
+     budget: `Worker.loop` gives *every* batch a context with that deadline, and
+     the core call runs under `min(batch deadline, ReplayTimeout)`. Left at 30 s
+     it would have clamped the new 300 s budget back below one maximum run —
+     and worse, the expired context then fails the decision write, so the batch
+     rolls back and the slow run is retried forever instead of judged once.
+     630 s = 2 × 300 s of interpreter + the 30 s of database work the old
+     default allowed. Cost: a deploy may wait ten minutes for an in-flight batch
+     to land (`cmd/server` waits on the worker group).
+
 2. **Lower `maxEvents` 50 000 → 39 913.** Free — the body cap already makes
    anything above it unsubmittable (zone 5) — and it removes 25% of the
-   validator's worst case.
+   validator's worst case. **Not done.**
 3. **Fix the core** (frontend `src/shared/core`, not this repo): make `setInput`
    mutate a working copy instead of slicing per keystroke (removes the quadratic
    term: 50 000 events 108 s → **11.7 s** [INFERENCE, from the fitted model]);
    fold once and share the analysis (5 folds → 1); pass the generated words from
    `validateLog` into the score phase. Together, 50 000 events lands at ~2.3 s
-   and the shipped 5 s timeout works at the documented cap with a 2× margin.
+   and a 5 s timeout works at the documented cap with a 2× margin. **This is
+   what retires item 1** — 300 s is a stop-gap, not a target, and the batch size
+   and shutdown grace go back up with it.
 4. **Do NOT lower the event cap to make 5 s work.** ~3 700 events is six minutes
    of typing; the current cap is roughly "one hour", which is what
    `maxDurationMs` already promises. Cutting it to suit the interpreter is the
@@ -366,7 +394,7 @@ this alone at a sane value:
 
 **Throughput:** one worker goroutine does 5.8 realistic runs/s — 2.5× a 2.3/s
 daily average (10 000 DAU × 20 runs), but **0.42×** a 13.9/s four-hour peak. 2.4
-goroutines are needed for the peak and `REPLAY_CONCURRENCY` defaults to 1.
+goroutines are needed for the peak, which is what the new default of 4 buys.
 
 **Allocation churn:** one 50 000-event replay churns **112 GiB across 2.1 billion
 allocations**; a realistic run, 58 MiB across 1.2 million.

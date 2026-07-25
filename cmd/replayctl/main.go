@@ -86,7 +86,12 @@ func run() error {
 	case "revalidate":
 		fs := flag.NewFlagSet("revalidate", flag.ExitOnError)
 		limit := fs.Int("limit", 5000, "max runs to re-judge in this pass")
-		batch := fs.Int("batch", 50, "runs per transaction")
+		// Defaulted from REPLAY_BATCH_SIZE rather than a constant of its own:
+		// this transaction holds its row locks for batch x REPLAY_TIMEOUT
+		// exactly like the worker's, and a revalidation pass runs against a
+		// live database. Two places to reason about a lock window is one too
+		// many.
+		batch := fs.Int("batch", int(cfg.ReplayBatchSize), "runs per transaction")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
