@@ -47,15 +47,17 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
 	// Always hash: this is the dominant cost, and doing it unconditionally keeps
-	// the taken-email path timing-indistinguishable from the happy path.
-	hash, herr := HashPassword(req.Password)
+	// the taken-email path timing-indistinguishable from the happy path. It is
+	// also why registration has to go through the gate — an unauthenticated
+	// caller commits 19 MiB here before the server knows anything about them.
+	hash, herr := s.hashPassword(ctx, req.Password)
 	if herr != nil {
 		s.writeError(w, r, herr)
 		return
 	}
 
-	ctx := r.Context()
 	if _, lookupErr := s.store.EmailIdentity(ctx, email); lookupErr == nil {
 		// Email already registered: do NOT reveal it, do NOT create a second
 		// account. Return the same success as the happy path.
@@ -179,7 +181,12 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// Decoy verify so timing matches the real path, then generic error.
-			_, _ = VerifyPassword(req.Password, s.dummyHash)
+			// Gated like every other hash: an unknown email costs the server the
+			// same 19 MiB, so exempting it would leave the hole open.
+			if _, verr := s.verifyPassword(ctx, req.Password, s.dummyHash); verr != nil {
+				s.writeError(w, r, verr)
+				return
+			}
 			s.writeError(w, r, apiErrInvalidCredentials)
 			return
 		}
@@ -190,7 +197,12 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	cred, err := s.store.Credential(ctx, identity.UserID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			_, _ = VerifyPassword(req.Password, s.dummyHash)
+			// Same decoy, same gate: an account with no credential row must not
+			// be a cheaper request than one with.
+			if _, verr := s.verifyPassword(ctx, req.Password, s.dummyHash); verr != nil {
+				s.writeError(w, r, verr)
+				return
+			}
 			s.writeError(w, r, apiErrInvalidCredentials)
 			return
 		}
@@ -198,7 +210,7 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := VerifyPassword(req.Password, cred.Hash)
+	ok, err := s.verifyPassword(ctx, req.Password, cred.Hash)
 	if err != nil {
 		s.writeError(w, r, err)
 		return

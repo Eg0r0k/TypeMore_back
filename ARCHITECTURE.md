@@ -131,18 +131,24 @@ thin.
    versioned formula → compared against client-reported numbers → anti-cheat
    heuristics (inter-key interval distribution, implausibly uniform timing,
    impossible speeds) → status `accepted` or `flagged`.
-4. On `accepted`: bucket leaderboard ZSET updated; profile TP incrementally
-   recomputed.
+4. On `accepted`: the run's bucket leaderboard cell is recomputed **in the same
+   transaction as the status write**; profile TP incrementally recomputed
+   (still deferred).
 
 ### 4.3 Storage
 
 - **PostgreSQL is the source of truth.** Key tables: `users`, `runs`
   (bucket fields: mode / duration / word count / language; mods bitmask; seed;
   dict_hash; score, wpm, acc, tp; `score_version`, `tp_version`; status;
-  compressed log; timestamps), `daily_challenges`, `flags`.
-- **Redis is a rebuildable read-model**: leaderboard ZSETs per bucket,
-  sessions, rate-limit counters. Any ZSET can be dropped and rebuilt from
-  Postgres.
+  compressed log; timestamps), `leaderboard_entries`, `bans`,
+  `daily_challenges`, `flags`.
+- **The read model is rebuildable.** As implemented, the leaderboard projection
+  lives in Postgres (`leaderboard_entries`, `make rebuild-leaderboards`) rather
+  than in a Redis ZSET: a ZSET cannot join the worker's verdict transaction, and
+  that transaction is what makes "accepted" and "on the board" one atomic fact.
+  Reads sit behind a store interface so a ZSET slots in when board traffic
+  justifies it — see docs/LEADERBOARDS.md, "Why no Redis". Redis remains the
+  intended home for rate-limit counters and (eventually) sessions.
 - Event logs are immutable and kept indefinitely; they migrate to S3-compatible
   object storage when volume demands it.
 
@@ -286,9 +292,9 @@ pipeline, not enforced live.
 
 Each stage ships as a working product:
 
-1. Auth + run ingestion with log storage (no validation yet)
-2. Bucketed score / WPM leaderboards
-3. Replay worker (goja) + `scoreV1`
+1. ✅ Auth + run ingestion with log storage (no validation yet)
+2. ✅ Bucketed **score** leaderboards — docs/LEADERBOARDS.md (WPM boards still to come)
+3. ✅ Replay worker (goja) + `scoreV1`/`scoreV2` — docs/REPLAY.md
 4. Anti-cheat heuristics + flags + admin review
 5. Daily challenge
 6. TP rating

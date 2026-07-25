@@ -10,8 +10,9 @@ Contracts: the realtime wire format is in [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
 the auth/HTTP surface (endpoints, schema, env, security) is in
 [`docs/AUTH.md`](docs/AUTH.md); run ingestion is in
 [`docs/RUNS.md`](docs/RUNS.md); the replay worker that judges those runs is in
-[`docs/REPLAY.md`](docs/REPLAY.md); the dictionary catalogue and its caching
-contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
+[`docs/REPLAY.md`](docs/REPLAY.md); the boards those verdicts feed are in
+[`docs/LEADERBOARDS.md`](docs/LEADERBOARDS.md); the dictionary catalogue and its
+caching contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
 
 ## What's here
 
@@ -21,6 +22,8 @@ contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
 | `GET /readyz` | Readiness — database ping |
 | `GET /ws` | WebSocket: `hello` handshake + `ntp_ping`/`ntp_pong` |
 | `/api/v1/auth/*`, `GET /api/v1/me` | Auth + sessions — see [`docs/AUTH.md`](docs/AUTH.md) |
+| `/api/v1/runs*` | Run ingestion, own-runs feed, public replay — see [`docs/RUNS.md`](docs/RUNS.md) |
+| `/api/v1/leaderboards*` | Public bucketed score boards — see [`docs/LEADERBOARDS.md`](docs/LEADERBOARDS.md) |
 | `GET /api/v1/dictionaries` | Public dictionary catalogue — see [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md) |
 | `GET /static/dictionaries/{dictHash}.json` | Dictionary body, content-addressed and `immutable` |
 
@@ -146,6 +149,8 @@ override locally.
 cmd/
   server/              # composition root (main): wiring + lifecycle
   migrate/             # goose migration runner (embedded SQL)
+  replayctl/           # operator tool: calibrate / revalidate the review policy
+  leaderboardctl/      # operator tool: rebuild / show the boards
 internal/
   platform/            # config, logging, HTTP lifecycle, health/build (no domain deps)
     db/                # pgx pool          migrate/  # goose runner
@@ -155,16 +160,22 @@ internal/
   auth/                # auth domain: service, handlers, sessions, oauth, argon2id
     authdb/            # sqlc-generated queries (committed)
     pgstore/           # Postgres impl of the auth Store/SessionStore interfaces
+  runs/                # run ingestion, own-runs feed, public replay endpoint
+    runsdb/            # sqlc-generated queries (committed)
+    pgstore/           # Postgres impl of the runs Store interface
   replay/              # vendored TS core (goja): dictionary registry + replay worker
     corejs/            # core.bundle.js — checked-in build artifact (see its README)
     dicts/             # the ONLY copy of the word lists; embedded, served immutable
     replaydb/          # sqlc-generated queue queries (committed)
     pgstore/           # FOR UPDATE SKIP LOCKED queue adapter
     testdata/          # golden vectors + the generator that produces them
+  leaderboard/         # bucket keys, board read model, projection from accepted runs
+    leaderboarddb/     # sqlc-generated queries (committed)
+    pgstore/           # projector (runs in the worker's tx) + reads + rebuild
 db/migrations/         # goose SQL migrations (embedded)
 docs/PROTOCOL.md       # realtime contract      docs/AUTH.md          # auth/HTTP contract
 docs/RUNS.md           # run ingestion          docs/DICTIONARIES.md  # dictionary service
-docs/REPLAY.md         # replay worker
+docs/REPLAY.md         # replay worker          docs/LEADERBOARDS.md  # score boards
 ```
 
 The package layout follows `BACKEND.md §2`; only the packages this phase needs

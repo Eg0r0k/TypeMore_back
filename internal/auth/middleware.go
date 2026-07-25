@@ -35,6 +35,26 @@ func (s *Service) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// OptionalAuth is middleware that attaches the resolved User when the request
+// carries a valid session and otherwise passes it through untouched. It never
+// rejects.
+//
+// It exists for routes that are public but PERSONALISED — the leaderboards, for
+// instance, are readable by anyone while `/{bucket}/me` needs to know who is
+// asking. Wrapping such a subtree in RequireAuth would make the whole board
+// private; leaving it bare would make the identity permanently invisible, so
+// the "who are you, if anyone" step is its own middleware.
+func (s *Service) OptionalAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, err := s.authenticate(r.Context(), r)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(withUser(r.Context(), user)))
+	})
+}
+
 // RequireOrigin is middleware enforcing that state-changing requests carry an
 // Origin header matching the configured frontend origin. This is the CSRF
 // defense for cookie-authenticated endpoints: a cross-site page can trigger a

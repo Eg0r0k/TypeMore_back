@@ -151,6 +151,20 @@ Everything cascades from `users`, so account deletion (BACKEND.md §8) is a sing
 
 - **Passwords:** argon2id (OWASP 2024 params: 19 MiB / t=2 / p=1), parameters
   encoded in each PHC hash so they can be raised without breaking old hashes.
+- **Hashing is gated.** Those parameters cost ~19 MiB and ~25 ms per hash, paid
+  on the request path *before* anything can reject the caller and on every
+  login whether the account exists or not. Unbounded, that is a memory-exhaustion
+  DoS made of ordinary login attempts — measured at **1.4–2.5 GiB for 200
+  concurrent unauthenticated requests** — and the per-IP limiter cannot stop it,
+  because a distributed caller never trips it and the memory is committed by the
+  hash it has already let through. A counting semaphore
+  (`TYPEMORE_AUTH_HASH_CONCURRENCY`, sized from the detected memory ceiling)
+  bounds concurrent hashes; a request that cannot get a slot within
+  `TYPEMORE_AUTH_HASH_WAIT` is shed with **503 `overloaded`**. Shedding is
+  uniform — a saturated server rejects a valid login and an invalid one
+  identically, before either touches a hash, so it opens no enumeration oracle.
+  Numbers, and why the gate costs no throughput, in
+  [`PERFORMANCE.md`](PERFORMANCE.md) zone 1.
 - **Sessions:** 256-bit opaque tokens; only the SHA-256 hash is stored. Cookie is
   `HttpOnly`, `SameSite=Lax`, `Secure` (config), 30-day sliding expiry.
 - **CSRF:** mutating endpoints require `Origin == FRONTEND_ORIGIN` (defense in
@@ -197,6 +211,9 @@ Everything cascades from `users`, so account deletion (BACKEND.md §8) is a sing
 | `TYPEMORE_AUTH_RATE_EVERY` | `1s` | Token-bucket refill interval |
 | `TYPEMORE_AUTH_RATE_BURST` | `10` | Token-bucket size (per IP) |
 | `TYPEMORE_AUTH_CLEANUP_INTERVAL` | `1h` | Janitor sweep interval (≤0 disables) |
+| `TYPEMORE_AUTH_HASH_CONCURRENCY` | *(derived)* | Max concurrent argon2id hashes; 0 derives from the memory budget |
+| `TYPEMORE_AUTH_HASH_MEMORY_BUDGET` | *(derived)* | Peak bytes hashing may hold; 0 derives from the detected memory ceiling (¼ of it), else 512 MiB |
+| `TYPEMORE_AUTH_HASH_WAIT` | `500ms` | How long a request queues for a hashing slot before a 503 |
 
 ## Configuring OAuth apps
 

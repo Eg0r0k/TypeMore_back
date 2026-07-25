@@ -77,6 +77,17 @@ func (s *Service) authenticate(ctx context.Context, r *http.Request) (User, erro
 	return user, nil
 }
 
+// Identify resolves the session cookie on r to a User for callers outside the
+// HTTP-middleware path (notably the WebSocket upgrade, which is not behind
+// RequireAuth). It returns (User{}, false) for an anonymous/guest connection.
+func (s *Service) Identify(r *http.Request) (User, bool) {
+	u, err := s.authenticate(r.Context(), r)
+	if err != nil {
+		return User{}, false
+	}
+	return u, true
+}
+
 // logout deletes the current session (if any) and clears the cookie. It is
 // idempotent: no cookie or an unknown token still succeeds.
 func (s *Service) logout(ctx context.Context, r *http.Request, w http.ResponseWriter) error {

@@ -75,6 +75,12 @@ var (
 		"add and verify an email address before setting a password")
 	apiErrPasswordAlreadySet = newAPIError(http.StatusConflict, "password_already_set",
 		"a password is already set; use the reset flow to change it")
+	// apiErrOverloaded is load shedding, not a client error: every hashing slot
+	// is busy and admitting this request would commit memory the process does
+	// not have. 503 (not 429) because it is the SERVER that is at capacity, and
+	// retrying shortly really will work. See hashgate.go.
+	apiErrOverloaded = newAPIError(http.StatusServiceUnavailable, "overloaded",
+		"the server is at hashing capacity; retry in a moment")
 )
 
 // apiErrBadRequest is a helper for input-validation failures with a custom

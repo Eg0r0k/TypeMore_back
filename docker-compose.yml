@@ -64,7 +64,10 @@ services:
       POSTGRES_PASSWORD: typemore
       POSTGRES_DB: typemore
     ports:
-      - "5432:5432"
+      # Host port is overridable and defaults to 5433 so it never collides with
+      # a native Postgres already bound to 5432 on the host. Container always
+      # listens on 5432; the host DSN must target this published port.
+      - "${TYPEMORE_DB_HOST_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

@@ -8,7 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type ActiveBan struct {
+	UserID uuid.UUID
+}
 
 type AuthIdentity struct {
 	ID              uuid.UUID
@@ -20,6 +25,14 @@ type AuthIdentity struct {
 	CreatedAt       time.Time
 }
 
+type Ban struct {
+	UserID    uuid.UUID
+	Reason    string
+	IssuedBy  *uuid.UUID
+	IssuedAt  time.Time
+	ExpiresAt *time.Time
+}
+
 type EmailToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -28,6 +41,76 @@ type EmailToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type LeaderboardEligibleRun struct {
+	RunID          uuid.UUID
+	UserID         uuid.UUID
+	Mode           string
+	DurationMs     *int32
+	WordCount      *int32
+	Lang           string
+	TextSourceKind string
+	Score          int64
+	Wpm            pgtype.Numeric
+	Raw            pgtype.Numeric
+	Acc            pgtype.Numeric
+	Mods           []byte
+	AchievedAt     time.Time
+}
+
+type LeaderboardEntry struct {
+	BucketKey  string
+	UserID     uuid.UUID
+	RunID      uuid.UUID
+	Score      int64
+	Wpm        pgtype.Numeric
+	Raw        pgtype.Numeric
+	Acc        pgtype.Numeric
+	Grade      string
+	Mods       []byte
+	AchievedAt time.Time
+}
+
+type LeaderboardRow struct {
+	BucketKey   string
+	UserID      uuid.UUID
+	DisplayName string
+	RunID       uuid.UUID
+	Score       int64
+	Wpm         pgtype.Numeric
+	Raw         pgtype.Numeric
+	Acc         pgtype.Numeric
+	Grade       string
+	Mods        []byte
+	AchievedAt  time.Time
+}
+
+type Match struct {
+	ID        string
+	RoomCode  string
+	Name      string
+	Settings  []byte
+	Freemods  []byte
+	Seed      int64
+	DictHash  string
+	Lang      string
+	GoAt      time.Time
+	EndedAt   time.Time
+	CreatedAt time.Time
+}
+
+type MatchRun struct {
+	ID          uuid.UUID
+	MatchID     string
+	PlayerID    string
+	Nick        string
+	UserID      *uuid.UUID
+	Freemods    []byte
+	Log         []byte
+	BatchCount  int32
+	FinalStatus string
+	CreatedAt   time.Time
 }
 
 type Run struct {
@@ -51,10 +134,10 @@ type Run struct {
 	ServerScore   []byte
 	Validation    []byte
 	BundleSha     *string
-	PolicyVersion *int16
 	ValidatedAt   *time.Time
 	Attempts      int16
 	LastError     *string
+	PolicyVersion *int16
 }
 
 type Session struct {

@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/coder/websocket v1.8.15
+	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-chi/cors v1.2.2
 	github.com/google/uuid v1.6.0
@@ -35,7 +36,6 @@ require (
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect

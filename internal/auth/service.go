@@ -50,6 +50,15 @@ type Config struct {
 	// Providers holds OAuth client credentials keyed by provider name
 	// (ProviderGitHub, ProviderGoogle). A provider absent here is disabled.
 	Providers map[string]ProviderCredentials
+	// HashConcurrency bounds how many argon2id hashes may run at once. Each
+	// costs HashCostBytes (19 MiB) of live heap, so this is a memory ceiling
+	// expressed as a count — see hashgate.go for why the rate limiter cannot
+	// substitute for it. Zero or negative disables the gate, which is only ever
+	// correct in a benchmark measuring the unbounded behaviour.
+	HashConcurrency int
+	// HashWait is how long a request may queue for a hashing slot before it is
+	// shed with 503. Zero uses DefaultHashWait.
+	HashWait time.Duration
 }
 
 // ProviderCredentials are one OAuth provider's client id/secret.
@@ -103,12 +112,20 @@ type Service struct {
 	// against it when the email is unknown so an attacker cannot distinguish
 	// "no such user" from "wrong password" by timing (both pay the hash cost).
 	dummyHash string
+	// hashes bounds concurrent argon2id work. See hashgate.go: this is the only
+	// thing standing between the server and a memory-exhaustion DoS made of
+	// ordinary login attempts.
+	hashes *hashGate
 }
 
 // NewService wires the auth service. store and sessions may be the same
 // concrete value (the Postgres adapter) or different (e.g. Redis sessions
 // later).
 func NewService(store Store, sessions SessionStore, mailer Mailer, limiter RateLimiter, cfg Config, log *slog.Logger) *Service {
+	wait := cfg.HashWait
+	if wait <= 0 {
+		wait = DefaultHashWait
+	}
 	s := &Service{
 		store:    store,
 		sessions: sessions,
@@ -117,15 +134,41 @@ func NewService(store Store, sessions SessionStore, mailer Mailer, limiter RateL
 		cfg:      cfg,
 		log:      log,
 		now:      time.Now,
+		hashes:   newHashGate(cfg.HashConcurrency, wait),
 	}
-	// Precompute the timing-decoy hash once. If hashing fails at startup we
-	// fall back to an empty string; VerifyPassword against it simply returns
-	// false without panicking.
+	// Precompute the timing-decoy hash once, ungated: it runs at startup with no
+	// contention, and a gate that could reject it would leave the decoy empty.
+	// If hashing fails we fall back to an empty string; VerifyPassword against
+	// it simply returns false without panicking.
 	if h, err := HashPassword(uuid.NewString()); err == nil {
 		s.dummyHash = h
 	}
 	s.oauth = s.buildProviders()
 	return s
+}
+
+// hashPassword is the gated HashPassword every request path must use. It
+// returns apiErrOverloaded when the server has no hashing capacity.
+func (s *Service) hashPassword(ctx context.Context, password string) (string, error) {
+	release, ok := s.hashes.acquire(ctx)
+	if !ok {
+		return "", apiErrOverloaded
+	}
+	defer release()
+	return HashPassword(password)
+}
+
+// verifyPassword is the gated VerifyPassword. The decoy verify on the
+// unknown-email path goes through it too: it costs exactly as much as a real
+// one, so exempting it would leave the hole open through a login form that
+// names accounts that do not exist.
+func (s *Service) verifyPassword(ctx context.Context, password, encoded string) (bool, error) {
+	release, ok := s.hashes.acquire(ctx)
+	if !ok {
+		return false, apiErrOverloaded
+	}
+	defer release()
+	return VerifyPassword(password, encoded)
 }
 
 // normalizeEmail canonicalizes an address for storage and comparison: trimmed

@@ -128,7 +128,7 @@ func (s *Service) handleSetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := HashPassword(req.Password)
+	hash, err := s.hashPassword(r.Context(), req.Password)
 	if err != nil {
 		s.writeError(w, r, err)
 		return

@@ -15,6 +15,10 @@
 #   make tools       install golangci-lint into your Go bin
 #   make calibrate   dry-run the replay review policy over stored runs
 #   make revalidate  re-judge runs whose policy_version is behind current
+#   make rebuild-leaderboards  recompute the boards from accepted runs
+#   make leaderboards          print the board index (bucket=KEY for one board)
+#   make load        run the performance & load suite (docs/PERFORMANCE.md)
+#   make bench       run the Go benchmarks
 
 BINARY := typemore-server
 PKG    := github.com/typemore/typemore-server
@@ -44,7 +48,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate rebuild-leaderboards leaderboards load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -98,6 +102,38 @@ calibrate:
 # pass finds nothing. Run it after bumping CurrentPolicyVersion.
 revalidate:
 	go run ./cmd/replayctl revalidate
+
+## rebuild-leaderboards: recompute the whole board from accepted runs
+# The projection is maintained incrementally inside the replay worker's
+# transaction, so this should report "unchanged" — being able to run it, and it
+# changing nothing, is what proves the board is derived from Postgres alone.
+# Run it after flipping TYPEMORE_LEADERBOARD_REQUIRE_VERIFIED_EMAIL or changing
+# the eligible-runs view. See docs/LEADERBOARDS.md.
+rebuild-leaderboards:
+	go run ./cmd/leaderboardctl rebuild
+
+## leaderboards: print the board index (or one bucket with bucket=KEY)
+leaderboards:
+	go run ./cmd/leaderboardctl show $(if $(bucket),-bucket $(bucket),)
+
+## load: run the performance & load suite (heavy; needs Docker)
+# Everything behind the `load` build tag: realistic-volume seeds, latency and
+# memory budgets, and the SQL plan assertions. Minutes, not seconds — the normal
+# `make test` deliberately skips all of it. Budgets and verdicts are in
+# docs/PERFORMANCE.md; a BUDGET MISSED line in the output is a failing test.
+load:
+	go test -tags=load -timeout=45m -v -run '^TestLoad' ./... 2>&1
+
+## bench: run the Go benchmarks (hot paths, allocations)
+bench:
+	go test -tags=load -timeout=45m -run '^$$' -bench=. -benchmem ./...
+
+## load-plans: only the query-plan assertions (fast; still needs Docker)
+# A migration that drops an index makes these red immediately, without waiting
+# for a latency budget to notice.
+load-plans:
+	go test -tags=load -timeout=15m -v -run '^TestLoadPlan' ./...
+
 
 ## tidy: sync go.mod/go.sum
 tidy:

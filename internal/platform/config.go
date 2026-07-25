@@ -101,6 +101,23 @@ type Config struct {
 	RunsRateEvery time.Duration `env:"RUNS_RATE_EVERY" envDefault:"30s"`
 	RunsRateBurst int           `env:"RUNS_RATE_BURST" envDefault:"120"`
 
+	// AuthHashConcurrency bounds how many argon2id password hashes run at once.
+	// Each costs ~19 MiB of live heap and is paid BEFORE any check that could
+	// reject the caller, so unbounded hashing is a memory-exhaustion DoS made of
+	// ordinary login attempts — one the per-IP limiter cannot stop, because a
+	// distributed caller never trips it. Zero (the default) derives the limit
+	// from AuthHashMemoryBudget or, failing that, from the detected memory
+	// ceiling; see docs/PERFORMANCE.md, zone 1.
+	AuthHashConcurrency int `env:"AUTH_HASH_CONCURRENCY"`
+	// AuthHashMemoryBudget is how much memory hashing may hold at peak, as a
+	// byte count. Zero derives it from the process memory ceiling (GOMEMLIMIT,
+	// cgroup limit, or MemAvailable) — a quarter of it, leaving the rest for
+	// request handling, the replay worker and the database pool.
+	AuthHashMemoryBudget uint64 `env:"AUTH_HASH_MEMORY_BUDGET"`
+	// AuthHashWait is how long a request may queue for a hashing slot before it
+	// is shed with 503. Zero uses the auth domain's default.
+	AuthHashWait time.Duration `env:"AUTH_HASH_WAIT"`
+
 	// --- Background cleanup ---
 
 	// AuthCleanupInterval is how often the janitor deletes expired sessions
@@ -148,6 +165,23 @@ type Config struct {
 	// ReplaySustainedBurstSec is the duration floor for the sustained-burst
 	// combination rule. Zero keeps the calibrated default.
 	ReplaySustainedBurstSec float64 `env:"REPLAY_SUSTAINED_BURST_SEC"`
+
+	// --- Leaderboards (docs/LEADERBOARDS.md) ---
+
+	// LeaderboardRequireVerifiedEmail gates board eligibility on the player
+	// holding a verified email identity. On by default: a board slot is worth
+	// more than a throwaway account costs, and requiring an address someone can
+	// actually receive mail at is the cheapest barrier that does not punish
+	// legitimate players. Changing it takes effect on runs already judged only
+	// after `make rebuild-leaderboards`.
+	LeaderboardRequireVerifiedEmail bool `env:"LEADERBOARD_REQUIRE_VERIFIED_EMAIL" envDefault:"true"`
+
+	// LeaderboardReplayRateEvery / LeaderboardReplayRateBurst are the per-IP
+	// token bucket on the public GET /runs/{id}/replay endpoint. An event log is
+	// the heaviest payload the server serves and the route needs no session, so
+	// it is limited far more tightly than the authenticated surface.
+	LeaderboardReplayRateEvery time.Duration `env:"LEADERBOARD_REPLAY_RATE_EVERY" envDefault:"2s"`
+	LeaderboardReplayRateBurst int           `env:"LEADERBOARD_REPLAY_RATE_BURST" envDefault:"30"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

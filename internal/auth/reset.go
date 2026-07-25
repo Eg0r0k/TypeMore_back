@@ -68,7 +68,7 @@ func (s *Service) handleResetConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newHash, err := HashPassword(req.NewPassword)
+	newHash, err := s.hashPassword(ctx, req.NewPassword)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
