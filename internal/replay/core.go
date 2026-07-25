@@ -1,0 +1,519 @@
+package replay
+
+import (
+	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/dop251/goja"
+)
+
+// coreBundle is the frontend's src/shared/core compiled to a single IIFE that
+// assigns its exports to the global `TypeMoreCore`. It is a checked-in build
+// artifact; see corejs/README.md for provenance and `make core-bundle` for the
+// exact command that reproduces it.
+//
+//go:embed corejs/core.bundle.js
+var coreBundle string
+
+const (
+	// bundleName is the script name goja reports in stack traces.
+	bundleName = "core.bundle.js"
+	// coreGlobal is the esbuild --global-name the bundle assigns its exports to.
+	coreGlobal = "TypeMoreCore"
+	// DefaultReplayTimeout bounds one core call. Generous for a real log (a 10k
+	// word run folds in milliseconds) and short enough that a pathological
+	// submission cannot occupy a worker.
+	DefaultReplayTimeout = 5 * time.Second
+)
+
+// bundleSHA is the SHA-256 of the vendored bundle, computed once. Every replay
+// decision records it, so a later rebalance can tell exactly which code judged
+// which run.
+var bundleSHA = func() string {
+	sum := sha256.Sum256([]byte(coreBundle))
+	return hex.EncodeToString(sum[:])
+}()
+
+// BundleSHA returns the SHA-256 (hex) of the vendored core bundle.
+func BundleSHA() string { return bundleSHA }
+
+// ErrReplayTimeout is returned when a core call exceeded the interrupt budget.
+// It is a *decision input*, not a crash: the run is flagged and retried later.
+var ErrReplayTimeout = errors.New("replay: core call timed out")
+
+// CoreError is a structured failure the core itself reported (a neverthrow Err),
+// as opposed to a JS exception. Kind is 'DictVersionMismatch' or
+// 'GenerationFailed' (validate.ts ValidationErrorKind).
+type CoreError struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
+func (e *CoreError) Error() string { return "replay: core error " + e.Kind + ": " + e.Message }
+
+// Core is one instance of the vendored game core running inside goja.
+//
+// A goja.Runtime is NOT safe for concurrent use. The worker gives every
+// goroutine its own Core; mu is the belt-and-braces guarantee that an accidental
+// share degrades to serialisation instead of memory corruption.
+type Core struct {
+	mu      sync.Mutex
+	rt      *goja.Runtime
+	timeout time.Duration
+
+	// Bound core exports. Names verified against the bundle — see
+	// TestBundleExportsAreBound.
+	dictVersion   goja.Callable
+	generateWords goja.Callable
+	validateLog   goja.Callable
+	scoreOfLog    goja.Callable
+	scoreV2OfLog  goja.Callable
+
+	// Host intrinsics used to move plain JSON across the boundary.
+	jsonParse     goja.Callable
+	jsonStringify goja.Callable
+
+	// dicts caches parsed dictionary objects by dict_hash. Dictionaries are
+	// immutable and shared by every run of a language, so parsing a 20 KB word
+	// list once per runtime instead of once per run is free correctness-wise.
+	dicts map[string]goja.Value
+}
+
+// NewCore evaluates the vendored bundle and binds the exports the pipeline
+// calls. A failure here means the vendored artifact is broken, was built with a
+// syntax goja cannot parse, or no longer exports something the server needs —
+// all startup failures, never first-request surprises.
+func NewCore(timeout time.Duration) (*Core, error) {
+	if timeout <= 0 {
+		timeout = DefaultReplayTimeout
+	}
+	rt := goja.New()
+	if _, err := rt.RunScript(bundleName, coreBundle); err != nil {
+		return nil, fmt.Errorf("replay: evaluate core bundle: %w", err)
+	}
+
+	exports, ok := rt.Get(coreGlobal).(*goja.Object)
+	if !ok || exports == nil {
+		return nil, fmt.Errorf("replay: core bundle did not define global %q", coreGlobal)
+	}
+
+	c := &Core{rt: rt, timeout: timeout, dicts: make(map[string]goja.Value)}
+	bind := func(dst *goja.Callable, name string) error {
+		fn, ok := goja.AssertFunction(exports.Get(name))
+		if !ok {
+			return fmt.Errorf("replay: core bundle exports no %s function", name)
+		}
+		*dst = fn
+		return nil
+	}
+	for _, b := range []struct {
+		dst  *goja.Callable
+		name string
+	}{
+		{&c.dictVersion, "dictVersion"},
+		{&c.generateWords, "generateWords"},
+		{&c.validateLog, "validateLog"},
+		{&c.scoreOfLog, "scoreOfLog"},
+		{&c.scoreV2OfLog, "scoreV2OfLog"},
+	} {
+		if err := bind(b.dst, b.name); err != nil {
+			return nil, err
+		}
+	}
+
+	jsonObj, ok := rt.Get("JSON").(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: runtime has no JSON intrinsic")
+	}
+	if c.jsonParse, ok = goja.AssertFunction(jsonObj.Get("parse")); !ok {
+		return nil, errors.New("replay: JSON.parse is not callable")
+	}
+	if c.jsonStringify, ok = goja.AssertFunction(jsonObj.Get("stringify")); !ok {
+		return nil, errors.New("replay: JSON.stringify is not callable")
+	}
+	return c, nil
+}
+
+// callOn runs one core function under a context-driven interrupt, with an
+// explicit `this`. goja executes synchronously on this goroutine, so the only
+// way to stop a runaway script is a watchdog that flips the runtime's interrupt
+// flag.
+//
+// Three failure modes collapse into Go errors here and none of them panics:
+// a JS `throw` (goja returns *goja.Exception), an interrupt (the deadline), and
+// an interpreter-level panic (stack overflow).
+func (c *Core) callOn(ctx context.Context, this goja.Value, fn goja.Callable, args ...goja.Value) (v goja.Value, err error) {
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	// The watchdog must be fully retired before ClearInterrupt, otherwise a
+	// deadline that fires as the call returns would leave the flag set and kill
+	// the NEXT call instead.
+	returned := make(chan struct{})
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		select {
+		case <-callCtx.Done():
+			c.rt.Interrupt(callCtx.Err())
+		case <-returned:
+		}
+	}()
+	defer func() {
+		close(returned)
+		<-watchdogDone
+		c.rt.ClearInterrupt()
+		if r := recover(); r != nil {
+			v, err = nil, fmt.Errorf("replay: core panicked: %v", r)
+		}
+	}()
+
+	res, callErr := fn(this, args...)
+	if callErr != nil {
+		var interrupted *goja.InterruptedError
+		if errors.As(callErr, &interrupted) || callCtx.Err() != nil {
+			return nil, ErrReplayTimeout
+		}
+		return nil, fmt.Errorf("replay: core threw: %w", callErr)
+	}
+	return res, nil
+}
+
+// call invokes a plain (unbound) core export.
+func (c *Core) call(ctx context.Context, fn goja.Callable, args ...goja.Value) (goja.Value, error) {
+	return c.callOn(ctx, goja.Undefined(), fn, args...)
+}
+
+// parseJSON turns a JSON document into a native JS value inside the runtime.
+// Building the input as JSON in Go and letting the engine parse it is both
+// faster and less surprising than reflecting Go maps across the boundary.
+func (c *Core) parseJSON(ctx context.Context, doc string) (goja.Value, error) {
+	return c.call(ctx, c.jsonParse, c.rt.ToValue(doc))
+}
+
+// stringifyJSON serialises a JS value back to JSON. Numbers survive exactly:
+// JS emits the shortest decimal that round-trips to the same IEEE double, and
+// Go parses it back to that same double — which is what makes the server's
+// score comparable to the client's *exactly*, with no epsilon.
+func (c *Core) stringifyJSON(ctx context.Context, v goja.Value) ([]byte, error) {
+	out, err := c.call(ctx, c.jsonStringify, v)
+	if err != nil {
+		return nil, err
+	}
+	if goja.IsUndefined(out) || goja.IsNull(out) {
+		return nil, errors.New("replay: core returned a non-serialisable value")
+	}
+	return []byte(out.String()), nil
+}
+
+// DictVersion returns the core's FNV-1a fingerprint of a word list — the same
+// `dict_hash` the client computes, byte-for-byte, because it is literally the
+// same code. Never reimplement this in Go: a drifting hash silently invalidates
+// every stored run.
+func (c *Core) DictVersion(words []string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// A native JS array, not a wrapped Go slice: the bundle is free to use any
+	// Array method it likes, now or after the next core change.
+	items := make([]any, len(words))
+	for i, w := range words {
+		items[i] = w
+	}
+	res, err := c.call(context.Background(), c.dictVersion, c.rt.NewArray(items...))
+	if err != nil {
+		return "", err
+	}
+	s, ok := res.Export().(string)
+	if !ok {
+		return "", fmt.Errorf("replay: dictVersion returned %T, want string", res.Export())
+	}
+	return s, nil
+}
+
+// unwrapResult splits a neverthrow Result into its Ok value or its Err payload.
+// The core returns Results from generateWords and validateLog; nothing else in
+// this package knows what a Result looks like.
+func (c *Core) unwrapResult(ctx context.Context, v goja.Value) (goja.Value, error) {
+	obj, ok := v.(*goja.Object)
+	if !ok {
+		return nil, fmt.Errorf("replay: expected a Result object, got %s", v.ExportType())
+	}
+	isErr, ok := goja.AssertFunction(obj.Get("isErr"))
+	if !ok {
+		return nil, errors.New("replay: value is not a neverthrow Result (no isErr)")
+	}
+	// isErr() reads `this`: neverthrow's Err delegates to `!this.isOk()`.
+	flag, err := c.callOn(ctx, obj, isErr)
+	if err != nil {
+		return nil, err
+	}
+	if !flag.ToBoolean() {
+		return obj.Get("value"), nil
+	}
+	raw, err := c.stringifyJSON(ctx, obj.Get("error"))
+	if err != nil {
+		return nil, err
+	}
+	var ce CoreError
+	if err := json.Unmarshal(raw, &ce); err != nil {
+		return nil, fmt.Errorf("replay: decode core error: %w", err)
+	}
+	return nil, &ce
+}
+
+// dictionaryValue returns the parsed dictionary object for a hash, caching it
+// for the lifetime of this runtime. The core never mutates a dictionary, so one
+// parsed copy is safely shared across every run of that language.
+func (c *Core) dictionaryValue(ctx context.Context, dictHash string, body []byte) (goja.Value, error) {
+	if v, ok := c.dicts[dictHash]; ok {
+		return v, nil
+	}
+	v, err := c.parseJSON(ctx, string(body))
+	if err != nil {
+		return nil, err
+	}
+	c.dicts[dictHash] = v
+	return v, nil
+}
+
+// Input is one run as the pipeline needs it. Every jsonb field arrives
+// exactly as the client submitted it and is handed to the core untouched — the
+// server models none of these shapes.
+type Input struct {
+	Seed     int64
+	DictHash string
+	// DictBody is the dictionary file as the registry stores it.
+	DictBody []byte
+	// Setup is the submitted {config, generation, declaration} snapshot.
+	Setup json.RawMessage
+	// Log is the submitted {version, events} EventLog.
+	Log json.RawMessage
+	// ScoreVersion routes the score recomputation (1 → scoreOfLog, 2 → scoreV2OfLog).
+	ScoreVersion int16
+}
+
+// Flag is one scored plausibility flag from validateLog.
+type Flag struct {
+	Code   string  `json:"code"`
+	Score  float64 `json:"score"`
+	Detail string  `json:"detail,omitempty"`
+}
+
+// Result is what the core says about a run. Metrics and Score are the raw
+// JSON the core produced (never re-encoded by Go), so what lands in the database
+// is bit-for-bit what the same bundle produces in the browser.
+type Result struct {
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason,omitempty"`
+	Flags   []Flag `json:"flags"`
+	// Metrics is the server-recomputed Metrics object; nil when the verdict is
+	// invalid (the core reports zeroes and the numbers are meaningless).
+	Metrics json.RawMessage `json:"-"`
+	// Score is the server-recomputed ScoreResult; nil when the verdict is invalid.
+	Score json.RawMessage `json:"-"`
+}
+
+// setupParts is the only piece of the submitted setup the pipeline has to look
+// at, and it looks at it structurally only: the sub-objects are forwarded to
+// the core verbatim.
+type setupParts struct {
+	Config      json.RawMessage `json:"config"`
+	Generation  json.RawMessage `json:"generation"`
+	Declaration json.RawMessage `json:"declaration"`
+}
+
+// Replay recomputes one run through the core: validate the log against words
+// regenerated from its own seed, then recompute the score with the formula
+// version the run was submitted under.
+//
+// The composition lives in Go, but every computation is the bundle's:
+// generateWords, validateLog, scoreOfLog and scoreV2OfLog are the same functions
+// the browser calls. Nothing here re-derives a metric, a multiplier, or a hash.
+func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var setup setupParts
+	if err := json.Unmarshal(in.Setup, &setup); err != nil {
+		return Result{}, fmt.Errorf("replay: setup is not an object: %w", err)
+	}
+	if len(setup.Config) == 0 || len(setup.Generation) == 0 {
+		return Result{}, errors.New("replay: setup is missing config or generation")
+	}
+
+	dictionary, err := c.dictionaryValue(ctx, in.DictHash, in.DictBody)
+	if err != nil {
+		return Result{}, err
+	}
+
+	// One JSON.parse for everything that came from the client. The dictionary is
+	// attached afterwards from the (cached) parsed copy.
+	var doc strings.Builder
+	doc.WriteString(`{"seed":`)
+	fmt.Fprintf(&doc, "%d", in.Seed)
+	doc.WriteString(`,"dictVersion":`)
+	writeJSONString(&doc, in.DictHash)
+	doc.WriteString(`,"configSnapshot":{"config":`)
+	doc.Write(setup.Config)
+	doc.WriteString(`,"generation":`)
+	doc.Write(setup.Generation)
+	doc.WriteString(`},"declaration":`)
+	if len(setup.Declaration) == 0 {
+		doc.WriteString(`{}`)
+	} else {
+		doc.Write(setup.Declaration)
+	}
+	doc.WriteString(`,"log":`)
+	doc.Write(in.Log)
+	doc.WriteString(`}`)
+
+	parsed, err := c.parseJSON(ctx, doc.String())
+	if err != nil {
+		return Result{}, err
+	}
+	input, ok := parsed.(*goja.Object)
+	if !ok {
+		return Result{}, errors.New("replay: assembled input did not parse to an object")
+	}
+	if err := input.Set("dictionary", dictionary); err != nil {
+		return Result{}, fmt.Errorf("replay: attach dictionary: %w", err)
+	}
+
+	report, err := c.validate(ctx, input)
+	if err != nil {
+		return Result{}, err
+	}
+	if report.Verdict != verdictValid {
+		// An invalid log has no meaningful numbers: the core returns zeroed
+		// metrics and scoring a log the reducer rejected is nonsense.
+		return report, nil
+	}
+
+	score, err := c.score(ctx, input, in.ScoreVersion, dictionary)
+	if err != nil {
+		return Result{}, err
+	}
+	report.Score = score
+	return report, nil
+}
+
+// validate runs validateLog and lifts its report into Go, keeping the metrics
+// as the core's own JSON.
+func (c *Core) validate(ctx context.Context, input *goja.Object) (Result, error) {
+	res, err := c.call(ctx, c.validateLog, input)
+	if err != nil {
+		return Result{}, err
+	}
+	value, err := c.unwrapResult(ctx, res)
+	if err != nil {
+		return Result{}, err
+	}
+	report, ok := value.(*goja.Object)
+	if !ok {
+		return Result{}, errors.New("replay: validateLog returned a non-object report")
+	}
+
+	raw, err := c.stringifyJSON(ctx, report)
+	if err != nil {
+		return Result{}, err
+	}
+	var out Result
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Result{}, fmt.Errorf("replay: decode validation report: %w", err)
+	}
+	if out.Flags == nil {
+		out.Flags = []Flag{}
+	}
+	if out.Verdict == verdictValid {
+		metrics, err := c.stringifyJSON(ctx, report.Get("metrics"))
+		if err != nil {
+			return Result{}, err
+		}
+		out.Metrics = metrics
+	}
+	return out, nil
+}
+
+// score regenerates the run's words and recomputes the score with the formula
+// the run was submitted under. The words never cross into Go: generateWords
+// hands back a JS array that is passed straight into the scorer.
+func (c *Core) score(ctx context.Context, input *goja.Object, scoreVersion int16, dictionary goja.Value) (json.RawMessage, error) {
+	snapshot, ok := input.Get("configSnapshot").(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: configSnapshot is not an object")
+	}
+	config := snapshot.Get("config")
+	generation := snapshot.Get("generation")
+
+	// makeSeedContext is trivial data assembly ({seed, dictVersion, generation})
+	// and the hash is already known — building it here avoids a sixth binding
+	// whose only job would be to allocate the same three fields.
+	seedContext := c.rt.NewObject()
+	if err := errors.Join(
+		seedContext.Set("seed", input.Get("seed")),
+		seedContext.Set("dictVersion", input.Get("dictVersion")),
+		seedContext.Set("generation", generation),
+	); err != nil {
+		return nil, fmt.Errorf("replay: build seed context: %w", err)
+	}
+
+	generated, err := c.call(ctx, c.generateWords, dictionary, seedContext)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.unwrapResult(ctx, generated)
+	if err != nil {
+		return nil, err
+	}
+	genObj, ok := value.(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: generateWords returned a non-object")
+	}
+	words := genObj.Get("words")
+
+	logObj, ok := input.Get("log").(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: log is not an object")
+	}
+	events := logObj.Get("events")
+
+	setup := c.rt.NewObject()
+	if err := errors.Join(setup.Set("config", config), setup.Set("words", words)); err != nil {
+		return nil, fmt.Errorf("replay: build score setup: %w", err)
+	}
+
+	var result goja.Value
+	switch scoreVersion {
+	case scoreVersionV1:
+		result, err = c.call(ctx, c.scoreOfLog, events, setup)
+	case scoreVersionV2:
+		// v2 adds the mod layer: the multiplier is derived from the generation
+		// config (verifiable mods) and the declaration (view-only, on trust).
+		if err := setup.Set("generation", generation); err != nil {
+			return nil, fmt.Errorf("replay: build score setup: %w", err)
+		}
+		result, err = c.call(ctx, c.scoreV2OfLog, events, setup, input.Get("declaration"))
+	default:
+		return nil, fmt.Errorf("replay: unsupported score version %d", scoreVersion)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c.stringifyJSON(ctx, result)
+}
+
+// writeJSONString appends a JSON string literal. json.Marshal of a string never
+// fails, so the error is structurally impossible.
+func writeJSONString(dst *strings.Builder, s string) {
+	b, _ := json.Marshal(s)
+	dst.Write(b)
+}

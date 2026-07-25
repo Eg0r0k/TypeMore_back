@@ -14,9 +14,12 @@ RETURNING id, status, created_at;
 
 -- name: ListRunsFirst :many
 -- First page of a user's runs, newest first. Keyset pagination continues via
--- ListRunsAfter using the (created_at, id) of the last row.
+-- ListRunsAfter using the (created_at, id) of the last row. The replay columns
+-- (server_metrics/server_score/validation/validated_at) are NULL until the
+-- worker has judged the run.
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
+       server_metrics, server_score, validation, validated_at,
        log_bytes, created_at
 FROM runs
 WHERE user_id = $1
@@ -29,6 +32,7 @@ LIMIT $2;
 -- (created_at DESC, id DESC) ordering exactly.
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
+       server_metrics, server_score, validation, validated_at,
        log_bytes, created_at
 FROM runs
 WHERE user_id = $1
@@ -40,6 +44,7 @@ LIMIT $4;
 -- One run's summary (no log payload), scoped to its owner.
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
+       server_metrics, server_score, validation, validated_at,
        log_bytes, created_at
 FROM runs
 WHERE id = $1 AND user_id = $2;

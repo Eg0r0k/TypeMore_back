@@ -7,3 +7,12 @@
 *.png binary
 *.jpg binary
 *.ico binary
+
+# Dictionary bodies are served byte-for-byte and their length is published in
+# the catalogue (`bytes`), so their on-disk form must not depend on the
+# contributor's OS. The rule above already normalizes them; this is the explicit
+# statement of the requirement. See docs/DICTIONARIES.md.
+internal/replay/dicts/*.json text eol=lf
+
+# Vendored build artifact — rebuilt by `make core-bundle`, never hand-edited.
+internal/replay/corejs/core.bundle.js text eol=lf

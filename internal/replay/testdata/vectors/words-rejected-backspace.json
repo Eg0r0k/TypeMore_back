@@ -1,0 +1,282 @@
+{
+  "name": "words-rejected-backspace",
+  "description": "Every word boundary is followed by a locked backspace and a locked ctrl+backspace. Both are rejected by the reducer, never logged, and MUST NOT consume a seq — a hole here is the regression this vector exists for.",
+  "expect": {
+    "status": "accepted",
+    "verdict": "valid",
+    "flags": []
+  },
+  "payload": {
+    "mode": "words",
+    "wordCount": 6,
+    "lang": "german",
+    "seed": 777001,
+    "dictHash": "804728e8",
+    "scoreVersion": 2,
+    "setup": {
+      "config": {
+        "mode": "words",
+        "durationMs": 60000,
+        "maxExtraChars": 20,
+        "difficulty": "normal",
+        "nospace": false,
+        "minWpm": 0
+      },
+      "generation": {
+        "mode": "words",
+        "length": 6,
+        "punctuation": false,
+        "numbers": false,
+        "randomCase": false,
+        "reverse": false
+      },
+      "declaration": {
+        "blind": false,
+        "fading": false,
+        "flashlight": false
+      }
+    },
+    "clientMetrics": {
+      "wpm": 92.94536319866025,
+      "raw": 92.94536319866025,
+      "acc": 1
+    },
+    "clientScore": {
+      "version": 2,
+      "total": 395,
+      "base": 340,
+      "comboPeak": 32,
+      "accMultiplier": 1,
+      "timeBonus": 1.161817039983253,
+      "modMultiplier": 1
+    },
+    "log": {
+      "version": 1,
+      "events": [
+        {
+          "kind": "insert",
+          "seq": 1,
+          "t": 81,
+          "text": "Ö"
+        },
+        {
+          "kind": "insert",
+          "seq": 2,
+          "t": 165,
+          "text": "l"
+        },
+        {
+          "kind": "commit",
+          "seq": 3,
+          "t": 256
+        },
+        {
+          "kind": "insert",
+          "seq": 4,
+          "t": 582,
+          "text": "H"
+        },
+        {
+          "kind": "insert",
+          "seq": 5,
+          "t": 649,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 6,
+          "t": 773,
+          "text": "m"
+        },
+        {
+          "kind": "insert",
+          "seq": 7,
+          "t": 842,
+          "text": "b"
+        },
+        {
+          "kind": "insert",
+          "seq": 8,
+          "t": 921,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 9,
+          "t": 1051,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 10,
+          "t": 1135,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 11,
+          "t": 1227,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 12,
+          "t": 1318
+        },
+        {
+          "kind": "insert",
+          "seq": 13,
+          "t": 1636,
+          "text": "K"
+        },
+        {
+          "kind": "insert",
+          "seq": 14,
+          "t": 1739,
+          "text": "u"
+        },
+        {
+          "kind": "insert",
+          "seq": 15,
+          "t": 1859,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 16,
+          "t": 1954,
+          "text": "h"
+        },
+        {
+          "kind": "insert",
+          "seq": 17,
+          "t": 2025,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 18,
+          "t": 2150,
+          "text": "n"
+        },
+        {
+          "kind": "commit",
+          "seq": 19,
+          "t": 2279
+        },
+        {
+          "kind": "insert",
+          "seq": 20,
+          "t": 2500,
+          "text": "K"
+        },
+        {
+          "kind": "insert",
+          "seq": 21,
+          "t": 2611,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 22,
+          "t": 2675,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 23,
+          "t": 2767,
+          "text": "b"
+        },
+        {
+          "kind": "insert",
+          "seq": 24,
+          "t": 2910,
+          "text": "b"
+        },
+        {
+          "kind": "insert",
+          "seq": 25,
+          "t": 3042,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 26,
+          "t": 3167
+        },
+        {
+          "kind": "insert",
+          "seq": 27,
+          "t": 3470,
+          "text": "T"
+        },
+        {
+          "kind": "insert",
+          "seq": 28,
+          "t": 3599,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 29,
+          "t": 3661,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 30,
+          "t": 3740,
+          "text": "t"
+        },
+        {
+          "kind": "insert",
+          "seq": 31,
+          "t": 3877,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 32,
+          "t": 3952
+        },
+        {
+          "kind": "insert",
+          "seq": 33,
+          "t": 4302,
+          "text": "F"
+        },
+        {
+          "kind": "insert",
+          "seq": 34,
+          "t": 4446,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 35,
+          "t": 4571,
+          "text": "s"
+        },
+        {
+          "kind": "insert",
+          "seq": 36,
+          "t": 4644,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 37,
+          "t": 4745,
+          "text": "h"
+        },
+        {
+          "kind": "commit",
+          "seq": 38,
+          "t": 4858
+        }
+      ]
+    }
+  },
+  "rejectedDispatches": 10
+}

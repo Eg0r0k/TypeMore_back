@@ -47,6 +47,13 @@ type Run struct {
 	Log           []byte
 	LogBytes      int32
 	CreatedAt     time.Time
+	ServerMetrics []byte
+	ServerScore   []byte
+	Validation    []byte
+	BundleSha     *string
+	ValidatedAt   *time.Time
+	Attempts      int16
+	LastError     *string
 }
 
 type Session struct {

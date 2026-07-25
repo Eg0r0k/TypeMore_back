@@ -2,7 +2,7 @@
 // versions:
 //   sqlc v1.31.1
 
-package runsdb
+package replaydb
 
 import (
 	"encoding/json"
@@ -29,6 +29,33 @@ type EmailToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type Match struct {
+	ID        string
+	RoomCode  string
+	Name      string
+	Settings  json.RawMessage
+	Freemods  json.RawMessage
+	Seed      int64
+	DictHash  string
+	Lang      string
+	GoAt      time.Time
+	EndedAt   time.Time
+	CreatedAt time.Time
+}
+
+type MatchRun struct {
+	ID          uuid.UUID
+	MatchID     string
+	PlayerID    string
+	Nick        string
+	UserID      *uuid.UUID
+	Freemods    json.RawMessage
+	Log         []byte
+	BatchCount  int32
+	FinalStatus string
+	CreatedAt   time.Time
 }
 
 type Run struct {

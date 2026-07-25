@@ -106,6 +106,30 @@ type Config struct {
 	// AuthCleanupInterval is how often the janitor deletes expired sessions
 	// and stale email tokens. Zero or negative disables the janitor.
 	AuthCleanupInterval time.Duration `env:"AUTH_CLEANUP_INTERVAL" envDefault:"1h"`
+
+	// --- Replay worker ---
+	//
+	// The worker recomputes every pending run through the vendored core bundle
+	// in goja and sets its authoritative status (docs/REPLAY.md).
+
+	// ReplayEnabled turns the worker on. Disable it to run an API-only replica
+	// (or in tests that drive batches by hand).
+	ReplayEnabled bool `env:"REPLAY_ENABLED" envDefault:"true"`
+	// ReplayPollInterval is how long a worker waits after an empty batch. A
+	// full batch is followed immediately, so a backlog drains at full speed.
+	ReplayPollInterval time.Duration `env:"REPLAY_POLL_INTERVAL" envDefault:"2s"`
+	// ReplayBatchSize is how many runs one transaction claims. It also bounds
+	// how long that transaction holds its row locks.
+	ReplayBatchSize int32 `env:"REPLAY_BATCH_SIZE" envDefault:"20"`
+	// ReplayConcurrency is the number of worker goroutines. Each owns a goja
+	// runtime (~a few MB), and they share the queue via FOR UPDATE SKIP LOCKED.
+	ReplayConcurrency int `env:"REPLAY_CONCURRENCY" envDefault:"1"`
+	// ReplayTimeout bounds one core call. A run that exceeds it is flagged
+	// replay_timeout rather than allowed to occupy a worker.
+	ReplayTimeout time.Duration `env:"REPLAY_TIMEOUT" envDefault:"5s"`
+	// ReplayShutdownGrace bounds how long an in-flight batch may take to finish
+	// after the shutdown signal, so verdicts commit instead of rolling back.
+	ReplayShutdownGrace time.Duration `env:"REPLAY_SHUTDOWN_GRACE" envDefault:"30s"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

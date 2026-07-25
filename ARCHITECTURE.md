@@ -161,19 +161,25 @@ over the network; the client generates the text locally
 would break log self-sufficiency (and with it replay validation), put network
 latency on the hot path, and kill offline play.
 
-Dictionaries are **immutable, versioned static assets**:
+Dictionaries are **immutable, versioned static assets**, served by this server
+(`internal/replay/dicts` is their only copy — see
+[`docs/DICTIONARIES.md`](docs/DICTIONARIES.md)):
 
-- Served as static files with a content hash in the filename
-  (`english-1k.<hash>.json`) and `Cache-Control: immutable` — downloaded once
+- **IMPLEMENTED.** `GET /api/v1/dictionaries` is the catalogue
+  (`lang`, `name`, `dictHash`, `wordCount`, `bytes`); the body lives at
+  `GET /static/dictionaries/<dictHash>.json` with
+  `Cache-Control: public, max-age=31536000, immutable` + ETag — downloaded once
   per version, cacheable on a CDN. Zero per-run traffic.
-- The FNV-1a `dict_hash` (already computed by the core) is the version
-  identifier. The server keeps a **dictionary registry** and stores **every
-  version ever published** — event logs are immutable and kept forever, so
-  every historical run must remain replayable against its own dictionary.
+- The FNV-1a `dict_hash` is the version identifier, computed at startup by the
+  **vendored core bundle running in goja** — never a Go reimplementation, so the
+  server and the client cannot disagree. The registry keeps **every version ever
+  published**: event logs are immutable and kept forever, so every historical run
+  must remain replayable against its own dictionary.
 - A ranked run is accepted only if its `dict_hash` exists in the registry; the
   replay worker loads the matching dictionary version for goja.
 - Updating a dictionary = publishing a new file with a new hash; old runs keep
-  validating against theirs.
+  validating against theirs. A published hash is frozen (enforced by a golden
+  test).
 - Multiplayer: the server sends `seed + dict_hash` to all match participants;
   a client missing that dictionary version downloads the static asset before
   the match starts, then everything runs locally.

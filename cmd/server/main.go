@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +27,8 @@ import (
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/mail"
+	"github.com/typemore/typemore-server/internal/replay"
+	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
 	"github.com/typemore/typemore-server/internal/runs"
 	runspg "github.com/typemore/typemore-server/internal/runs/pgstore"
 	"github.com/typemore/typemore-server/internal/ws"
@@ -93,6 +96,49 @@ func run() error {
 			return u.ID, ok
 		}, logger)
 
+	// Dictionaries: the server is the single source of the word lists the client
+	// generates text from. The registry is seeded once here — every fingerprint
+	// computed by the vendored core bundle running in goja, so the server and
+	// the client can never disagree about a dict_hash. A broken bundle or an
+	// unhashable dictionary is a startup failure, not a 500 later.
+	core, err := replay.NewCore(cfg.ReplayTimeout)
+	if err != nil {
+		return err
+	}
+	dictReg, err := replay.NewRegistry(core)
+	if err != nil {
+		return err
+	}
+	dictSvc, err := replay.NewDictionaryService(dictReg)
+	if err != nil {
+		return err
+	}
+	logger.Info("dictionary registry seeded", "count", len(dictReg.Catalogue()))
+
+	// Replay worker: the queue that turns 'pending' runs into
+	// accepted/flagged/rejected (docs/REPLAY.md). It is started here and drained
+	// below, after the HTTP server has stopped accepting requests — the deferred
+	// Wait runs before the deferred pool.Close, so in-flight batches still have
+	// a database.
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	if cfg.ReplayEnabled {
+		worker := replay.NewWorker(replaypg.New(pool), dictReg, replay.WorkerConfig{
+			PollInterval:  cfg.ReplayPollInterval,
+			BatchSize:     cfg.ReplayBatchSize,
+			Concurrency:   cfg.ReplayConcurrency,
+			ReplayTimeout: cfg.ReplayTimeout,
+			ShutdownGrace: cfg.ReplayShutdownGrace,
+		}, logger)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			if err := worker.Run(ctx); err != nil {
+				logger.Error("replay worker exited with error", "err", err)
+			}
+		}()
+	}
+
 	router := chi.NewRouter()
 	// RequestID tags each request; Recoverer turns a handler panic into a 500
 	// instead of crashing the process.
@@ -110,11 +156,18 @@ func run() error {
 
 	router.Get("/healthz", platform.HealthHandler())
 	router.Get("/readyz", platform.ReadyHandler(pool))
+	// Dictionary bodies are public, immutable, content-addressed static assets.
+	// They sit outside /api/v1 (and outside auth) on purpose: this path is a CDN
+	// origin, not an API.
+	router.Mount("/static/dictionaries", dictSvc.StaticRoutes())
 	router.Handle("/ws", ws.NewHandler(logger, cfg.AllowedOrigins))
 
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
+		// The dictionary catalogue is a public asset too — no session: guests
+		// play client-side and still need to pick a language.
+		r.Mount("/dictionaries", dictSvc.Routes())
 		// Runs: session required (guests play client-only). RequireOrigin is a
 		// no-op on safe methods, so this group covers GET listing/detail and the
 		// Origin-checked POST ingestion alike.

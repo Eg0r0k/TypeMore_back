@@ -4,8 +4,9 @@ Phase 3 of the server: accepting finished typing tests. A client that finishes a
 run POSTs its **event log** plus the numbers it computed locally; the server
 validates the payload **structurally only**, stores the log as an immutable gzip
 blob with status `pending`, and answers immediately. Nothing here is
-authoritative — the client keeps showing its own preview result until the future
-replay worker recomputes and accepts it. See BACKEND.md §3–4 and
+authoritative — the client keeps showing its own preview result until the
+**replay worker** recomputes it and sets the real status
+([`REPLAY.md`](REPLAY.md)). See BACKEND.md §3–4 and
 [`ARCHITECTURE.md`](../ARCHITECTURE.md) §4.2.
 
 Guests play entirely client-side; ingestion requires a session (auth phase).
@@ -142,22 +143,53 @@ Everything cascades from `users`, so account deletion removes a user's runs.
 | `TYPEMORE_RUNS_RATE_EVERY` | `30s` | Per-user token-bucket refill interval |
 | `TYPEMORE_RUNS_RATE_BURST` | `120` | Per-user token-bucket size |
 
-## Deliberately deferred (replay-worker phase → `internal/replay`)
+## The verdict (replay worker)
 
-Out of scope now, by design; each lands with the replay worker (BACKEND.md §9
-step 3, ARCHITECTURE.md §4.2):
+A landed run is `pending` until the worker replays it. Once judged, the summary
+endpoints carry the server's own numbers alongside the client's — all four
+fields are **absent** until then, so "not replayed yet" is distinguishable from
+"replayed and empty":
 
-- **goja replay** of the log against the same TS core bundle.
-- **Score / metric recomputation** with the versioned formula and comparison to
-  the client's reported numbers (`clientMetrics` / `clientScore` are display-only
-  until then).
-- **Dictionary registry**: verifying `dict_hash` against published versions and
-  loading the matching dictionary for replay (ARCHITECTURE.md §4.5).
-- **Anti-cheat / plausibility** heuristics (inter-key intervals, impossible
-  speeds).
-- **Status transitions** beyond `pending` (`accepted` / `flagged` / `rejected`)
-  and the admin review queue.
-- **Leaderboards / TP**: bucket ZSETs and profile rating (SCORING_CONCEPT §4–5).
+| Field | Meaning |
+|---|---|
+| `status` | `pending` → `accepted` / `flagged` / `rejected` |
+| `serverMetrics` | The core's recomputed `Metrics` |
+| `serverScore` | The core's recomputed `ScoreResult` |
+| `validation` | `{verdict, reason?, flags[], divergence?}` |
+| `validatedAt` | When the verdict was written |
 
-The `(status, created_at) WHERE status='pending'` index is the future worker's
-queue scan; the stored `setup` snapshot is what goja will replay against.
+`clientMetrics` / `clientScore` are never overwritten: the pair is the evidence
+a mismatch is judged on. The pipeline, the decision table, and the queue design
+are in [`REPLAY.md`](REPLAY.md).
+
+```json
+{
+  "id": "...", "status": "flagged",
+  "clientScore": { "version": 2, "total": 5640, "...": "..." },
+  "serverScore": { "version": 2, "total": 1410, "...": "..." },
+  "serverMetrics": { "wpm": 113.07, "raw": 113.07, "accuracy": 1, "...": "..." },
+  "validation": {
+    "verdict": "valid",
+    "reason": "score_mismatch",
+    "flags": [],
+    "divergence": { "field": "total", "client": 5640, "server": 1410 }
+  },
+  "validatedAt": "2026-07-24T21:00:03Z"
+}
+```
+
+## Deliberately deferred
+
+Still out of scope for both ingestion and the worker:
+
+- **Anti-cheat beyond the core's own plausibility flags** — cross-run
+  heuristics, fingerprint correlation, shadow-ban (BACKEND.md §11).
+- **The admin review queue** over `flagged` runs.
+- **Leaderboards / TP**: an `accepted` run does not yet update any read model
+  (SCORING_CONCEPT §4–5).
+- **Rejecting an unknown `dictHash` at ingestion.** Ingestion still treats it as
+  an opaque string; the worker resolves it against the registry
+  ([`DICTIONARIES.md`](DICTIONARIES.md)) and flags `unknown_dict`.
+
+The `(status, created_at) WHERE status='pending'` index is the worker's queue
+scan; the stored `setup` snapshot is what goja replays against.

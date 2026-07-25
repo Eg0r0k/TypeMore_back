@@ -3,15 +3,16 @@
 // only, stores the log as an immutable gzip blob, and lists/returns a user's own
 // runs. See BACKEND.md §3–4 and docs/RUNS.md.
 //
-// # What this phase does NOT do (deliberately deferred to the replay-worker phase)
+// # What this package does NOT do (it is internal/replay's job)
 //
 // Validation here is structural and fast — no game knowledge. It never replays
 // the log, never recomputes metrics or score, never touches a dictionary, and
-// never moves a run past 'pending'. Deep semantics (goja replay, score
-// recomputation, plausibility/anti-cheat, dict-hash registry lookup, status
-// transitions, leaderboards) belong to internal/replay and are out of scope.
-// Every run lands 'pending'; the client keeps showing its own preview result
-// because nothing here is authoritative yet.
+// never moves a run past 'pending'. Deep semantics — goja replay, score
+// recomputation, plausibility flags, dict-hash resolution, and the transition
+// to accepted/flagged/rejected — belong to the replay worker (internal/replay,
+// docs/REPLAY.md), which writes the verdict columns this package then exposes
+// read-only on the summary endpoints. Every run lands 'pending'; the client
+// keeps showing its own preview result because nothing here is authoritative.
 //
 // # Layering
 //

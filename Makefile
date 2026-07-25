@@ -10,6 +10,8 @@
 #   make test-race   run tests under the race detector (needs a C compiler)
 #   make lint        run golangci-lint (see `make tools`)
 #   make build       build the binary into ./bin with version metadata
+#   make core-bundle re-vendor the TS core bundle from the frontend checkout
+#   make vectors     regenerate the replay golden vectors (read the diff!)
 #   make tools       install golangci-lint into your Go bin
 
 BINARY := typemore-server
@@ -19,6 +21,9 @@ CMD    := ./cmd/server
 # Database URL for the goose CLI targets (migrate-create). The migrate-up/down
 # targets go through cmd/migrate, which reads TYPEMORE_DATABASE_URL itself.
 DATABASE_URL ?= postgres://typemore:typemore@localhost:5432/typemore?sslmode=disable
+
+# Frontend checkout used by `make core-bundle`. Defaults to a sibling directory.
+FRONTEND ?= ../TypeMore_front
 
 # Windows produces .exe binaries; keep the output runnable on both OSes.
 ifeq ($(OS),Windows_NT)
@@ -37,7 +42,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle vectors migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -58,6 +63,25 @@ lint:
 ## build: compile the binary into ./bin with version metadata
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY)$(EXE) $(CMD)
+
+## core-bundle: re-vendor internal/replay/corejs/core.bundle.js from $(FRONTEND)
+# The bundler comes from the frontend's own node_modules, so its version is
+# pinned by that lockfile rather than by whatever is on this machine. See
+# internal/replay/corejs/README.md before changing the flags.
+core-bundle:
+	cd $(FRONTEND) && pnpm exec esbuild src/shared/core/index.ts \
+		--bundle --format=iife --global-name=TypeMoreCore --target=es2017 \
+		--platform=browser --legal-comments=none \
+		--outfile="$(CURDIR)/internal/replay/corejs/core.bundle.js"
+	go test ./internal/replay/
+
+## vectors: regenerate the replay golden vectors (ONLY after a deliberate bundle change)
+# The vectors pin the scoring contract: `make core-bundle` fails the test suite
+# if they move. Regenerate only once you have decided the change is intended,
+# and READ THE DIFF — see internal/replay/testdata/README.md and docs/REPLAY.md.
+vectors:
+	node internal/replay/testdata/generate.mjs
+	go test ./internal/replay/
 
 ## tidy: sync go.mod/go.sum
 tidy:

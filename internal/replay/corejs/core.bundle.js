@@ -1,0 +1,1633 @@
+"use strict";
+var TypeMoreCore = (() => {
+  var __defProp = Object.defineProperty;
+  var __defProps = Object.defineProperties;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getOwnPropSymbols = Object.getOwnPropertySymbols;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __propIsEnum = Object.prototype.propertyIsEnumerable;
+  var __knownSymbol = (name, symbol) => (symbol = Symbol[name]) ? symbol : Symbol.for("Symbol." + name);
+  var __typeError = (msg) => {
+    throw TypeError(msg);
+  };
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __spreadValues = (a, b) => {
+    for (var prop in b || (b = {}))
+      if (__hasOwnProp.call(b, prop))
+        __defNormalProp(a, prop, b[prop]);
+    if (__getOwnPropSymbols)
+      for (var prop of __getOwnPropSymbols(b)) {
+        if (__propIsEnum.call(b, prop))
+          __defNormalProp(a, prop, b[prop]);
+      }
+    return a;
+  };
+  var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+  var __await = function(promise, isYieldStar) {
+    this[0] = promise;
+    this[1] = isYieldStar;
+  };
+  var __yieldStar = (value) => {
+    var obj = value[__knownSymbol("asyncIterator")], isAwait = false, method, it = {};
+    if (obj == null) {
+      obj = value[__knownSymbol("iterator")]();
+      method = (k) => it[k] = (x) => obj[k](x);
+    } else {
+      obj = obj.call(value);
+      method = (k) => it[k] = (v) => {
+        if (isAwait) {
+          isAwait = false;
+          if (k === "throw") throw v;
+          return v;
+        }
+        isAwait = true;
+        return {
+          done: false,
+          value: new __await(new Promise((resolve) => {
+            var x = obj[k](v);
+            if (!(x instanceof Object)) __typeError("Object expected");
+            resolve(x);
+          }), 1)
+        };
+      };
+    }
+    return it[__knownSymbol("iterator")] = () => it, method("next"), "throw" in obj ? method("throw") : it.throw = (x) => {
+      throw x;
+    }, "return" in obj && method("return"), it;
+  };
+
+  // src/shared/core/index.ts
+  var index_exports = {};
+  __export(index_exports, {
+    DEFAULT_MAX_EXTRA_CHARS: () => DEFAULT_MAX_EXTRA_CHARS,
+    DEFAULT_THRESHOLDS: () => DEFAULT_THRESHOLDS,
+    EVENT_LOG_VERSION: () => EVENT_LOG_VERSION,
+    GameCore: () => GameCore,
+    MINSPEED_GRACE_MS: () => MINSPEED_GRACE_MS,
+    MINSPEED_MULTIPLIERS: () => MINSPEED_MULTIPLIERS,
+    MOD_MULTIPLIERS: () => MOD_MULTIPLIERS,
+    MOD_MULTIPLIER_CAP: () => MOD_MULTIPLIER_CAP,
+    SCORE_VERSION: () => SCORE_VERSION,
+    SCORE_VERSION_2: () => SCORE_VERSION_2,
+    TICK_INTERVAL_MS: () => TICK_INTERVAL_MS,
+    activeModsV1: () => activeModsV1,
+    afkOf: () => afkOf,
+    afkStatsOf: () => afkStatsOf,
+    asMs: () => asMs,
+    asSeq: () => asSeq,
+    comboMultiplier: () => comboMultiplier,
+    commitEvent: () => commitEvent,
+    computeMetrics: () => computeMetrics,
+    deleteEvent: () => deleteEvent,
+    dictVersion: () => dictVersion,
+    errorWords: () => errorWords,
+    errorWordsOf: () => errorWordsOf,
+    finalizeScore: () => finalizeScore,
+    finalizeScoreV2: () => finalizeScoreV2,
+    fnv1a: () => fnv1a,
+    foldLog: () => foldLog,
+    generateWords: () => generateWords,
+    gradeOf: () => gradeOf,
+    initialScoreState: () => initialScoreState,
+    initialState: () => initialState,
+    initialStateOf: () => initialStateOf,
+    insertEvent: () => insertEvent,
+    kogasa: () => kogasa,
+    makeSeedContext: () => makeSeedContext,
+    metricsOf: () => metricsOf,
+    minSpeedFailInstant: () => minSpeedFailInstant,
+    modMultiplierV1: () => modMultiplierV1,
+    mulberry32: () => mulberry32,
+    netCharsOf: () => netCharsOf,
+    nextTickDelay: () => nextTickDelay,
+    parseEventBatch: () => parseEventBatch,
+    parseGameEvent: () => parseGameEvent,
+    progressOf: () => progressOf,
+    reduce: () => reduce,
+    replaceEvent: () => replaceEvent,
+    reverseWord: () => reverseWord,
+    scoreOfLog: () => scoreOfLog,
+    scoreStep: () => scoreStep,
+    scoreV2OfLog: () => scoreV2OfLog,
+    settle: () => settle,
+    sortEvents: () => sortEvents,
+    targetCharsOf: () => targetCharsOf,
+    timelineOf: () => timelineOf,
+    totalTargetCharsOf: () => totalTargetCharsOf,
+    validateLog: () => validateLog,
+    wpmOverTime: () => wpmOverTime
+  });
+
+  // src/shared/core/events.ts
+  var asSeq = (n) => n;
+  var asMs = (n) => n;
+  var EVENT_LOG_VERSION = 1;
+  var insertEvent = (seq, t, text) => ({
+    kind: "insert",
+    seq: asSeq(seq),
+    t: asMs(t),
+    text
+  });
+  var deleteEvent = (seq, t, unit = "char") => ({
+    kind: "delete",
+    seq: asSeq(seq),
+    t: asMs(t),
+    unit
+  });
+  var commitEvent = (seq, t) => ({
+    kind: "commit",
+    seq: asSeq(seq),
+    t: asMs(t)
+  });
+  var replaceEvent = (seq, t, from, to, text, source) => ({
+    kind: "replace",
+    seq: asSeq(seq),
+    t: asMs(t),
+    from,
+    to,
+    text,
+    source
+  });
+  function sortEvents(events) {
+    return [...events].sort((a, b) => a.seq - b.seq);
+  }
+
+  // node_modules/.pnpm/neverthrow@8.2.0/node_modules/neverthrow/dist/index.es.js
+  var defaultErrorConfig = {
+    withStackTrace: false
+  };
+  var createNeverThrowError = (message, result, config = defaultErrorConfig) => {
+    const data = result.isOk() ? { type: "Ok", value: result.value } : { type: "Err", value: result.error };
+    const maybeStack = config.withStackTrace ? new Error().stack : void 0;
+    return {
+      data,
+      message,
+      stack: maybeStack
+    };
+  };
+  function __awaiter(thisArg, _arguments, P, generator) {
+    function adopt(value) {
+      return value instanceof P ? value : new P(function(resolve) {
+        resolve(value);
+      });
+    }
+    return new (P || (P = Promise))(function(resolve, reject) {
+      function fulfilled(value) {
+        try {
+          step(generator.next(value));
+        } catch (e) {
+          reject(e);
+        }
+      }
+      function rejected(value) {
+        try {
+          step(generator["throw"](value));
+        } catch (e) {
+          reject(e);
+        }
+      }
+      function step(result) {
+        result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected);
+      }
+      step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+  }
+  function __values(o) {
+    var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
+    if (m) return m.call(o);
+    if (o && typeof o.length === "number") return {
+      next: function() {
+        if (o && i >= o.length) o = void 0;
+        return { value: o && o[i++], done: !o };
+      }
+    };
+    throw new TypeError(s ? "Object is not iterable." : "Symbol.iterator is not defined.");
+  }
+  function __await2(v) {
+    return this instanceof __await2 ? (this.v = v, this) : new __await2(v);
+  }
+  function __asyncGenerator(thisArg, _arguments, generator) {
+    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    var g = generator.apply(thisArg, _arguments || []), i, q = [];
+    return i = Object.create((typeof AsyncIterator === "function" ? AsyncIterator : Object).prototype), verb("next"), verb("throw"), verb("return", awaitReturn), i[Symbol.asyncIterator] = function() {
+      return this;
+    }, i;
+    function awaitReturn(f) {
+      return function(v) {
+        return Promise.resolve(v).then(f, reject);
+      };
+    }
+    function verb(n, f) {
+      if (g[n]) {
+        i[n] = function(v) {
+          return new Promise(function(a, b) {
+            q.push([n, v, a, b]) > 1 || resume(n, v);
+          });
+        };
+        if (f) i[n] = f(i[n]);
+      }
+    }
+    function resume(n, v) {
+      try {
+        step(g[n](v));
+      } catch (e) {
+        settle2(q[0][3], e);
+      }
+    }
+    function step(r) {
+      r.value instanceof __await2 ? Promise.resolve(r.value.v).then(fulfill, reject) : settle2(q[0][2], r);
+    }
+    function fulfill(value) {
+      resume("next", value);
+    }
+    function reject(value) {
+      resume("throw", value);
+    }
+    function settle2(f, v) {
+      if (f(v), q.shift(), q.length) resume(q[0][0], q[0][1]);
+    }
+  }
+  function __asyncDelegator(o) {
+    var i, p;
+    return i = {}, verb("next"), verb("throw", function(e) {
+      throw e;
+    }), verb("return"), i[Symbol.iterator] = function() {
+      return this;
+    }, i;
+    function verb(n, f) {
+      i[n] = o[n] ? function(v) {
+        return (p = !p) ? { value: __await2(o[n](v)), done: false } : f ? f(v) : v;
+      } : f;
+    }
+  }
+  function __asyncValues(o) {
+    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    var m = o[Symbol.asyncIterator], i;
+    return m ? m.call(o) : (o = typeof __values === "function" ? __values(o) : o[Symbol.iterator](), i = {}, verb("next"), verb("throw"), verb("return"), i[Symbol.asyncIterator] = function() {
+      return this;
+    }, i);
+    function verb(n) {
+      i[n] = o[n] && function(v) {
+        return new Promise(function(resolve, reject) {
+          v = o[n](v), settle2(resolve, reject, v.done, v.value);
+        });
+      };
+    }
+    function settle2(resolve, reject, d, v) {
+      Promise.resolve(v).then(function(v2) {
+        resolve({ value: v2, done: d });
+      }, reject);
+    }
+  }
+  var ResultAsync = class _ResultAsync {
+    constructor(res) {
+      this._promise = res;
+    }
+    static fromSafePromise(promise) {
+      const newPromise = promise.then((value) => new Ok(value));
+      return new _ResultAsync(newPromise);
+    }
+    static fromPromise(promise, errorFn) {
+      const newPromise = promise.then((value) => new Ok(value)).catch((e) => new Err(errorFn(e)));
+      return new _ResultAsync(newPromise);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    static fromThrowable(fn, errorFn) {
+      return (...args) => {
+        return new _ResultAsync((() => __awaiter(this, void 0, void 0, function* () {
+          try {
+            return new Ok(yield fn(...args));
+          } catch (error) {
+            return new Err(errorFn ? errorFn(error) : error);
+          }
+        }))());
+      };
+    }
+    static combine(asyncResultList) {
+      return combineResultAsyncList(asyncResultList);
+    }
+    static combineWithAllErrors(asyncResultList) {
+      return combineResultAsyncListWithAllErrors(asyncResultList);
+    }
+    map(f) {
+      return new _ResultAsync(this._promise.then((res) => __awaiter(this, void 0, void 0, function* () {
+        if (res.isErr()) {
+          return new Err(res.error);
+        }
+        return new Ok(yield f(res.value));
+      })));
+    }
+    andThrough(f) {
+      return new _ResultAsync(this._promise.then((res) => __awaiter(this, void 0, void 0, function* () {
+        if (res.isErr()) {
+          return new Err(res.error);
+        }
+        const newRes = yield f(res.value);
+        if (newRes.isErr()) {
+          return new Err(newRes.error);
+        }
+        return new Ok(res.value);
+      })));
+    }
+    andTee(f) {
+      return new _ResultAsync(this._promise.then((res) => __awaiter(this, void 0, void 0, function* () {
+        if (res.isErr()) {
+          return new Err(res.error);
+        }
+        try {
+          yield f(res.value);
+        } catch (e) {
+        }
+        return new Ok(res.value);
+      })));
+    }
+    orTee(f) {
+      return new _ResultAsync(this._promise.then((res) => __awaiter(this, void 0, void 0, function* () {
+        if (res.isOk()) {
+          return new Ok(res.value);
+        }
+        try {
+          yield f(res.error);
+        } catch (e) {
+        }
+        return new Err(res.error);
+      })));
+    }
+    mapErr(f) {
+      return new _ResultAsync(this._promise.then((res) => __awaiter(this, void 0, void 0, function* () {
+        if (res.isOk()) {
+          return new Ok(res.value);
+        }
+        return new Err(yield f(res.error));
+      })));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    andThen(f) {
+      return new _ResultAsync(this._promise.then((res) => {
+        if (res.isErr()) {
+          return new Err(res.error);
+        }
+        const newValue = f(res.value);
+        return newValue instanceof _ResultAsync ? newValue._promise : newValue;
+      }));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    orElse(f) {
+      return new _ResultAsync(this._promise.then((res) => __awaiter(this, void 0, void 0, function* () {
+        if (res.isErr()) {
+          return f(res.error);
+        }
+        return new Ok(res.value);
+      })));
+    }
+    match(ok2, _err) {
+      return this._promise.then((res) => res.match(ok2, _err));
+    }
+    unwrapOr(t) {
+      return this._promise.then((res) => res.unwrapOr(t));
+    }
+    /**
+     * @deprecated will be removed in 9.0.0.
+     *
+     * You can use `safeTry` without this method.
+     * @example
+     * ```typescript
+     * safeTry(async function* () {
+     *   const okValue = yield* yourResult
+     * })
+     * ```
+     * Emulates Rust's `?` operator in `safeTry`'s body. See also `safeTry`.
+     */
+    safeUnwrap() {
+      return __asyncGenerator(this, arguments, function* safeUnwrap_1() {
+        return yield __await2(yield __await2(yield* __yieldStar(__asyncDelegator(__asyncValues(yield __await2(this._promise.then((res) => res.safeUnwrap())))))));
+      });
+    }
+    // Makes ResultAsync implement PromiseLike<Result>
+    then(successCallback, failureCallback) {
+      return this._promise.then(successCallback, failureCallback);
+    }
+    [Symbol.asyncIterator]() {
+      return __asyncGenerator(this, arguments, function* _a() {
+        const result = yield __await2(this._promise);
+        if (result.isErr()) {
+          yield yield __await2(errAsync(result.error));
+        }
+        return yield __await2(result.value);
+      });
+    }
+  };
+  function errAsync(err2) {
+    return new ResultAsync(Promise.resolve(new Err(err2)));
+  }
+  var fromPromise = ResultAsync.fromPromise;
+  var fromSafePromise = ResultAsync.fromSafePromise;
+  var fromAsyncThrowable = ResultAsync.fromThrowable;
+  var combineResultList = (resultList) => {
+    let acc = ok([]);
+    for (const result of resultList) {
+      if (result.isErr()) {
+        acc = err(result.error);
+        break;
+      } else {
+        acc.map((list) => list.push(result.value));
+      }
+    }
+    return acc;
+  };
+  var combineResultAsyncList = (asyncResultList) => ResultAsync.fromSafePromise(Promise.all(asyncResultList)).andThen(combineResultList);
+  var combineResultListWithAllErrors = (resultList) => {
+    let acc = ok([]);
+    for (const result of resultList) {
+      if (result.isErr() && acc.isErr()) {
+        acc.error.push(result.error);
+      } else if (result.isErr() && acc.isOk()) {
+        acc = err([result.error]);
+      } else if (result.isOk() && acc.isOk()) {
+        acc.value.push(result.value);
+      }
+    }
+    return acc;
+  };
+  var combineResultAsyncListWithAllErrors = (asyncResultList) => ResultAsync.fromSafePromise(Promise.all(asyncResultList)).andThen(combineResultListWithAllErrors);
+  var Result;
+  (function(Result6) {
+    function fromThrowable2(fn, errorFn) {
+      return (...args) => {
+        try {
+          const result = fn(...args);
+          return ok(result);
+        } catch (e) {
+          return err(errorFn ? errorFn(e) : e);
+        }
+      };
+    }
+    Result6.fromThrowable = fromThrowable2;
+    function combine(resultList) {
+      return combineResultList(resultList);
+    }
+    Result6.combine = combine;
+    function combineWithAllErrors(resultList) {
+      return combineResultListWithAllErrors(resultList);
+    }
+    Result6.combineWithAllErrors = combineWithAllErrors;
+  })(Result || (Result = {}));
+  function ok(value) {
+    return new Ok(value);
+  }
+  function err(err2) {
+    return new Err(err2);
+  }
+  var Ok = class {
+    constructor(value) {
+      this.value = value;
+    }
+    isOk() {
+      return true;
+    }
+    isErr() {
+      return !this.isOk();
+    }
+    map(f) {
+      return ok(f(this.value));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    mapErr(_f) {
+      return ok(this.value);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    andThen(f) {
+      return f(this.value);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    andThrough(f) {
+      return f(this.value).map((_value) => this.value);
+    }
+    andTee(f) {
+      try {
+        f(this.value);
+      } catch (e) {
+      }
+      return ok(this.value);
+    }
+    orTee(_f) {
+      return ok(this.value);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    orElse(_f) {
+      return ok(this.value);
+    }
+    asyncAndThen(f) {
+      return f(this.value);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    asyncAndThrough(f) {
+      return f(this.value).map(() => this.value);
+    }
+    asyncMap(f) {
+      return ResultAsync.fromSafePromise(f(this.value));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    unwrapOr(_v) {
+      return this.value;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    match(ok2, _err) {
+      return ok2(this.value);
+    }
+    safeUnwrap() {
+      const value = this.value;
+      return (function* () {
+        return value;
+      })();
+    }
+    _unsafeUnwrap(_) {
+      return this.value;
+    }
+    _unsafeUnwrapErr(config) {
+      throw createNeverThrowError("Called `_unsafeUnwrapErr` on an Ok", this, config);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-this-alias, require-yield
+    *[Symbol.iterator]() {
+      return this.value;
+    }
+  };
+  var Err = class {
+    constructor(error) {
+      this.error = error;
+    }
+    isOk() {
+      return false;
+    }
+    isErr() {
+      return !this.isOk();
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    map(_f) {
+      return err(this.error);
+    }
+    mapErr(f) {
+      return err(f(this.error));
+    }
+    andThrough(_f) {
+      return err(this.error);
+    }
+    andTee(_f) {
+      return err(this.error);
+    }
+    orTee(f) {
+      try {
+        f(this.error);
+      } catch (e) {
+      }
+      return err(this.error);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    andThen(_f) {
+      return err(this.error);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+    orElse(f) {
+      return f(this.error);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    asyncAndThen(_f) {
+      return errAsync(this.error);
+    }
+    asyncAndThrough(_f) {
+      return errAsync(this.error);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    asyncMap(_f) {
+      return errAsync(this.error);
+    }
+    unwrapOr(v) {
+      return v;
+    }
+    match(_ok, err2) {
+      return err2(this.error);
+    }
+    safeUnwrap() {
+      const error = this.error;
+      return (function* () {
+        yield err(error);
+        throw new Error("Do not use this generator out of `safeTry`");
+      })();
+    }
+    _unsafeUnwrap(config) {
+      throw createNeverThrowError("Called `_unsafeUnwrap` on an Err", this, config);
+    }
+    _unsafeUnwrapErr(_) {
+      return this.error;
+    }
+    *[Symbol.iterator]() {
+      const self = this;
+      yield self;
+      return self;
+    }
+  };
+  var fromThrowable = Result.fromThrowable;
+
+  // src/shared/core/words.ts
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = a + 1831565813 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function fnv1a(input) {
+    let h = 2166136261;
+    for (let i = 0; i < input.length; i++) {
+      h ^= input.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+  function dictVersion(words) {
+    return fnv1a(words.join("\0")).toString(16).padStart(8, "0");
+  }
+  function makeSeedContext(dict, seed, generation) {
+    return { seed, dictVersion: dictVersion(dict.words), generation };
+  }
+  var NUMBER_WEIGHT = 0.2;
+  var PUNCTUATION_WEIGHT = 0.25;
+  var SENTENCE_END = [".", "?", "!"];
+  var MID_PUNCTUATION = [",", ";", ":"];
+  function targetCount(gen) {
+    switch (gen.mode) {
+      case "words":
+      case "custom":
+      case "quote":
+        return Math.max(1, Math.floor(gen.length));
+      case "time":
+        return Math.max(60, Math.ceil(gen.length * 6));
+      case "free":
+        return Math.max(60, Math.floor(gen.length) || 100);
+    }
+  }
+  function randomInt(rng, max) {
+    return Math.floor(rng() * max);
+  }
+  function decorate(word, gen, rng, capitalizeNext) {
+    if (gen.numbers && rng() < NUMBER_WEIGHT) {
+      const digits = 1 + randomInt(rng, 4);
+      let n = "";
+      for (let i = 0; i < digits; i++) n += String(randomInt(rng, 10));
+      return n;
+    }
+    let out = word;
+    if (gen.randomCase) {
+      let cased = "";
+      for (const ch of out) cased += rng() < 0.5 ? ch.toUpperCase() : ch.toLowerCase();
+      out = cased;
+    }
+    if (capitalizeNext && out.length > 0) out = out[0].toUpperCase() + out.slice(1);
+    if (gen.punctuation && rng() < PUNCTUATION_WEIGHT) {
+      const end = SENTENCE_END[randomInt(rng, SENTENCE_END.length)];
+      const mid = MID_PUNCTUATION[randomInt(rng, MID_PUNCTUATION.length)];
+      out += rng() < 0.5 ? end : mid;
+    }
+    return out;
+  }
+  function reverseWord(word) {
+    return [...word].reverse().join("");
+  }
+  function generateWords(dict, context) {
+    var _a;
+    if (dict.words.length === 0) {
+      return err({ kind: "EmptyDictionary", message: `dictionary "${dict.name}" has no words` });
+    }
+    const actualVersion = dictVersion(dict.words);
+    if (actualVersion !== context.dictVersion) {
+      return err({
+        kind: "DictVersionMismatch",
+        message: `dictionary version mismatch: context=${context.dictVersion} actual=${actualVersion}`
+      });
+    }
+    const rng = mulberry32(context.seed);
+    const count = targetCount(context.generation);
+    const words = [];
+    let prevIndex = -1;
+    let capitalizeNext = context.generation.punctuation;
+    for (let i = 0; i < count; i++) {
+      let index = randomInt(rng, dict.words.length);
+      if (index === prevIndex && dict.words.length > 1) index = (index + 1) % dict.words.length;
+      prevIndex = index;
+      const base = dict.words[index];
+      const decorated = decorate(base, context.generation, rng, capitalizeNext);
+      words.push(context.generation.reverse ? reverseWord(decorated) : decorated);
+      capitalizeNext = context.generation.punctuation && SENTENCE_END.includes((_a = decorated[decorated.length - 1]) != null ? _a : "");
+    }
+    return ok({ words, context, dictName: dict.name });
+  }
+
+  // src/shared/core/game-core.ts
+  var DEFAULT_MAX_EXTRA_CHARS = 20;
+  function initialState() {
+    return { phase: "idle", wordIndex: 0, input: [], startedAt: null, finishedAt: null, lastSeq: null, failReason: null };
+  }
+  function initialStateOf(ctx) {
+    const state = initialState();
+    if (ctx.config.startPolicy !== "go") return state;
+    return __spreadProps(__spreadValues({}, state), { phase: "running", startedAt: asMs(0) });
+  }
+  function setInput(input, index, value) {
+    const next = input.slice();
+    next[index] = value;
+    return next;
+  }
+  function withEvent(state, patch, event) {
+    return __spreadProps(__spreadValues(__spreadValues({}, state), patch), { lastSeq: event.seq });
+  }
+  var MINSPEED_GRACE_MS = 3e3;
+  function netCharsOf(ctx, state) {
+    var _a, _b, _c, _d;
+    const committed = Math.min(state.wordIndex, ctx.words.length);
+    let correct = 0;
+    for (let i = 0; i < committed; i++) {
+      const target = (_a = ctx.words[i]) != null ? _a : "";
+      const typed = (_b = state.input[i]) != null ? _b : "";
+      const n = Math.min(target.length, typed.length);
+      for (let k = 0; k < n; k++) if (typed[k] === target[k]) correct++;
+    }
+    if (state.wordIndex < ctx.words.length) {
+      const target = (_c = ctx.words[state.wordIndex]) != null ? _c : "";
+      const buffer = (_d = state.input[state.wordIndex]) != null ? _d : "";
+      const n = Math.min(target.length, buffer.length);
+      for (let k = 0; k < n; k++) if (buffer[k] === target[k]) correct++;
+    }
+    const finishedByCount = state.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
+    const spaces = finishedByCount ? Math.max(0, committed - 1) : committed;
+    return correct + spaces;
+  }
+  function targetCharsOf(ctx, state) {
+    var _a, _b, _c;
+    const committed = Math.min(state.wordIndex, ctx.words.length);
+    let chars = 0;
+    for (let i = 0; i < committed; i++) chars += ((_a = ctx.words[i]) != null ? _a : "").length;
+    if (state.wordIndex < ctx.words.length) {
+      const target = ((_b = ctx.words[state.wordIndex]) != null ? _b : "").length;
+      const typed = ((_c = state.input[state.wordIndex]) != null ? _c : "").length;
+      chars += typed < target ? typed : target;
+    }
+    return chars;
+  }
+  function totalTargetCharsOf(ctx) {
+    let chars = 0;
+    for (const word of ctx.words) chars += word.length;
+    return chars;
+  }
+  function progressOf(ctx, state) {
+    const total = totalTargetCharsOf(ctx);
+    if (total <= 0) return 0;
+    const fraction = targetCharsOf(ctx, state) / total;
+    return fraction > 1 ? 1 : fraction;
+  }
+  function minSpeedFailInstant(ctx, state) {
+    const floor = ctx.config.minWpm;
+    if (!(floor > 0) || state.startedAt === null || state.phase !== "running") return null;
+    const netChars = netCharsOf(ctx, state);
+    const failElapsed = Math.max(12e3 * netChars / floor, MINSPEED_GRACE_MS);
+    return asMs(state.startedAt + failElapsed);
+  }
+  function settle(ctx, state, nowMs) {
+    if (state.phase !== "running" || state.startedAt === null) return state;
+    let finishAt = null;
+    let reason = null;
+    if (ctx.config.mode === "time") {
+      finishAt = asMs(state.startedAt + ctx.config.durationMs);
+    }
+    if (ctx.config.minWpm > 0) {
+      const failAt = minSpeedFailInstant(ctx, state);
+      if (failAt !== null && (finishAt === null || failAt < finishAt)) {
+        finishAt = failAt;
+        reason = "minSpeed";
+      }
+    }
+    if (finishAt !== null && nowMs >= finishAt) {
+      return __spreadProps(__spreadValues({}, state), { phase: "finished", finishedAt: finishAt, failReason: reason });
+    }
+    return state;
+  }
+  function hasWrongChar(target, text, at) {
+    for (let k = 0; k < text.length; k++) {
+      const pos = at + k;
+      if (pos >= target.length || target[pos] !== text[k]) return true;
+    }
+    return false;
+  }
+  function commitCurrentWord(ctx, state, event) {
+    var _a, _b;
+    const wordIndex = state.wordIndex;
+    const buffer = (_a = state.input[wordIndex]) != null ? _a : "";
+    const target = (_b = ctx.words[wordIndex]) != null ? _b : "";
+    if (ctx.config.difficulty === "expert" && buffer !== target) {
+      return ok(withEvent(state, { phase: "finished", finishedAt: event.t, failReason: "expert" }, event));
+    }
+    const nextIndex = wordIndex + 1;
+    const finishesByCount = ctx.config.mode !== "time" && ctx.config.mode !== "free" && nextIndex >= ctx.words.length;
+    if (finishesByCount) {
+      return ok(withEvent(state, { wordIndex: nextIndex, phase: "finished", finishedAt: event.t }, event));
+    }
+    return ok(withEvent(state, { wordIndex: nextIndex }, event));
+  }
+  function applyEdit(ctx, state, event, next, insertedText, insertedAt) {
+    var _a, _b;
+    const target = (_a = ctx.words[state.wordIndex]) != null ? _a : "";
+    if (next.length > target.length + ctx.config.maxExtraChars) {
+      return err({ kind: "WordLengthExceeded", message: `word ${state.wordIndex} exceeds length cap`, seq: event.seq });
+    }
+    const withBuffer = __spreadProps(__spreadValues({}, state), {
+      phase: "running",
+      startedAt: (_b = state.startedAt) != null ? _b : event.t,
+      input: setInput(state.input, state.wordIndex, next)
+    });
+    if (ctx.config.difficulty === "master" && hasWrongChar(target, insertedText, insertedAt)) {
+      return ok(withEvent(withBuffer, { phase: "finished", finishedAt: event.t, failReason: "master" }, event));
+    }
+    if (ctx.config.nospace && next.length >= target.length) {
+      return commitCurrentWord(ctx, withBuffer, event);
+    }
+    return ok(withEvent(withBuffer, {}, event));
+  }
+  function prevWordLocked(ctx, state) {
+    var _a, _b;
+    const previous = state.wordIndex - 1;
+    if (previous < 0) return false;
+    return ((_a = state.input[previous]) != null ? _a : "") === ((_b = ctx.words[previous]) != null ? _b : "");
+  }
+  function reduceDelete(ctx, state, event) {
+    var _a;
+    const buffer = (_a = state.input[state.wordIndex]) != null ? _a : "";
+    const crossesBoundary = buffer.length === 0 && state.wordIndex > 0;
+    if (crossesBoundary && prevWordLocked(ctx, state)) {
+      return err({ kind: "BackspaceLocked", message: `backspace blocked at correct word ${state.wordIndex - 1}`, seq: event.seq });
+    }
+    if (event.unit === "word") {
+      if (buffer.length > 0) return ok(withEvent(state, { input: setInput(state.input, state.wordIndex, "") }, event));
+      if (crossesBoundary) {
+        return ok(withEvent(state, { wordIndex: state.wordIndex - 1, input: setInput(state.input, state.wordIndex - 1, "") }, event));
+      }
+      return ok(withEvent(state, {}, event));
+    }
+    if (buffer.length > 0) {
+      return ok(withEvent(state, { input: setInput(state.input, state.wordIndex, buffer.slice(0, -1)) }, event));
+    }
+    if (crossesBoundary) return ok(withEvent(state, { wordIndex: state.wordIndex - 1 }, event));
+    return ok(withEvent(state, {}, event));
+  }
+  function reduceCommit(ctx, state, event) {
+    var _a;
+    if (state.phase !== "running") return ok(withEvent(state, {}, event));
+    if (ctx.config.nospace) return ok(withEvent(state, {}, event));
+    const buffer = (_a = state.input[state.wordIndex]) != null ? _a : "";
+    if (buffer.length === 0) return ok(withEvent(state, {}, event));
+    return commitCurrentWord(ctx, state, event);
+  }
+  function reduce(ctx, state, event) {
+    var _a, _b;
+    if (state.lastSeq !== null && event.seq <= state.lastSeq) {
+      return err({ kind: "NonMonotonicSeq", message: `seq ${event.seq} <= lastSeq ${state.lastSeq}`, seq: event.seq });
+    }
+    if (state.phase === "finished") {
+      return err({ kind: "TestFinished", message: "test already finished", seq: event.seq });
+    }
+    switch (event.kind) {
+      case "insert": {
+        const buffer = (_a = state.input[state.wordIndex]) != null ? _a : "";
+        return applyEdit(ctx, state, event, buffer + event.text, event.text, buffer.length);
+      }
+      case "replace": {
+        const buffer = (_b = state.input[state.wordIndex]) != null ? _b : "";
+        if (event.from < 0 || event.to < event.from || event.to > buffer.length) {
+          return err({ kind: "InvalidRange", message: `replace range [${event.from},${event.to}) invalid for buffer length ${buffer.length}`, seq: event.seq });
+        }
+        const next = buffer.slice(0, event.from) + event.text + buffer.slice(event.to);
+        return applyEdit(ctx, state, event, next, event.text, event.from);
+      }
+      case "delete":
+        return reduceDelete(ctx, state, event);
+      case "commit":
+        return reduceCommit(ctx, state, event);
+      default: {
+        const unknown = event;
+        return err({ kind: "UnknownEventKind", message: `unknown event kind '${String(unknown.kind)}'`, seq: unknown.seq });
+      }
+    }
+  }
+  function foldLog(ctx, events, endMs) {
+    const ordered = sortEvents(events);
+    let state = initialStateOf(ctx);
+    for (const event of ordered) {
+      state = settle(ctx, state, event.t);
+      const result = reduce(ctx, state, event);
+      if (result.isErr()) return err({ error: result.error, at: event.seq });
+      state = result.value;
+    }
+    const end = endMs != null ? endMs : ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
+    return ok(settle(ctx, state, end));
+  }
+  var GameCore = class {
+    constructor(init) {
+      __publicField(this, "_ctx");
+      __publicField(this, "_state");
+      __publicField(this, "_events", []);
+      this._ctx = {
+        config: __spreadValues({}, init.config),
+        words: [...init.words]
+      };
+      this._state = initialStateOf(this._ctx);
+    }
+    get config() {
+      return this._ctx.config;
+    }
+    get words() {
+      return this._ctx.words;
+    }
+    get state() {
+      return this._state;
+    }
+    get events() {
+      return this._events;
+    }
+    /** Apply one event. On success, state advances and the event is logged. */
+    dispatch(event) {
+      const settled = settle(this._ctx, this._state, event.t);
+      const result = reduce(this._ctx, settled, event);
+      if (result.isOk()) {
+        this._state = result.value;
+        this._events.push(event);
+      } else {
+        this._state = settled;
+      }
+      return result;
+    }
+    /** Advance timed completion to the given instant (called by the worker tick). */
+    tick(nowMs) {
+      this._state = settle(this._ctx, this._state, nowMs);
+      return this._state;
+    }
+    reset() {
+      this._state = initialStateOf(this._ctx);
+      this._events.length = 0;
+    }
+  };
+
+  // src/shared/core/stats.ts
+  function analyze(ctx, events) {
+    var _a, _b;
+    let state = initialStateOf(ctx);
+    let correctKeys = 0;
+    let totalKeys = 0;
+    const wordFirstT = [];
+    const wordLastT = [];
+    const keystrokes = [];
+    const commitTimes = [];
+    for (const event of sortEvents(events)) {
+      state = settle(ctx, state, event.t);
+      if (state.phase === "finished") break;
+      if (event.kind === "insert" || event.kind === "replace") {
+        const wordIndex = state.wordIndex;
+        const target = (_a = ctx.words[wordIndex]) != null ? _a : "";
+        const startPos = event.kind === "replace" ? event.from : ((_b = state.input[wordIndex]) != null ? _b : "").length;
+        for (let k = 0; k < event.text.length; k++) {
+          const pos = startPos + k;
+          totalKeys++;
+          const correct = pos < target.length && target[pos] === event.text[k];
+          if (correct) correctKeys++;
+          keystrokes.push({ t: event.t, correct });
+        }
+        if (wordFirstT[wordIndex] === void 0) wordFirstT[wordIndex] = event.t;
+        wordLastT[wordIndex] = event.t;
+      }
+      const beforeIndex = state.wordIndex;
+      const result = reduce(ctx, state, event);
+      if (result.isErr()) break;
+      state = result.value;
+      for (let j = beforeIndex; j < state.wordIndex; j++) commitTimes.push(event.t);
+    }
+    return { finalState: state, correctKeys, totalKeys, wordFirstT, wordLastT, keystrokes, commitTimes };
+  }
+  function compareWord(target, typed, includeMissed) {
+    const common = Math.min(target.length, typed.length);
+    let correct = 0;
+    let incorrect = 0;
+    for (let i = 0; i < common; i++) {
+      if (typed[i] === target[i]) correct++;
+      else incorrect++;
+    }
+    return {
+      correct,
+      incorrect,
+      extra: Math.max(0, typed.length - target.length),
+      missed: includeMissed ? Math.max(0, target.length - typed.length) : 0
+    };
+  }
+  function getChars(ctx, state) {
+    var _a, _b;
+    const committed = Math.min(state.wordIndex, ctx.words.length);
+    let correct = 0;
+    let incorrect = 0;
+    let extra = 0;
+    let missed = 0;
+    for (let i = 0; i < committed; i++) {
+      const word = compareWord(ctx.words[i], (_a = state.input[i]) != null ? _a : "", true);
+      correct += word.correct;
+      incorrect += word.incorrect;
+      extra += word.extra;
+      missed += word.missed;
+    }
+    if (state.wordIndex < ctx.words.length) {
+      const buffer = (_b = state.input[state.wordIndex]) != null ? _b : "";
+      if (buffer.length > 0) {
+        const word = compareWord(ctx.words[state.wordIndex], buffer, false);
+        correct += word.correct;
+        incorrect += word.incorrect;
+        extra += word.extra;
+      }
+    }
+    const finishedByCount = state.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
+    const spaces = finishedByCount ? Math.max(0, committed - 1) : committed;
+    return { chars: { correct, incorrect, extra, missed }, spaces };
+  }
+  function burstWpms(ctx, analysis) {
+    var _a;
+    const out = [];
+    for (let i = 0; i < analysis.wordFirstT.length; i++) {
+      const first = analysis.wordFirstT[i];
+      const last = analysis.wordLastT[i];
+      if (first === void 0 || last === void 0) continue;
+      const durationMs = last - first;
+      const chars = ((_a = analysis.finalState.input[i]) != null ? _a : "").length;
+      if (durationMs <= 0 || chars === 0) continue;
+      out.push(chars / 5 / (durationMs / 6e4));
+    }
+    return out;
+  }
+  function kogasa(cov) {
+    return 100 * (1 - Math.tanh(cov + cov ** 3 / 3 + cov ** 5 / 5));
+  }
+  function consistency(bursts) {
+    if (bursts.length === 0) return 0;
+    const mean = bursts.reduce((sum, b) => sum + b, 0) / bursts.length;
+    if (mean === 0) return 0;
+    const variance = bursts.reduce((sum, b) => sum + (b - mean) ** 2, 0) / bursts.length;
+    return kogasa(Math.sqrt(variance) / mean);
+  }
+  function computeMetrics(ctx, events, endMs) {
+    var _a;
+    const analysis = analyze(ctx, events);
+    const { chars, spaces } = getChars(ctx, analysis.finalState);
+    const startedAt = analysis.finalState.startedAt;
+    const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
+    const durationSec = startedAt === null ? 0 : Math.max(0, (end - startedAt) / 1e3);
+    const minutes = durationSec / 60;
+    const netChars = chars.correct + spaces;
+    const rawChars = chars.correct + chars.incorrect + chars.extra + spaces;
+    return {
+      wpm: minutes > 0 ? netChars / 5 / minutes : 0,
+      raw: minutes > 0 ? rawChars / 5 / minutes : 0,
+      accuracy: analysis.totalKeys === 0 ? 0 : analysis.correctKeys / analysis.totalKeys,
+      consistency: consistency(burstWpms(ctx, analysis)),
+      chars,
+      spaces,
+      durationSec
+    };
+  }
+  function metricsOf(core, nowMs) {
+    var _a, _b, _c;
+    const ctx = { config: core.config, words: core.words };
+    const end = (_c = (_b = (_a = core.state.finishedAt) != null ? _a : nowMs) != null ? _b : core.state.startedAt) != null ? _c : asMs(0);
+    return computeMetrics(ctx, core.events, end);
+  }
+  function wpmOverTime(ctx, events, endMs) {
+    var _a;
+    const analysis = analyze(ctx, events);
+    const startedAt = analysis.finalState.startedAt;
+    if (startedAt === null) return [];
+    const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
+    const seconds = Math.ceil(Math.max(0, (end - startedAt) / 1e3));
+    const finishedByCount = analysis.finalState.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
+    const spaceTimes = finishedByCount ? analysis.commitTimes.slice(0, -1) : analysis.commitTimes;
+    const points = [];
+    for (let s = 1; s <= seconds; s++) {
+      const bucketStart = startedAt + (s - 1) * 1e3;
+      const bucketEnd = startedAt + s * 1e3;
+      const checkpoint = Math.min(bucketEnd, end);
+      let correctSoFar = 0;
+      let rawInBucket = 0;
+      let errorsInBucket = 0;
+      for (const key of analysis.keystrokes) {
+        if (key.t <= checkpoint && key.correct) correctSoFar++;
+        if (key.t >= bucketStart && key.t < bucketEnd) {
+          rawInBucket++;
+          if (!key.correct) errorsInBucket++;
+        }
+      }
+      let spacesSoFar = 0;
+      for (const t of spaceTimes) if (t <= checkpoint) spacesSoFar++;
+      const elapsedMin = (checkpoint - startedAt) / 6e4;
+      const bucketMin = (checkpoint - bucketStart) / 6e4;
+      points.push({
+        second: s,
+        wpm: elapsedMin > 0 ? (correctSoFar + spacesSoFar) / 5 / elapsedMin : 0,
+        raw: bucketMin > 0 ? rawInBucket / 5 / bucketMin : 0,
+        errors: errorsInBucket
+      });
+    }
+    return points;
+  }
+  function errorWords(ctx, events) {
+    var _a;
+    const { finalState } = analyze(ctx, events);
+    const committed = Math.min(finalState.wordIndex, ctx.words.length);
+    const out = [];
+    for (let i = 0; i < committed; i++) {
+      const expected = ctx.words[i];
+      const typed = (_a = finalState.input[i]) != null ? _a : "";
+      if (typed !== expected) out.push({ expected, typed });
+    }
+    return out;
+  }
+  function timelineOf(core, nowMs) {
+    var _a, _b, _c;
+    const ctx = { config: core.config, words: core.words };
+    const end = (_c = (_b = (_a = core.state.finishedAt) != null ? _a : nowMs) != null ? _b : core.state.startedAt) != null ? _c : asMs(0);
+    return wpmOverTime(ctx, core.events, end);
+  }
+  function errorWordsOf(core) {
+    return errorWords({ config: core.config, words: core.words }, core.events);
+  }
+  var AFK_BUCKET_MS = 1e3;
+  function afkOf(ctx, events, endMs) {
+    var _a;
+    const { finalState } = analyze(ctx, events);
+    const start = finalState.startedAt;
+    if (start === null) return { afkMs: 0, buckets: 0 };
+    const end = (_a = finalState.finishedAt) != null ? _a : endMs;
+    const bucketCount = Math.floor((end - start) / AFK_BUCKET_MS);
+    if (bucketCount <= 0) return { afkMs: 0, buckets: 0 };
+    const active = new Uint8Array(bucketCount + 1);
+    let activeCount = 0;
+    for (const event of events) {
+      const offset = event.t - start;
+      if (offset < 0) continue;
+      const bucket = offset <= 0 ? 1 : Math.ceil(offset / AFK_BUCKET_MS);
+      if (bucket > bucketCount || active[bucket] === 1) continue;
+      active[bucket] = 1;
+      activeCount += 1;
+    }
+    const buckets = bucketCount - activeCount;
+    return { afkMs: buckets * AFK_BUCKET_MS, buckets };
+  }
+  function afkStatsOf(core, nowMs) {
+    var _a, _b, _c;
+    const ctx = { config: core.config, words: core.words };
+    return afkOf(ctx, core.events, (_c = (_b = (_a = core.state.finishedAt) != null ? _a : nowMs) != null ? _b : core.state.startedAt) != null ? _c : asMs(0));
+  }
+
+  // src/shared/core/mods.ts
+  var MOD_MULTIPLIER_CAP = 4;
+  var MOD_MULTIPLIERS = {
+    punctuation: 1.1,
+    numbers: 1.08,
+    nospace: 1.12,
+    randomCase: 1.15,
+    expert: 1.15,
+    master: 1.25,
+    reverse: 1.25,
+    blind: 1.3,
+    fading: 1.35,
+    flashlight: 1.4
+  };
+  var MINSPEED_MULTIPLIERS = {
+    60: 1.1,
+    80: 1.25,
+    100: 1.45
+  };
+  function activeModsV1(setup, declaration) {
+    const { generation: g, config: c } = setup;
+    const mods = [];
+    const add = (id, on, multiplier) => {
+      if (on) mods.push({ id, multiplier });
+    };
+    add("punctuation", g.punctuation, MOD_MULTIPLIERS.punctuation);
+    add("numbers", g.numbers, MOD_MULTIPLIERS.numbers);
+    add("randomCase", g.randomCase, MOD_MULTIPLIERS.randomCase);
+    add("nospace", c.nospace, MOD_MULTIPLIERS.nospace);
+    add("expert", c.difficulty === "expert", MOD_MULTIPLIERS.expert);
+    add("master", c.difficulty === "master", MOD_MULTIPLIERS.master);
+    add("reverse", g.reverse, MOD_MULTIPLIERS.reverse);
+    if (c.minWpm > 0 && MINSPEED_MULTIPLIERS[c.minWpm] !== void 0) {
+      mods.push({ id: `minSpeed${c.minWpm}`, multiplier: MINSPEED_MULTIPLIERS[c.minWpm] });
+    }
+    add("blind", declaration.blind, MOD_MULTIPLIERS.blind);
+    add("fading", declaration.fading, MOD_MULTIPLIERS.fading);
+    add("flashlight", declaration.flashlight, MOD_MULTIPLIERS.flashlight);
+    return mods;
+  }
+  function modMultiplierV1(setup, declaration) {
+    const product = activeModsV1(setup, declaration).reduce((acc, mod) => acc * mod.multiplier, 1);
+    return Math.min(product, MOD_MULTIPLIER_CAP);
+  }
+
+  // src/shared/core/score.ts
+  var SCORE_VERSION = 1;
+  var SCORE_VERSION_2 = 2;
+  var POINTS_PER_KEYSTROKE = 10;
+  var COMBO_TIER = 25;
+  var COMBO_STEP = 0.25;
+  var MAX_MULTIPLIER = 2.5;
+  var REFERENCE_WPM = 80;
+  var CHARS_PER_WORD = 5;
+  function comboMultiplier(streak) {
+    const mult = 1 + COMBO_STEP * Math.floor(streak / COMBO_TIER);
+    return mult > MAX_MULTIPLIER ? MAX_MULTIPLIER : mult;
+  }
+  function gradeOf(acc) {
+    if (acc >= 1) return "SS";
+    if (acc >= 0.98) return "S";
+    if (acc >= 0.95) return "A";
+    if (acc >= 0.9) return "B";
+    return "C";
+  }
+  function initialScoreState() {
+    return { base: 0, streak: 0, comboPeak: 0, wordIndex: 0, finished: false, bufLen: [], reached: [] };
+  }
+  function isCountMode(mode) {
+    return mode !== "time" && mode !== "free";
+  }
+  function advanceWord(state, ctx) {
+    state.wordIndex += 1;
+    if (isCountMode(ctx.config.mode) && state.wordIndex >= ctx.words.length) state.finished = true;
+  }
+  function applyInsert(state, text, ctx) {
+    var _a, _b, _c;
+    for (const char of text) {
+      const wi = state.wordIndex;
+      const target = (_a = ctx.words[wi]) != null ? _a : "";
+      const pos = (_b = state.bufLen[wi]) != null ? _b : 0;
+      const reached = (_c = state.reached[wi]) != null ? _c : 0;
+      const correct = pos < target.length && target[pos] === char;
+      const firstAttempt = pos >= reached;
+      if (correct && firstAttempt) {
+        state.streak += 1;
+        if (state.streak > state.comboPeak) state.comboPeak = state.streak;
+        state.base += POINTS_PER_KEYSTROKE * comboMultiplier(state.streak);
+      } else if (!correct) {
+        state.streak = 0;
+      }
+      const nextLen = pos + 1;
+      state.bufLen[wi] = nextLen;
+      if (nextLen > reached) state.reached[wi] = nextLen;
+      if (ctx.config.nospace && nextLen >= target.length) {
+        advanceWord(state, ctx);
+        if (state.finished) return;
+      }
+    }
+  }
+  function applyReplace(state, from, to, text, ctx) {
+    var _a, _b, _c;
+    const wi = state.wordIndex;
+    const bufLen = (_a = state.bufLen[wi]) != null ? _a : 0;
+    const nextLen = from + text.length + (bufLen - to);
+    state.bufLen[wi] = nextLen;
+    if (nextLen > ((_b = state.reached[wi]) != null ? _b : 0)) state.reached[wi] = nextLen;
+    const target = (_c = ctx.words[wi]) != null ? _c : "";
+    if (ctx.config.nospace && nextLen >= target.length) advanceWord(state, ctx);
+  }
+  function applyDelete(state, unit) {
+    var _a;
+    const wi = state.wordIndex;
+    const bufLen = (_a = state.bufLen[wi]) != null ? _a : 0;
+    if (unit === "word") {
+      if (bufLen > 0) state.bufLen[wi] = 0;
+      else if (wi > 0) {
+        state.wordIndex = wi - 1;
+        state.bufLen[wi - 1] = 0;
+      }
+      return;
+    }
+    if (bufLen > 0) state.bufLen[wi] = bufLen - 1;
+    else if (wi > 0) state.wordIndex = wi - 1;
+  }
+  function applyCommit(state, ctx) {
+    var _a, _b;
+    if (ctx.config.nospace) return;
+    const wi = state.wordIndex;
+    const bufLen = (_a = state.bufLen[wi]) != null ? _a : 0;
+    if (bufLen === 0) return;
+    const target = (_b = ctx.words[wi]) != null ? _b : "";
+    if (bufLen < target.length) state.streak = 0;
+    advanceWord(state, ctx);
+  }
+  function scoreStep(state, event, ctx) {
+    if (state.finished) return state;
+    switch (event.kind) {
+      case "insert":
+        applyInsert(state, event.text, ctx);
+        break;
+      case "replace":
+        applyReplace(state, event.from, event.to, event.text, ctx);
+        break;
+      case "delete":
+        applyDelete(state, event.unit);
+        break;
+      case "commit":
+        applyCommit(state, ctx);
+        break;
+      default:
+        break;
+    }
+    return state;
+  }
+  function finalizeScore(base, comboPeak, metrics, mode) {
+    const accMultiplier = metrics.accuracy * metrics.accuracy;
+    let timeBonus = null;
+    if (isCountMode(mode)) {
+      const netChars = metrics.chars.correct + metrics.spaces;
+      const referenceMinutes = netChars / CHARS_PER_WORD / REFERENCE_WPM;
+      const actualMinutes = metrics.durationSec / 60;
+      timeBonus = actualMinutes > 0 ? referenceMinutes / actualMinutes : 1;
+    }
+    const total = Math.round(base * accMultiplier * (timeBonus != null ? timeBonus : 1));
+    return { version: SCORE_VERSION, total, base, comboPeak, accMultiplier, timeBonus };
+  }
+  function scoreOfLog(log, setup) {
+    const ctx = { config: setup.config, words: setup.words };
+    const ordered = sortEvents(log);
+    const state = initialScoreState();
+    for (const event of ordered) scoreStep(state, event, ctx);
+    const endMs = ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
+    const metrics = computeMetrics(ctx, log, endMs);
+    return finalizeScore(state.base, state.comboPeak, metrics, ctx.config.mode);
+  }
+  function finalizeScoreV2(base, comboPeak, metrics, mode, modMultiplier) {
+    var _a;
+    const v1 = finalizeScore(base, comboPeak, metrics, mode);
+    const total = Math.round(base * v1.accMultiplier * ((_a = v1.timeBonus) != null ? _a : 1) * modMultiplier);
+    return {
+      version: SCORE_VERSION_2,
+      total,
+      base,
+      comboPeak,
+      accMultiplier: v1.accMultiplier,
+      timeBonus: v1.timeBonus,
+      modMultiplier
+    };
+  }
+  function scoreV2OfLog(log, setup, declaration) {
+    const ctx = { config: setup.config, words: setup.words };
+    const ordered = sortEvents(log);
+    const lastT = ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
+    let end = lastT;
+    const folded = foldLog(ctx, ordered);
+    if (folded.isOk()) {
+      let finalState = folded.value;
+      if (ctx.config.minWpm > 0 && finalState.phase === "running") {
+        const failAt = minSpeedFailInstant(ctx, finalState);
+        if (failAt !== null) finalState = settle(ctx, finalState, failAt);
+      }
+      if (finalState.finishedAt !== null) end = finalState.finishedAt;
+    }
+    const state = initialScoreState();
+    for (const event of ordered) scoreStep(state, event, ctx);
+    const metrics = computeMetrics(ctx, ordered, end);
+    const modMultiplier = modMultiplierV1(
+      { generation: setup.generation, config: ctx.config },
+      declaration
+    );
+    return finalizeScoreV2(state.base, state.comboPeak, metrics, ctx.config.mode, modMultiplier);
+  }
+
+  // src/shared/core/timer.ts
+  var TICK_INTERVAL_MS = 1e3;
+  function nextTickDelay(elapsedMs, tickIndex, durationMs) {
+    const targetElapsed = Math.min(tickIndex * TICK_INTERVAL_MS, durationMs);
+    return Math.max(0, targetElapsed - elapsedMs);
+  }
+
+  // src/shared/core/validate.ts
+  var DEFAULT_THRESHOLDS = {
+    minKeyIntervalMs: 15,
+    uniformToleranceMs: 2,
+    uniformFlagRatio: 0.9,
+    maxBurstWpm: 250,
+    afkFlagShare: 0.5,
+    trailingAfkMs: 1e4
+  };
+  var ZERO_METRICS = {
+    wpm: 0,
+    raw: 0,
+    accuracy: 0,
+    consistency: 0,
+    chars: { correct: 0, incorrect: 0, extra: 0, missed: 0 },
+    spaces: 0,
+    durationSec: 0
+  };
+  function graphemeCount(text) {
+    return [...text].length;
+  }
+  function validateLog(input) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const thresholds = __spreadValues(__spreadValues({}, DEFAULT_THRESHOLDS), input.thresholds);
+    const { config, generation } = input.configSnapshot;
+    const seedContext = makeSeedContext(input.dictionary, input.seed, generation);
+    if (input.dictVersion !== seedContext.dictVersion) {
+      return err({
+        kind: "DictVersionMismatch",
+        message: `claimed dictVersion ${input.dictVersion} != dictionary ${seedContext.dictVersion}`
+      });
+    }
+    const generated = generateWords(input.dictionary, seedContext);
+    if (generated.isErr()) return err({ kind: "GenerationFailed", message: generated.error.message });
+    const ctx = { config, words: generated.value.words };
+    const events = sortEvents(input.log.events);
+    const flags = [];
+    const invalid = (reason) => ok({ verdict: "invalid", reason, flags, metrics: ZERO_METRICS });
+    if (input.log.version !== EVENT_LOG_VERSION) {
+      return invalid(`log version ${input.log.version} != ${EVENT_LOG_VERSION}`);
+    }
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].seq !== i + 1) return invalid(`seq gap or duplicate at index ${i}: expected ${i + 1}, got ${events[i].seq}`);
+      if (i > 0 && events[i].t < events[i - 1].t) return invalid(`time went backwards at seq ${events[i].seq}`);
+    }
+    if (events.length > 0 && events[0].t < 0) return invalid("first event has negative t");
+    if (config.nospace && events.some((e) => e.kind === "commit")) {
+      return invalid("nospace log must contain no commit events (progression is derived from inserts)");
+    }
+    const startT = config.startPolicy === "go" ? asMs(0) : (_b = (_a = events[0]) == null ? void 0 : _a.t) != null ? _b : asMs(0);
+    const deadline = startT + config.durationMs;
+    if (config.mode === "time") {
+      const past = events.find((e) => e.t >= deadline);
+      if (past) return invalid(`event at seq ${past.seq} (t=${past.t}) is at/after the deadline ${deadline}`);
+    }
+    const endMs = config.mode === "time" ? asMs(deadline) : void 0;
+    const folded = foldLog(ctx, events, endMs);
+    if (folded.isErr()) {
+      return invalid(`replay rejected event seq ${folded.error.at}: ${folded.error.error.kind}`);
+    }
+    let finalState = folded.value;
+    if (config.minWpm > 0 && finalState.phase === "running") {
+      const failAt = minSpeedFailInstant(ctx, finalState);
+      if (failAt !== null) finalState = settle(ctx, finalState, failAt);
+    }
+    const metrics = computeMetrics(ctx, events, (_d = (_c = finalState.finishedAt) != null ? _c : endMs) != null ? _d : startT);
+    const multiGrapheme = events.filter((e) => e.kind === "insert" && graphemeCount(e.text) > 1).length;
+    if (multiGrapheme > 0) {
+      flags.push({
+        code: "multi-grapheme-insert",
+        score: Math.min(1, multiGrapheme / Math.max(1, events.length)),
+        detail: `${multiGrapheme} insert event(s) carried more than one grapheme`
+      });
+    }
+    const pastes = events.filter((e) => e.kind === "replace" && e.source === "paste").length;
+    if (pastes > 0) {
+      flags.push({ code: "paste", score: Math.min(1, pastes / Math.max(1, events.length)), detail: `${pastes} paste event(s)` });
+    }
+    const insertTimes = events.filter((e) => e.kind === "insert").map((e) => e.t);
+    const intervals = [];
+    for (let i = 1; i < insertTimes.length; i++) intervals.push(insertTimes[i] - insertTimes[i - 1]);
+    if (intervals.length >= 2) {
+      const tooFast = intervals.filter((d) => d < thresholds.minKeyIntervalMs).length;
+      if (tooFast > 0) {
+        flags.push({ code: "min-interval", score: tooFast / intervals.length, detail: `${tooFast}/${intervals.length} intervals < ${thresholds.minKeyIntervalMs}ms` });
+      }
+      const mean = intervals.reduce((sum, d) => sum + d, 0) / intervals.length;
+      const variance = intervals.reduce((sum, d) => sum + (d - mean) ** 2, 0) / intervals.length;
+      const uniform = intervals.filter((d) => Math.abs(d - mean) <= thresholds.uniformToleranceMs).length;
+      const uniformRatio = uniform / intervals.length;
+      if (uniformRatio >= thresholds.uniformFlagRatio) {
+        flags.push({ code: "uniform-intervals", score: uniformRatio, detail: `${Math.round(uniformRatio * 100)}% of intervals within \xB1${thresholds.uniformToleranceMs}ms of the mean` });
+      }
+      if (variance === 0) {
+        flags.push({ code: "zero-variance", score: 1, detail: "all keystroke intervals identical" });
+      }
+    }
+    if (metrics.wpm > thresholds.maxBurstWpm && metrics.accuracy === 1) {
+      flags.push({
+        code: "superhuman-burst",
+        score: Math.min(1, metrics.wpm / (thresholds.maxBurstWpm * 2)),
+        detail: `${Math.round(metrics.wpm)} wpm at 100% accuracy`
+      });
+    }
+    const runEnd = (_f = (_e = finalState.finishedAt) != null ? _e : endMs) != null ? _f : events.length > 0 ? events[events.length - 1].t : startT;
+    const afk = afkOf(ctx, events, runEnd);
+    const runMs = Math.max(0, runEnd - ((_g = finalState.startedAt) != null ? _g : startT));
+    if (afk.afkMs > 0 && runMs > 0) {
+      const share = afk.afkMs / runMs;
+      if (share >= thresholds.afkFlagShare) {
+        flags.push({
+          code: "afk-heavy",
+          score: Math.min(1, share),
+          detail: `${afk.buckets}s of ${Math.round(runMs / 1e3)}s idle (${Math.round(share * 100)}%)`
+        });
+      }
+    }
+    const lastEventT = events.length > 0 ? events[events.length - 1].t : null;
+    if (lastEventT !== null) {
+      const tailMs = runEnd - lastEventT;
+      if (tailMs >= thresholds.trailingAfkMs) {
+        flags.push({
+          code: "trailing-afk",
+          score: runMs > 0 ? Math.min(1, tailMs / runMs) : 1,
+          detail: `${Math.round(tailMs / 1e3)}s idle after the last keystroke`
+        });
+      }
+    }
+    return ok({ verdict: "valid", flags, metrics });
+  }
+
+  // src/shared/core/parse.ts
+  var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  var isValidSeq = (value) => typeof value === "number" && Number.isInteger(value) && value >= 1;
+  var isValidT = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  var isDeleteUnit = (value) => value === "char" || value === "word";
+  var isReplaceSource = (value) => value === "ime" || value === "paste";
+  var isIndex = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
+  function parseGameEvent(input) {
+    if (!isRecord(input)) {
+      return err({ code: "bad-shape", message: `event must be an object, got ${input === null ? "null" : typeof input}` });
+    }
+    const { seq, t, kind } = input;
+    if (!isValidSeq(seq)) {
+      return err({ code: "bad-seq", message: `seq must be an integer >= 1, got ${JSON.stringify(seq)}` });
+    }
+    if (!isValidT(t)) {
+      return err({ code: "bad-t", message: `t must be a finite number >= 0, got ${JSON.stringify(t)}` });
+    }
+    switch (kind) {
+      case "insert": {
+        const { text } = input;
+        if (typeof text !== "string" || text.length === 0) {
+          return err({ code: "bad-shape", message: "insert.text must be a non-empty string" });
+        }
+        return ok(insertEvent(seq, t, text));
+      }
+      case "delete": {
+        const { unit } = input;
+        if (!isDeleteUnit(unit)) {
+          return err({ code: "bad-shape", message: `delete.unit must be 'char' | 'word', got ${JSON.stringify(unit)}` });
+        }
+        return ok(deleteEvent(seq, t, unit));
+      }
+      case "commit":
+        return ok(commitEvent(seq, t));
+      case "replace": {
+        const { from, to, text, source } = input;
+        if (!isIndex(from) || !isIndex(to) || to < from) {
+          return err({ code: "bad-shape", message: `replace range must be integers 0 <= from <= to, got [${JSON.stringify(from)},${JSON.stringify(to)})` });
+        }
+        if (typeof text !== "string") {
+          return err({ code: "bad-shape", message: "replace.text must be a string" });
+        }
+        if (!isReplaceSource(source)) {
+          return err({ code: "bad-shape", message: `replace.source must be 'ime' | 'paste', got ${JSON.stringify(source)}` });
+        }
+        return ok(replaceEvent(seq, t, from, to, text, source));
+      }
+      default:
+        return err({ code: "bad-kind", message: `unknown event kind ${JSON.stringify(kind)}` });
+    }
+  }
+  function parseEventBatch(input) {
+    if (!isRecord(input)) {
+      return err({ code: "bad-shape", message: `batch must be an object, got ${input === null ? "null" : typeof input}` });
+    }
+    if (input.version !== EVENT_LOG_VERSION) {
+      return err({ code: "bad-version", message: `unsupported log version ${JSON.stringify(input.version)}, expected ${EVENT_LOG_VERSION}` });
+    }
+    if (!Array.isArray(input.events)) {
+      return err({ code: "bad-shape", message: "batch.events must be an array" });
+    }
+    const events = [];
+    for (let i = 0; i < input.events.length; i++) {
+      const parsed = parseGameEvent(input.events[i]);
+      if (parsed.isErr()) {
+        return err(__spreadProps(__spreadValues({}, parsed.error), { index: i, message: `events[${i}]: ${parsed.error.message}` }));
+      }
+      events.push(parsed.value);
+    }
+    return ok({ version: EVENT_LOG_VERSION, events });
+  }
+  return __toCommonJS(index_exports);
+})();

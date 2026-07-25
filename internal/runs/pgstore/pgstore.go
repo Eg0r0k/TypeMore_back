@@ -130,6 +130,10 @@ func firstRowToSummary(r runsdb.ListRunsFirstRow) runs.Summary {
 		ClientScore:   r.ClientScore,
 		ScoreVersion:  r.ScoreVersion,
 		Status:        r.Status,
+		ServerMetrics: r.ServerMetrics,
+		ServerScore:   r.ServerScore,
+		Validation:    r.Validation,
+		ValidatedAt:   r.ValidatedAt,
 		LogBytes:      r.LogBytes,
 		CreatedAt:     r.CreatedAt,
 	}
@@ -149,6 +153,10 @@ func afterRowToSummary(r runsdb.ListRunsAfterRow) runs.Summary {
 		ClientScore:   r.ClientScore,
 		ScoreVersion:  r.ScoreVersion,
 		Status:        r.Status,
+		ServerMetrics: r.ServerMetrics,
+		ServerScore:   r.ServerScore,
+		Validation:    r.Validation,
+		ValidatedAt:   r.ValidatedAt,
 		LogBytes:      r.LogBytes,
 		CreatedAt:     r.CreatedAt,
 	}
@@ -168,6 +176,10 @@ func getRowToSummary(r runsdb.GetRunRow) runs.Summary {
 		ClientScore:   r.ClientScore,
 		ScoreVersion:  r.ScoreVersion,
 		Status:        r.Status,
+		ServerMetrics: r.ServerMetrics,
+		ServerScore:   r.ServerScore,
+		Validation:    r.Validation,
+		ValidatedAt:   r.ValidatedAt,
 		LogBytes:      r.LogBytes,
 		CreatedAt:     r.CreatedAt,
 	}

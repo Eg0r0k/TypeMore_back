@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/typemore/typemore-server/db/migrations"
 	"github.com/typemore/typemore-server/internal/auth"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/migrate"
@@ -259,9 +262,33 @@ func TestMigrationsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
+	// The expectation is derived from the embedded files, not hardcoded: adding
+	// a migration must not require editing this test, but a migration that
+	// silently fails to apply still fails it.
+	want := latestMigrationVersion(t)
 	var version int64
 	require.NoError(t, pool.QueryRow(ctx, `SELECT max(version_id) FROM goose_db_version`).Scan(&version))
-	assert.Equal(t, int64(2), version, "expected to be at migration version 2")
+	assert.Equal(t, want, version, "database is not at the newest embedded migration")
+}
+
+// latestMigrationVersion is the highest NNNNN_ prefix in db/migrations.
+func latestMigrationVersion(t *testing.T) int64 {
+	t.Helper()
+	entries, err := migrations.FS.ReadDir(".")
+	require.NoError(t, err)
+
+	var newest int64
+	for _, e := range entries {
+		prefix, _, ok := strings.Cut(e.Name(), "_")
+		if !ok {
+			continue
+		}
+		v, err := strconv.ParseInt(prefix, 10, 64)
+		require.NoError(t, err, "migration %q has no numeric version prefix", e.Name())
+		newest = max(newest, v)
+	}
+	require.NotZero(t, newest, "no migrations found")
+	return newest
 }
 
 // --- fake OAuth provider ---

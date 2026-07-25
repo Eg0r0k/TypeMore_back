@@ -74,6 +74,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (CreateRun
 const getRun = `-- name: GetRun :one
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
+       server_metrics, server_score, validation, validated_at,
        log_bytes, created_at
 FROM runs
 WHERE id = $1 AND user_id = $2
@@ -97,6 +98,10 @@ type GetRunRow struct {
 	ClientScore   json.RawMessage
 	ScoreVersion  int16
 	Status        string
+	ServerMetrics []byte
+	ServerScore   []byte
+	Validation    []byte
+	ValidatedAt   *time.Time
 	LogBytes      int32
 	CreatedAt     time.Time
 }
@@ -118,6 +123,10 @@ func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (GetRunRow, erro
 		&i.ClientScore,
 		&i.ScoreVersion,
 		&i.Status,
+		&i.ServerMetrics,
+		&i.ServerScore,
+		&i.Validation,
+		&i.ValidatedAt,
 		&i.LogBytes,
 		&i.CreatedAt,
 	)
@@ -145,6 +154,7 @@ func (q *Queries) GetRunLog(ctx context.Context, arg GetRunLogParams) ([]byte, e
 const listRunsAfter = `-- name: ListRunsAfter :many
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
+       server_metrics, server_score, validation, validated_at,
        log_bytes, created_at
 FROM runs
 WHERE user_id = $1
@@ -173,6 +183,10 @@ type ListRunsAfterRow struct {
 	ClientScore   json.RawMessage
 	ScoreVersion  int16
 	Status        string
+	ServerMetrics []byte
+	ServerScore   []byte
+	Validation    []byte
+	ValidatedAt   *time.Time
 	LogBytes      int32
 	CreatedAt     time.Time
 }
@@ -207,6 +221,10 @@ func (q *Queries) ListRunsAfter(ctx context.Context, arg ListRunsAfterParams) ([
 			&i.ClientScore,
 			&i.ScoreVersion,
 			&i.Status,
+			&i.ServerMetrics,
+			&i.ServerScore,
+			&i.Validation,
+			&i.ValidatedAt,
 			&i.LogBytes,
 			&i.CreatedAt,
 		); err != nil {
@@ -223,6 +241,7 @@ func (q *Queries) ListRunsAfter(ctx context.Context, arg ListRunsAfterParams) ([
 const listRunsFirst = `-- name: ListRunsFirst :many
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
+       server_metrics, server_score, validation, validated_at,
        log_bytes, created_at
 FROM runs
 WHERE user_id = $1
@@ -248,12 +267,18 @@ type ListRunsFirstRow struct {
 	ClientScore   json.RawMessage
 	ScoreVersion  int16
 	Status        string
+	ServerMetrics []byte
+	ServerScore   []byte
+	Validation    []byte
+	ValidatedAt   *time.Time
 	LogBytes      int32
 	CreatedAt     time.Time
 }
 
 // First page of a user's runs, newest first. Keyset pagination continues via
-// ListRunsAfter using the (created_at, id) of the last row.
+// ListRunsAfter using the (created_at, id) of the last row. The replay columns
+// (server_metrics/server_score/validation/validated_at) are NULL until the
+// worker has judged the run.
 func (q *Queries) ListRunsFirst(ctx context.Context, arg ListRunsFirstParams) ([]ListRunsFirstRow, error) {
 	rows, err := q.db.Query(ctx, listRunsFirst, arg.UserID, arg.Limit)
 	if err != nil {
@@ -276,6 +301,10 @@ func (q *Queries) ListRunsFirst(ctx context.Context, arg ListRunsFirstParams) ([
 			&i.ClientScore,
 			&i.ScoreVersion,
 			&i.Status,
+			&i.ServerMetrics,
+			&i.ServerScore,
+			&i.Validation,
+			&i.ValidatedAt,
 			&i.LogBytes,
 			&i.CreatedAt,
 		); err != nil {

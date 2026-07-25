@@ -8,7 +8,10 @@ scoring, and Redis arrive in later stages (see `ARCHITECTURE.md` / `BACKEND.md`)
 
 Contracts: the realtime wire format is in [`docs/PROTOCOL.md`](docs/PROTOCOL.md);
 the auth/HTTP surface (endpoints, schema, env, security) is in
-[`docs/AUTH.md`](docs/AUTH.md).
+[`docs/AUTH.md`](docs/AUTH.md); run ingestion is in
+[`docs/RUNS.md`](docs/RUNS.md); the replay worker that judges those runs is in
+[`docs/REPLAY.md`](docs/REPLAY.md); the dictionary catalogue and its caching
+contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
 
 ## What's here
 
@@ -18,6 +21,8 @@ the auth/HTTP surface (endpoints, schema, env, security) is in
 | `GET /readyz` | Readiness — database ping |
 | `GET /ws` | WebSocket: `hello` handshake + `ntp_ping`/`ntp_pong` |
 | `/api/v1/auth/*`, `GET /api/v1/me` | Auth + sessions — see [`docs/AUTH.md`](docs/AUTH.md) |
+| `GET /api/v1/dictionaries` | Public dictionary catalogue — see [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md) |
+| `GET /static/dictionaries/{dictHash}.json` | Dictionary body, content-addressed and `immutable` |
 
 ## Prerequisites
 
@@ -150,8 +155,16 @@ internal/
   auth/                # auth domain: service, handlers, sessions, oauth, argon2id
     authdb/            # sqlc-generated queries (committed)
     pgstore/           # Postgres impl of the auth Store/SessionStore interfaces
+  replay/              # vendored TS core (goja): dictionary registry + replay worker
+    corejs/            # core.bundle.js — checked-in build artifact (see its README)
+    dicts/             # the ONLY copy of the word lists; embedded, served immutable
+    replaydb/          # sqlc-generated queue queries (committed)
+    pgstore/           # FOR UPDATE SKIP LOCKED queue adapter
+    testdata/          # golden vectors + the generator that produces them
 db/migrations/         # goose SQL migrations (embedded)
-docs/PROTOCOL.md       # realtime contract      docs/AUTH.md  # auth/HTTP contract
+docs/PROTOCOL.md       # realtime contract      docs/AUTH.md          # auth/HTTP contract
+docs/RUNS.md           # run ingestion          docs/DICTIONARIES.md  # dictionary service
+docs/REPLAY.md         # replay worker
 ```
 
 The package layout follows `BACKEND.md §2`; only the packages this phase needs

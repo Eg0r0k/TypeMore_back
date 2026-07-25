@@ -1,0 +1,512 @@
+{
+  "name": "words-typos-v1",
+  "description": "Mistyped and corrected characters, submitted under scoreVersion 1 (scoreOfLog). Exercises acc-squared, a broken combo, and the v1 scoring route.",
+  "expect": {
+    "status": "accepted",
+    "verdict": "valid",
+    "flags": []
+  },
+  "payload": {
+    "mode": "words",
+    "wordCount": 8,
+    "lang": "german",
+    "seed": 31337,
+    "dictHash": "804728e8",
+    "scoreVersion": 1,
+    "setup": {
+      "config": {
+        "mode": "words",
+        "durationMs": 60000,
+        "maxExtraChars": 20,
+        "difficulty": "normal",
+        "nospace": false,
+        "minWpm": 0
+      },
+      "generation": {
+        "mode": "words",
+        "length": 8,
+        "punctuation": false,
+        "numbers": false,
+        "randomCase": false,
+        "reverse": false
+      },
+      "declaration": {
+        "blind": false,
+        "fading": false,
+        "flashlight": false
+      }
+    },
+    "clientMetrics": {
+      "wpm": 106.33307271305706,
+      "raw": 106.33307271305706,
+      "acc": 0.9384615384615385
+    },
+    "clientScore": {
+      "version": 1,
+      "total": 667,
+      "base": 570,
+      "comboPeak": 19,
+      "accMultiplier": 0.8807100591715976,
+      "timeBonus": 1.3291634089132132
+    },
+    "log": {
+      "version": 1,
+      "events": [
+        {
+          "kind": "insert",
+          "seq": 1,
+          "t": 82,
+          "text": "K"
+        },
+        {
+          "kind": "insert",
+          "seq": 2,
+          "t": 174,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 3,
+          "t": 285,
+          "text": "q"
+        },
+        {
+          "kind": "delete",
+          "seq": 4,
+          "t": 391,
+          "unit": "char"
+        },
+        {
+          "kind": "insert",
+          "seq": 5,
+          "t": 515,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 6,
+          "t": 648,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 7,
+          "t": 731,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 8,
+          "t": 855
+        },
+        {
+          "kind": "insert",
+          "seq": 9,
+          "t": 933,
+          "text": "S"
+        },
+        {
+          "kind": "insert",
+          "seq": 10,
+          "t": 1074,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 11,
+          "t": 1154,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 12,
+          "t": 1257,
+          "text": "d"
+        },
+        {
+          "kind": "insert",
+          "seq": 13,
+          "t": 1324,
+          "text": "w"
+        },
+        {
+          "kind": "insert",
+          "seq": 14,
+          "t": 1453,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 15,
+          "t": 1536,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 16,
+          "t": 1617,
+          "text": "h"
+        },
+        {
+          "kind": "commit",
+          "seq": 17,
+          "t": 1697
+        },
+        {
+          "kind": "insert",
+          "seq": 18,
+          "t": 1816,
+          "text": "B"
+        },
+        {
+          "kind": "insert",
+          "seq": 19,
+          "t": 1898,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 20,
+          "t": 1961,
+          "text": "q"
+        },
+        {
+          "kind": "delete",
+          "seq": 21,
+          "t": 2058,
+          "unit": "char"
+        },
+        {
+          "kind": "insert",
+          "seq": 22,
+          "t": 2161,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 23,
+          "t": 2294,
+          "text": "k"
+        },
+        {
+          "kind": "insert",
+          "seq": 24,
+          "t": 2434,
+          "text": "k"
+        },
+        {
+          "kind": "insert",
+          "seq": 25,
+          "t": 2558,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 26,
+          "t": 2656,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 27,
+          "t": 2785,
+          "text": "i"
+        },
+        {
+          "kind": "commit",
+          "seq": 28,
+          "t": 2867
+        },
+        {
+          "kind": "insert",
+          "seq": 29,
+          "t": 2934,
+          "text": "C"
+        },
+        {
+          "kind": "insert",
+          "seq": 30,
+          "t": 3023,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 31,
+          "t": 3160,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 32,
+          "t": 3273,
+          "text": "m"
+        },
+        {
+          "kind": "insert",
+          "seq": 33,
+          "t": 3380,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 34,
+          "t": 3469,
+          "text": "f"
+        },
+        {
+          "kind": "insert",
+          "seq": 35,
+          "t": 3540,
+          "text": "ü"
+        },
+        {
+          "kind": "insert",
+          "seq": 36,
+          "t": 3676,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 37,
+          "t": 3763,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 38,
+          "t": 3830,
+          "text": "u"
+        },
+        {
+          "kind": "insert",
+          "seq": 39,
+          "t": 3947,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 40,
+          "t": 4091,
+          "text": "g"
+        },
+        {
+          "kind": "commit",
+          "seq": 41,
+          "t": 4157
+        },
+        {
+          "kind": "insert",
+          "seq": 42,
+          "t": 4266,
+          "text": "L"
+        },
+        {
+          "kind": "insert",
+          "seq": 43,
+          "t": 4367,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 44,
+          "t": 4482,
+          "text": "q"
+        },
+        {
+          "kind": "delete",
+          "seq": 45,
+          "t": 4629,
+          "unit": "char"
+        },
+        {
+          "kind": "insert",
+          "seq": 46,
+          "t": 4701,
+          "text": "t"
+        },
+        {
+          "kind": "insert",
+          "seq": 47,
+          "t": 4781,
+          "text": "t"
+        },
+        {
+          "kind": "insert",
+          "seq": 48,
+          "t": 4885,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 49,
+          "t": 4958,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 50,
+          "t": 5077,
+          "text": "h"
+        },
+        {
+          "kind": "commit",
+          "seq": 51,
+          "t": 5187
+        },
+        {
+          "kind": "insert",
+          "seq": 52,
+          "t": 5331,
+          "text": "H"
+        },
+        {
+          "kind": "insert",
+          "seq": 53,
+          "t": 5396,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 54,
+          "t": 5494,
+          "text": "u"
+        },
+        {
+          "kind": "insert",
+          "seq": 55,
+          "t": 5578,
+          "text": "s"
+        },
+        {
+          "kind": "commit",
+          "seq": 56,
+          "t": 5644
+        },
+        {
+          "kind": "insert",
+          "seq": 57,
+          "t": 5759,
+          "text": "B"
+        },
+        {
+          "kind": "insert",
+          "seq": 58,
+          "t": 5860,
+          "text": "u"
+        },
+        {
+          "kind": "insert",
+          "seq": 59,
+          "t": 5926,
+          "text": "q"
+        },
+        {
+          "kind": "delete",
+          "seq": 60,
+          "t": 6015,
+          "unit": "char"
+        },
+        {
+          "kind": "insert",
+          "seq": 61,
+          "t": 6078,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 62,
+          "t": 6200,
+          "text": "g"
+        },
+        {
+          "kind": "insert",
+          "seq": 63,
+          "t": 6272,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 64,
+          "t": 6334,
+          "text": "r"
+        },
+        {
+          "kind": "commit",
+          "seq": 65,
+          "t": 6478
+        },
+        {
+          "kind": "insert",
+          "seq": 66,
+          "t": 6575,
+          "text": "B"
+        },
+        {
+          "kind": "insert",
+          "seq": 67,
+          "t": 6724,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 68,
+          "t": 6790,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 69,
+          "t": 6851,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 70,
+          "t": 6961,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 71,
+          "t": 7047,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 72,
+          "t": 7172,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 73,
+          "t": 7270,
+          "text": "b"
+        },
+        {
+          "kind": "insert",
+          "seq": 74,
+          "t": 7384,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 75,
+          "t": 7494,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 76,
+          "t": 7638,
+          "text": "t"
+        },
+        {
+          "kind": "commit",
+          "seq": 77,
+          "t": 7756
+        }
+      ]
+    }
+  }
+}

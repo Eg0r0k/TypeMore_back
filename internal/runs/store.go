@@ -46,6 +46,10 @@ type Run struct {
 
 // Summary is one run WITHOUT its log payload — the shape returned by the list
 // and detail endpoints. The opaque jsonb snapshots are passed through verbatim.
+//
+// The Server* / Validation / ValidatedAt fields are the replay worker's verdict
+// (internal/replay, docs/REPLAY.md). They are nil until the run has been
+// judged, which is exactly what the client shows as "pending".
 type Summary struct {
 	ID            uuid.UUID
 	Mode          string
@@ -59,6 +63,10 @@ type Summary struct {
 	ClientScore   json.RawMessage
 	ScoreVersion  int16
 	Status        string
+	ServerMetrics json.RawMessage
+	ServerScore   json.RawMessage
+	Validation    json.RawMessage
+	ValidatedAt   *time.Time
 	LogBytes      int32
 	CreatedAt     time.Time
 }

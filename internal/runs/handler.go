@@ -88,7 +88,10 @@ func (s *Service) handleIngest(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusAccepted, ingestResponse{ID: run.ID, Status: run.Status})
 }
 
-// summaryView is the JSON shape of a run without its log payload.
+// summaryView is the JSON shape of a run without its log payload. The replay
+// worker's verdict (serverMetrics / serverScore / validation / validatedAt) is
+// omitted entirely until the run has been judged, so a client can tell
+// "not replayed yet" from "replayed and empty".
 type summaryView struct {
 	ID            uuid.UUID       `json:"id"`
 	Mode          string          `json:"mode"`
@@ -102,6 +105,10 @@ type summaryView struct {
 	ClientScore   json.RawMessage `json:"clientScore"`
 	ScoreVersion  int16           `json:"scoreVersion"`
 	Status        string          `json:"status"`
+	ServerMetrics json.RawMessage `json:"serverMetrics,omitempty"`
+	ServerScore   json.RawMessage `json:"serverScore,omitempty"`
+	Validation    json.RawMessage `json:"validation,omitempty"`
+	ValidatedAt   *time.Time      `json:"validatedAt,omitempty"`
 	LogBytes      int32           `json:"logBytes"`
 	CreatedAt     time.Time       `json:"createdAt"`
 }
