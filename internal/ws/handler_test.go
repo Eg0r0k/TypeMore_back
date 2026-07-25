@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	r := chi.NewRouter()
-	r.Handle("/ws", ws.NewHandler(logger, nil))
+	r.Handle("/ws", ws.NewHandler(logger, nil, nil, nil))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -197,11 +197,6 @@ func TestProtocolViolations(t *testing.T) {
 			helloFirst:  true,
 			frame:       protocol.Hello{Type: protocol.TypeHello, ProtocolVersion: protocol.Version, Nick: "again"},
 			wantMessage: "hello already completed",
-		},
-		{
-			name:        "invalid nick",
-			frame:       protocol.Hello{Type: protocol.TypeHello, ProtocolVersion: protocol.Version, Nick: ""},
-			wantMessage: "nick must be 1-16 characters",
 		},
 		{
 			name:        "not json",

@@ -1,6 +1,6 @@
 # TypeMore Realtime Protocol — v1
 
-Status: **v1 (draft, this phase implements `hello` + NTP only).**
+Status: **v1 (draft; this phase implements `hello` + NTP + the room/lobby model + the event relay, finish/match-end, heartbeat, and disconnect/resume of §6).**
 This document is the contract shared **verbatim** between the server
 (`typemore-server`) and the frontend repository. It is standalone: it does not
 reference any Go or TypeScript type. Where the server's realtime behaviour is
@@ -72,21 +72,26 @@ clients do not implement it manually (browsers answer pings automatically).
 
 ### `hello`
 
-First frame of every connection. `nick` is the guest display identity, **1–16
-characters** (counted in Unicode code points, not bytes).
+First frame of every connection. `nick` is **optional and ignored**: a guest
+connection is assigned a unique per-room identity (`Guest-XXXX`) when it joins a
+room, and an **authenticated** connection (a valid session cookie present on the
+WebSocket upgrade) uses its account **displayName**. The field is retained for
+forward compatibility only; do not rely on it being echoed.
 
-`resumeToken` is **optional**: on a mid-match reconnect the client re-sends its
-hello with the `resumeToken` it was given in the previous `hello_ok`, and the
-server restores its seat and replays the buffered backlog (see §6). Omit it on a
-fresh connection. Logged-in users are additionally identified by their session
-cookie (from the auth layer), which survives independently of this token.
+`resumeToken` is **optional**: on a reconnect the client re-sends its hello with
+the `resumeToken` it was given in the previous `hello_ok`, and the server
+restores its seat in **any phase** — lobby or mid-match (see §6). An **unknown
+or expired** `resumeToken` is **not an error**: the hello degrades to a fresh
+connection (new identity, new token) — the grace window simply elapsed. Omit it
+on a fresh connection. Logged-in users are additionally identified by their
+session cookie (from the auth layer), which survives independently of this token.
 
 ```json
-{ "type": "hello", "protocolVersion": 1, "nick": "Neo" }
+{ "type": "hello", "protocolVersion": 1 }
 ```
 
 ```json
-{ "type": "hello", "protocolVersion": 1, "nick": "Neo", "resumeToken": "b3f1…(64 hex chars)" }
+{ "type": "hello", "protocolVersion": 1, "resumeToken": "b3f1…(64 hex chars)" }
 ```
 
 ### `ntp_ping`
@@ -99,7 +104,10 @@ A clock-synchronisation ping. `t0` is the client's clock reading at send time.
 
 ### `create_room`
 
-Requests a new room. Payload is finalised in the relay phase.
+Opens a new room with the sender as its **host**. The server allocates a code,
+seats the creator, and replies with a `room_state` (the room begins with the
+default settings in §5). Reject reasons: none beyond being already in a room
+(`bad_message`).
 
 ```json
 { "type": "create_room" }
@@ -107,7 +115,10 @@ Requests a new room. Payload is finalised in the relay phase.
 
 ### `join_room`
 
-Joins an existing room by its code (see §5 for the code format).
+Joins an existing room by its code (see §5 for the code format; matching is
+case-insensitive). On success every seat receives a fresh `room_state` and a
+`join` system `chat`. Errors: `room_not_found`, `room_full`, or `bad_message`
+(already in a room).
 
 ```json
 { "type": "join_room", "code": "K7GQ2M" }
@@ -115,18 +126,104 @@ Joins an existing room by its code (see §5 for the code format).
 
 ### `ready`
 
-Marks the sending player ready to start.
+Sets the sending seat's ready flag. The `ready` field is **optional** and
+defaults to `true`; an explicit `false` clears the flag (un-ready). The host
+does not need to be ready; `start_match` gates on the **non-host** seats (see
+§5). Broadcasts `room_state`.
 
 ```json
 { "type": "ready" }
 ```
 
+```json
+{ "type": "ready", "ready": false }
+```
+
+### `settings_update`
+
+**Host-only**, valid **only between matches**. Replaces the room `settings`
+(schema in §5). The server sanitizes `name` and validates the whole object;
+applying it **resets every seat's `ready` flag**. Broadcasts `room_state` plus a
+`settings_changed` system `chat`. Errors: `forbidden` (non-host), `bad_message`
+(invalid settings, or sent during a match).
+
+```json
+{ "type": "settings_update", "settings": { "...": "see §5" } }
+```
+
+### `set_freemods`
+
+Sets the **sender's** freemods (schema in §5). Any seat may send it, but **only
+between matches**. Broadcasts `room_state`. Errors: `bad_message` (invalid
+freemods, or sent during a match).
+
+```json
+{ "type": "set_freemods", "freemods": { "difficulty": "expert", "minWpm": 60, "nospace": true } }
+```
+
+### `start_match`
+
+**Host-only**. Valid **iff** the room has **at least two seats** and **every
+non-host seat is `ready`**; otherwise `not_ready`. On success the server emits a
+`countdown` to every seat carrying the frozen settings and per-player freemod
+snapshot (see §4). Errors: `forbidden` (non-host or a match already running),
+`not_ready`.
+
+```json
+{ "type": "start_match" }
+```
+
+### `kick`
+
+**Host-only**. Removes another seat: the target receives a `kicked` frame and is
+dropped (its **connection stays open** so it may join another room), while the
+remaining seats receive a fresh `room_state` and a **neutral** `leave` system
+`chat` (a kick is not distinguishable from a voluntary leave on the wire).
+Errors: `forbidden` (non-host), `bad_message` (no such player / cannot kick
+yourself).
+
+```json
+{ "type": "kick", "playerId": "8a2f...91" }
+```
+
+### `transfer_host`
+
+**Host-only**. Hands the host role to another seat. Broadcasts `room_state` plus
+a `host_changed` system `chat`. Errors: `forbidden` (non-host), `bad_message`
+(no such player).
+
+```json
+{ "type": "transfer_host", "playerId": "8a2f...91" }
+```
+
+### `chat_send`
+
+Posts a lobby chat message, **1–200 characters** after trimming. Rate-limited
+per sender (token bucket, burst **5**, refilled to full over **2 s**); an
+over-quota message is answered with `rate_limited` and not broadcast. On success
+the server broadcasts a `chat` frame to the room. Errors: `bad_message` (empty
+or too long), `rate_limited`, `not_in_room`.
+
+```json
+{ "type": "chat_send", "text": "gl hf" }
+```
+
 ### `event_batch`
 
-Relays a batch of the frontend's **log-v1 `GameEvent`** objects. In this phase
-(and until the relay phase) these events are **opaque** to the server — it does
-not parse or validate their contents beyond the batch envelope; structural
-validation lands in the relay phase.
+Relays a batch of the frontend's **log-v1 `GameEvent`** objects during an active
+match. The server validates only the **envelope** (below), stamps each accepted
+batch with its server receive time, appends it to the sender's authoritative
+per-player capture, and relays it as a `peer_batch` to every other seat. The
+**contents stay opaque** — structural/semantic validation is the future replay
+worker's job.
+
+**Envelope validation (all must hold, else `bad_message`; the batch is dropped
+and the connection stays open):**
+- the sender is in a room whose match is active and whose id equals `matchId`;
+- `batchSeq` is **strictly `lastSeq + 1`** (per player, starting at `1`) — any
+  gap or duplicate is rejected;
+- `events` is non-empty;
+- the whole frame is **≤ 1 MiB**.
 
 - `matchId` — the match this batch belongs to.
 - `playerId` — the sender (as issued in `hello_ok`).
@@ -158,8 +255,9 @@ received per player and never reorders.
 ```
 
 > The `events` objects above are illustrative of the frontend's log-v1 shape;
-> the server treats them as opaque this phase. Their canonical schema lives in
-> the frontend repository's core (`insert` / `delete` / `commit` / `replace`).
+> the server treats them as opaque and relays/persists them verbatim. Their
+> canonical schema lives in the frontend repository's core (`insert` / `delete`
+> / `commit` / `replace`).
 
 ### `leave`
 
@@ -167,6 +265,17 @@ Voluntarily leaves the current room.
 
 ```json
 { "type": "leave" }
+```
+
+### `finish`
+
+Signals that the sending player has completed the match. The server broadcasts a
+`peer_status` `finished` for that player and ends the match once **every seat is
+finished / dnf / left**. Errors: `not_in_room`, or `bad_message` (unknown
+`matchId`, or the seat is not an active participant).
+
+```json
+{ "type": "finish", "matchId": "m_9f3a" }
 ```
 
 ---
@@ -199,10 +308,13 @@ human-readable explanation (not for programmatic use).
 | `code`             | Meaning                                                        | Closes connection? |
 |--------------------|---------------------------------------------------------------|--------------------|
 | `version_mismatch` | Client protocol version ≠ server's                            | **Yes** (after the error frame is sent) |
-| `bad_message`      | Malformed frame, wrong order, unknown/unsupported type, bad nick | No |
+| `bad_message`      | Malformed frame, wrong order, unknown/unsupported type, invalid payload | No |
 | `room_not_found`   | `join_room` code has no room                                   | No |
 | `room_full`        | Room already at capacity (5)                                   | No |
 | `not_in_room`      | Room-scoped message sent while not in a room                   | No |
+| `forbidden`        | Host-only action attempted by a non-host (or an already-running match)  | No |
+| `not_ready`        | `start_match` with fewer than 2 seats or an unready non-host seat | No |
+| `rate_limited`     | `chat_send` over the per-sender rate limit                     | No |
 | `internal`         | Unexpected server error                                        | No |
 
 ### `ntp_pong`
@@ -242,18 +354,42 @@ To convert a countdown: `localGoTime = goAtServerMs − offset`.
 
 ### `room_state`
 
-Full snapshot of a room, sent on any change. `settings` is opaque this phase
-(finalised in the relay phase).
+Full snapshot of a room, broadcast to every seat on any change and sent to a
+resuming client right after its `hello_ok` (see §6). `name` and
+`visibility` are surfaced at the top level for convenience and also appear inside
+`settings`; `hostPlayerId` names the current host seat. Each entry in `players`
+carries the seat's identity (`nick`, `isGuest`), `ready` flag, and log-provable
+`freemods`. The `settings` and `freemods` schemas are defined in §5.
+
+`match` is present **only while a match is running** and names it
+(`matchId`, `goAtServerMs`). It exists for the reconnect case (§6): a client
+whose page reloaded reclaims its seat but not the run, and this is how it learns
+it holds a seat in a match it can no longer play.
 
 ```json
 {
   "type": "room_state",
   "code": "K7GQ2M",
+  "name": "Trinity's room",
+  "visibility": "private",
+  "hostPlayerId": "3b1e...c4",
+  "settings": {
+    "name": "Trinity's room",
+    "visibility": "private",
+    "mode": "time",
+    "durationMs": 30000,
+    "lang": "en",
+    "dictHash": "en-default",
+    "textMods": { "punctuation": false, "numbers": false, "randomCase": false, "reverse": false },
+    "textSource": { "kind": "seeded" }
+  },
+  "match": { "matchId": "m_9f3a", "goAtServerMs": 1737645100000 },
   "players": [
-    { "playerId": "3b1e...c4", "nick": "Neo", "ready": true },
-    { "playerId": "8a2f...91", "nick": "Trinity", "ready": false }
-  ],
-  "settings": { }
+    { "playerId": "3b1e...c4", "nick": "Neo", "isGuest": false, "ready": true,
+      "freemods": { "difficulty": "normal", "minWpm": 0, "nospace": false } },
+    { "playerId": "8a2f...91", "nick": "Guest-4831", "isGuest": true, "ready": false,
+      "freemods": { "difficulty": "expert", "minWpm": 60, "nospace": true } }
+  ]
 }
 ```
 
@@ -261,32 +397,72 @@ Full snapshot of a room, sent on any change. `settings` is opaque this phase
 
 Announces the shared match start. All clients convert `goAtServerMs` via their
 NTP offset and schedule the local 3-2-1; the shared **t=0** (the "go" instant)
-is identical for everyone.
+is identical for everyone. The countdown is the **frozen** snapshot of the
+match: the room's `settings` and each seat's `freemods` at the moment
+`start_match` succeeded. A `set_freemods`/`settings_update` arriving after this
+is rejected (see §5) — the match runs against exactly what the countdown carried.
 
+- `matchId` — the match identifier the client echoes in `event_batch` and
+  `finish`. Freshly minted each `start_match` (a rematch gets a new one).
 - `goAtServerMs` — server-clock instant of t=0.
 - `seed` — the generation seed: an **integer in `[0, 2³²−1]`** (mulberry32 is a
   32-bit PRNG; this range fits a JSON number with room to spare — no 2⁵³ issue).
-- `dictHash` — FNV-1a dictionary fingerprint the match runs against; a client
-  missing this dictionary version downloads the static asset before "go".
-- `lang` — language code of the dictionary.
-- `config` — the match generation/mods configuration; opaque this phase.
+  It is **server-generated and appears only here** — never in `settings`. A
+  client cannot choose the seed (a pre-known seed is a pre-practiced map).
+- `settings` — the frozen room settings (§5), including `textSource`, `lang`,
+  `dictHash`, and the shared `textMods`.
+- `players` — the per-player frozen `freemods` snapshot, `{ playerId, freemods }`.
 
 ```json
 {
   "type": "countdown",
+  "matchId": "m_9f3a",
   "goAtServerMs": 1737645130000,
   "seed": 2864901,
-  "dictHash": "a1b2c3d4",
-  "lang": "en",
-  "config": { }
+  "settings": {
+    "name": "Trinity's room", "visibility": "private", "mode": "time",
+    "durationMs": 30000, "lang": "en", "dictHash": "en-default",
+    "textMods": { "punctuation": false, "numbers": false, "randomCase": false, "reverse": false },
+    "textSource": { "kind": "seeded" }
+  },
+  "players": [
+    { "playerId": "3b1e...c4", "freemods": { "difficulty": "normal", "minWpm": 0, "nospace": false } },
+    { "playerId": "8a2f...91", "freemods": { "difficulty": "expert", "minWpm": 60, "nospace": true } }
+  ]
 }
+```
+
+### `chat`
+
+A lobby chat message. For a **player** message `from` is the sender's `playerId`
+and `kind` is absent; for a **server system** message `from` is `"system"` and
+`kind` is one of `join` | `leave` | `settings_changed` | `host_changed` (a kick
+is reported as a neutral `leave`). `ts` is the server send time in Unix ms. Chat
+is **not persisted** — it lives only for the room's lifetime.
+
+```json
+{ "type": "chat", "from": "8a2f...91", "text": "gl hf", "ts": 1737645123999 }
+```
+
+```json
+{ "type": "chat", "from": "system", "kind": "join", "text": "Guest-4831 joined", "ts": 1737645124050 }
+```
+
+### `kicked`
+
+Tells a client the host removed it from its room. The **connection stays open**;
+the client may `create_room` or `join_room` again.
+
+```json
+{ "type": "kicked" }
 ```
 
 ### `peer_batch`
 
 Relays another player's events to this client, **order preserved per player**.
-The relay is **lossless**. `events` is opaque this phase (same shape as
-`event_batch.events`).
+The relay is **lossless**: while a peer is disconnected the server buffers its
+peer-relay backlog and replays it, in order, on reconnect (§6). `events` is the
+opaque payload (same shape as `event_batch.events`).
 
 ```json
 { "type": "peer_batch", "playerId": "8a2f...91", "events": [ { "k": "insert", "seq": 1 } ] }
@@ -297,44 +473,223 @@ The relay is **lossless**. `events` is opaque this phase (same shape as
 Reports a peer's lifecycle transition.
 
 - `status` is one of: `joined`, `left`, `disconnected`, `reconnected`,
-  `finished`, `dnf`.
+  `finished`, `dnf`. A mid-match drop broadcasts `disconnected` (grace starts),
+  then `reconnected` on resume or `dnf` on grace expiry; `finished` is broadcast
+  on the peer's `finish`.
 
 ```json
 { "type": "peer_status", "playerId": "8a2f...91", "status": "disconnected" }
+```
+
+### `match_end`
+
+Ends the match. Broadcast **exactly once per match** to every frozen-roster
+seat: live seats receive it directly; a **graced** (disconnected) seat receives
+it via its buffered backlog, so a resumer still gets it (§6). It is emitted
+**after** the final `peer_status` broadcast and **before** the post-match
+`room_state`.
+
+- `matchId` — the match that ended.
+- `reason` — why it ended:
+  - `all_finished` — every seat reached a terminal status (`finished` / `dnf` /
+    `left`), including `dnf`s from the words-mode idle rule (§6);
+  - `deadline` — the hard deadline elapsed and every unfinished seat was
+    force-`dnf`'d;
+  - `finish_window` — the words-mode finish window closed and the stragglers
+    were `dnf`'d (§6).
+- `results` — one entry per seat of the **frozen roster** (`countdown.players`),
+  in no guaranteed order:
+  - `playerId` — the seat.
+  - `status` — `finished` | `dnf` | `left`.
+  - `finishedAtMs` — the **server clock** at receipt of that player's `finish`;
+    present **only** for status `finished`.
+  - `batchCount` / `eventCount` — the count of **accepted** `event_batch`
+    envelopes and the total events across them (`0` for a silent player).
+  - `afkMs` / `afkShare` — the server's idle measure over that seat's window
+    (go → its own `finish`, or go → match end): whole one-second buckets that
+    carried no accepted `event_batch`, and their share of the window. `afkShare`
+    is the number the words-mode AFK rule judges (§6); both are omitted when zero.
+
+The server never parses the opaque events, so `match_end` carries **no gameplay
+metrics** — clients fold those from the logs as before. `afkMs`/`afkShare` are
+the exception that proves it: they come from batch **arrival times**, which the
+relay sees by definition.
+
+```json
+{
+  "type": "match_end",
+  "matchId": "m_9f3a",
+  "reason": "all_finished",
+  "results": [
+    { "playerId": "3b1e...c4", "status": "finished", "finishedAtMs": 1737645130000, "batchCount": 12, "eventCount": 340, "afkMs": 2000, "afkShare": 0.06 },
+    { "playerId": "8a2f...91", "status": "dnf", "batchCount": 0, "eventCount": 0, "afkMs": 33000, "afkShare": 1 }
+  ]
+}
 ```
 
 ---
 
 ## 5. Rooms
 
-- **Codes** are **6 characters**, drawn from a **human-safe alphabet** that
-  excludes the ambiguous glyphs `0`, `O`, `1`, and `I`.
-- A room holds **at most 5 players**.
-- A room **dies when empty**.
+### Codes and lifecycle
 
-*(Rooms are specified now; implemented in the relay phase.)*
+- **Codes** are **6 characters**, drawn from a **human-safe alphabet** that
+  excludes the ambiguous glyphs `0`, `O`, `1`, and `I`. They are stored
+  upper-case; `join_room` matching is **case-insensitive** (input is trimmed and
+  upper-cased before lookup). *(Resolves the earlier open question on case.)*
+- A room holds **at most 5 seats**; a 6th `join_room` gets `room_full`.
+- A room **dies when empty**: the last seat **leaving** (or being kicked, or its
+  disconnect grace expiring) removes it. A **graced** seat (see §6) still counts
+  as present, so a room whose seats are all graced survives until the grace
+  expires.
+
+### Identity
+
+- A **guest** connection is assigned a **unique per-room** nick `Guest-XXXX`
+  (4 digits) when it joins; the client-supplied `hello.nick` is ignored.
+- An **authenticated** connection (session cookie on the WS upgrade) uses its
+  account **displayName**.
+- `room_state` exposes `isGuest` per seat so the frontend can style accordingly.
+
+### Host role
+
+- The **creator** is the first host.
+- The host may hand off explicitly (`transfer_host`).
+- On the host **leaving**, the role passes **automatically** to the
+  **earliest-joined** remaining seat; a `host_changed` system `chat` announces
+  it. A host **disconnect** does **not** pass the role: the host seat is graced
+  (see §6) and keeps the role; succession happens only if the grace expires.
+
+### Settings (host-controlled, shared by all)
+
+`settings` is the room configuration. Every field is text- or match-affecting
+and **identical for all players** — everyone types the same text. It is set via
+`settings_update` (host-only, between matches) and echoed in `room_state` and
+`countdown`.
+
+| field | type | notes |
+|-------|------|-------|
+| `name` | string | 1–32 chars after sanitizing (control chars stripped, trimmed) |
+| `visibility` | `"open"` \| `"private"` | stored and broadcast; the public room list is a later phase |
+| `mode` | `"time"` \| `"words"` | selects which of the two below applies |
+| `durationMs` | int > 0 | present for `time` mode |
+| `wordCount` | int > 0 | present for `words` mode |
+| `lang` | string | dictionary language code |
+| `dictHash` | string | FNV-1a dictionary fingerprint the match runs against |
+| `textMods` | object | `{ punctuation, numbers, randomCase, reverse }` booleans — **text-affecting**, so shared |
+| `textSource` | object | discriminated; **v0 is `{ "kind": "seeded" }` only** (see below) |
+
+**`textSource` (future-proofing).** v0 validates `textSource.kind == "seeded"`.
+The quote phase will add `{ "kind": "quote", "quoteId": "…" }` **additively**
+(no protocol bump). The generation **seed** is deliberately **not** part of
+`settings`: it is server-generated and appears only in `countdown`. A
+client-chosen seed is rejected by design — a pre-known seed is a pre-practiced
+map.
+
+### Freemods (per-player, scored)
+
+Each seat chooses its own `freemods` in the lobby (`set_freemods`, between
+matches). They are **log-provable** and **count toward the match score** — see
+the scoring rule below. They are broadcast in `room_state` and **frozen** into
+`countdown` at `start_match`; a `set_freemods` arriving during a match is
+rejected.
+
+| field | type | notes |
+|-------|------|-------|
+| `difficulty` | `"normal"` \| `"expert"` \| `"master"` | |
+| `minWpm` | `0` \| `60` \| `80` \| `100` | minimum-WPM floor |
+| `nospace` | bool | |
+
+### Mods and score (the rule)
+
+**Only log-provable mods multiply the match score.** `freemods` are verifiable
+from the event log and therefore scored. **Personal visual mods**
+(blind / fading / flashlight) are **client-local**: they never travel on the
+wire, never appear in `room_state`/`countdown`, and never affect the score.
+
+*(Rooms/lobby are implemented in this phase; the match relay lands next.)*
 
 ---
 
-## 6. Server obligations (specified now, implemented in the relay phase)
+## 6. Server obligations
 
-These are part of the v1 contract but are **not** implemented in this phase.
-They are recorded here so the frontend can rely on them.
+Status of the v1 relay obligations. Items marked **IMPLEMENTED** are live as of
+this phase; the wall-clock check is deferred to the replay worker.
 
-- **Inbound timestamping.** Every `event_batch` is stamped with its server
-  arrival time (`recvServerMs`) and appended to the per-player authoritative log
-  for the match.
-- **Wall-clock plausibility.** A run's final event time must fall within
-  `[go, lastBatchRecv + RTT tolerance]`. Violations are **flagged, not rejected
-  mid-match** — the match continues and the flag is resolved out of band.
-- **Disconnect policy.** On a mid-match WebSocket drop the server **keeps the
-  seat for a 15 s grace window** and **buffers the peer-relay backlog**. A
-  reconnect (a `hello` presenting the same `resumeToken`) **replays the
-  backlog** and resumes. Grace expiry ⇒ the peer is broadcast as `dnf` and the
-  match continues for the others. Spectator-side ghosts **freeze during the gap
-  and fast-forward on catch-up** (the client's jitter buffer absorbs this).
-- **Heartbeat.** WebSocket ping/pong at 15 s idle; 2 missed pongs ⇒ considered
-  disconnected (grace window starts).
+- **Inbound timestamping — IMPLEMENTED.** Every accepted `event_batch` is stamped
+  with its server arrival time (`recvServerMs`) and appended to the per-player
+  authoritative capture; the capture is persisted (gzip) at match end for the
+  future replay worker.
+- **Wall-clock plausibility — DEFERRED.** A run's final event time must fall
+  within `[go, lastBatchRecv + RTT tolerance]`. Violations are **flagged, not
+  rejected mid-match**. This is resolved out of band by the **replay worker**;
+  the relay lands the raw capture untouched, so no validation happens now.
+- **Disconnect policy — IMPLEMENTED.** On **any** WebSocket drop — lobby or
+  mid-match — the server **keeps the seat for a 15 s grace window**. Mid-match
+  it broadcasts `peer_status disconnected` and **buffers the peer-relay
+  backlog**; a **lobby-phase** drop is **silent on the wire** — the seat simply
+  stays (ready flag and host role included), no host succession happens while
+  graced, and a room whose seats are all graced survives until expiry. A
+  reconnect (a `hello` presenting the same `resumeToken`, compared in constant
+  time) reclaims the seat in **any phase**: the server answers `hello_ok`,
+  **always follows with a fresh `room_state`**, and mid-match then **replays the
+  backlog in order, exactly once** and broadcasts `reconnected`. An **unknown
+  or expired** token is **not an error** — the hello degrades to a fresh
+  connection (see §3). Grace expiry
+  **mid-match** ⇒ the peer is broadcast as `dnf`, its seat freed for host
+  succession, and the match continues for the others; grace expiry **outside a
+  match** ⇒ the normal leave flow (seat removed, `room_state`, a `leave` system
+  `chat`, host succession; an empty room dies). Spectator-side ghosts **freeze
+  during the gap and fast-forward on catch-up** (the client's jitter buffer
+  absorbs this).
+- **Match end — IMPLEMENTED.** A match ends when every seat is finished/dnf/left
+  (including words-mode idle-rule `dnf`s), at the hard deadline
+  (`goAtServerMs` + duration for time modes / a generous word-mode ceiling,
+  + 30 s slack) with unfinished seats broadcast `dnf`, or when the words-mode
+  finish window closes (below). The end is announced by a single `match_end`
+  frame (§4) — emitted after the final `peer_status` and before the post-match
+  `room_state`; a graced seat receives it via its backlog on resume. End clears
+  the in-match state and resets ready flags; a rematch re-readies and gets a
+  **new seed** and `matchId` on the next `start_match`.
+- **AFK rules — IMPLEMENTED.** Server-owned, swept once per second per running
+  match. Two measures, because "AFK" has two shapes:
+  - **Trailing silence** (`AfkTrailingMs` = 15 000, **every mode**): a racing
+    seat with no accepted `event_batch` for 15 s — measured from "go", then from
+    each accepted batch — is `dnf`'d and a `peer_status` `dnf` is broadcast.
+    This is the rule a player feels: stand up mid-race and you are out. It is
+    the ONLY AFK rule time mode gets, because a timed run cannot be completed
+    early — stopping is a legitimate way to end one, so only an unbroken hole
+    proves absence rather than a decision.
+  - **AFK share** (`AfkKickShare` = 0.6, `AfkWarmupMs` = 10 000, **words mode
+    only**): the server cuts each racing seat's match window into **one-second
+    buckets on its own receive clock**; a bucket carrying at least one accepted
+    `event_batch` is *active*. A seat whose idle share
+    `(elapsedBuckets − activeBuckets) / elapsedBuckets` reaches the threshold is
+    `dnf`'d. The rule is skipped until the window is `AfkWarmupMs` old — a young
+    window is idle by construction. It catches the seat that never really
+    played (two words in a minute) even when it twitches often enough to dodge
+    the trailing rule; words mode only, because there an unfinishing seat blocks
+    everyone else while a timed match ends on its own deadline.
+  - Together they **replace** the old fixed 30 s idle timer, which punished a
+    slow thinker exactly as hard as an absent player.
+  - The measured `afkMs` / `afkShare` travel per seat in `match_end.results[]`
+    (§4), so the verdict is auditable client-side. They are derived from batch
+    **arrival times only** — the server still never parses the opaque events.
+  - **Finish window** (`FINISH_WINDOW_MS` = 120 000): when the **first** seat
+    finishes a words-mode match, a 120 s window starts; at close every
+    still-racing seat is `dnf`'d and the match ends with reason `finish_window`.
+  - Both cancel at match end; a **graced** (disconnected) racing seat is **not**
+    exempt — its grace-`dnf` or the AFK rule, whichever fires first.
+- **Mid-match reconnect visibility — IMPLEMENTED.** While a match runs,
+  `room_state` carries `match: { matchId, goAtServerMs }` (absent otherwise). A
+  client whose **page reloaded** keeps its seat via the `resumeToken` but has lost
+  the run itself (event log, `seq` counter, and the t=0 anchor all died with the
+  tab; restarting `seq` would corrupt both the peers' ghost cores and the
+  server's capture). That client recognises the situation from this field and
+  **forfeits** — it sends `finish` at once — instead of silently stalling every
+  other player until the hard deadline.
+- **Heartbeat — IMPLEMENTED.** WebSocket ping/pong on a 15 s interval; 2 missed
+  pongs ⇒ the peer is considered disconnected (the grace window starts).
 
 ---
 
@@ -360,14 +715,13 @@ the rest still need a decision before the relay phase implements them.
    version (log-v1 ⇒ 1), *not* the protocol version. Flagged only because the
    name collides conceptually with `protocolVersion`; the two version numbers
    evolve independently.
-5. **Room-code case sensitivity.** The 6-char human-safe alphabet excludes
-   `0/O/1/I`; is the code case-sensitive, and does `join_room` normalise case
-   (e.g. upper-case the input) before lookup? (Human-safe codes usually imply
-   case-insensitive entry.)
-6. **Room message acknowledgements.** What does the server send in response to
-   `create_room` / `join_room` / `ready` / `leave` on success — always a fresh
-   `room_state` broadcast, or a targeted ack too? Assumed `room_state`, not
-   stated.
+5. **Room-code case sensitivity — RESOLVED.** Codes are stored upper-case and
+   `join_room` upper-cases (and trims) the input before lookup, so entry is
+   case-insensitive. (See §5.)
+6. **Room message acknowledgements — RESOLVED.** Success is a fresh `room_state`
+   broadcast to every seat (no separate targeted ack); `start_match` instead
+   emits a `countdown`, and `kick` sends the target a `kicked` frame. Errors are
+   targeted `error` frames to the sender only. (See §3 / §4.)
 7. **Max frame size.** No inbound frame-size limit is specified. The server
    currently caps a single frame at 1 MiB; the relay phase's `event_batch`
    sizing (≤16 events/batch) should confirm this ceiling is comfortable.

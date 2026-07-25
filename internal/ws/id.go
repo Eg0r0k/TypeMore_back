@@ -19,3 +19,25 @@ func newID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
+
+// newResumeToken returns a 256-bit (64 hex char) random secret used as the
+// per-connection reconnect capability (docs/PROTOCOL.md §4 hello_ok / §6). It is
+// distinct from and larger than the peer-visible player id, and is compared in
+// constant time on reconnect.
+func newResumeToken() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("ws: crypto/rand failed: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// newMatchID returns a wire/DB match identifier: an "m_" prefix plus 12 random
+// hex chars. It doubles as the matches table primary key.
+func newMatchID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("ws: crypto/rand failed: " + err.Error())
+	}
+	return "m_" + hex.EncodeToString(b[:])
+}
