@@ -23,9 +23,13 @@ The expectations therefore come out of **V8**, and the Go test reproduces them i
 engines agree on the one bundle, which is the whole premise of server-side
 replay. Nothing is compared with an epsilon.
 
-Every vector plays against the published `german` dictionary
+Every vector but one plays against the published `german` dictionary
 (`../dicts/german.json`, `dict_hash` `804728e8`), so the registry resolves it
-with no test-only seeding.
+with no test-only seeding. The exception is `code-newline-separator`: no code
+language is published yet, so that vector carries its dictionary INLINE
+(`dictionary` field) and `TestInlineDictionaryVectorsReplayBitExact` replays it
+straight through the core instead of the registry-backed worker. Same bundle,
+same goja, same bit-exact comparison — only the dictionary lookup differs.
 
 ## What each vector covers
 
@@ -38,11 +42,14 @@ with no test-only seeding.
 | `words-typos-v1` | Typos and corrections (acc < 1, broken combo) submitted under `scoreVersion: 1` |
 | `words-one-fast-interval` | One 9 ms interval in an otherwise human run — ordinary key rollover. Raises `min-interval` at a tiny severity and **must be accepted**, with the flag kept. The false-positive case the review policy exists for. |
 | `words-bot-cadence` | Every keystroke exactly 80 ms apart, zero variance. No single flag is severe enough alone, but `uniform-intervals` + `zero-variance` is a shape no hand makes — **must be flagged** by the `bot_cadence` rule. |
+| `words-nospace-space-presses` | A nospace run whose player kept tapping space. Every commit is **refused** by the reducer (`NospaceCommit`), so the submitted log is commit-free and the run is accepted — the guard against `validateLog` throwing out an honest nospace run. |
+| `code-newline-separator` | Raw-token (code) dictionary: `\t` indentation, `\n` on every line-closing word. The word that ends a line typed its own separator, so it is credited no space (`separatorsOf`). Carries its dictionary inline. |
 
-The last two are synthetic in their *timing* only: the log, the metrics and the
-score are still produced by driving the real core, so their flags and severities
-are the core's own output rather than numbers invented for a test. They pin the
-two ends of the review boundary (docs/REPLAY.md, "Review policy").
+`words-one-fast-interval` and `words-bot-cadence` are synthetic in their *timing*
+only: the log, the metrics and the score are still produced by driving the real
+core, so their flags and severities are the core's own output rather than numbers
+invented for a test. They pin the two ends of the review boundary
+(docs/REPLAY.md, "Review policy").
 
 `TestGoldenVectorsCoverTheContractSurface` asserts that this table stays true, so
 a regeneration cannot quietly drop a case and leave the suite green.

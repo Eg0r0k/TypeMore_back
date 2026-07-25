@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,14 +25,27 @@ const (
 	maxLimit     = 100
 )
 
-// Routes returns the runs router, intended to be mounted at /api/v1/runs behind
-// the auth session middleware (RequireAuth) and, for mutating methods, the
-// Origin check. Rate limiting is applied per user inside the ingest handler.
-func (s *Service) Routes() http.Handler {
+// Routes returns the runs router, mounted at /api/v1/runs.
+//
+// The auth boundary is drawn HERE rather than by the caller wrapping the whole
+// mount, because one route is deliberately outside it: GET /{id}/replay serves
+// accepted runs to anyone, which is what makes a leaderboard row watchable
+// without an account. Keeping the split next to the routes means the public one
+// cannot be widened by an unrelated change to the mount.
+//
+// requireOrigin is the CSRF check (a no-op on safe methods) and requireAuth
+// rejects sessionless requests; both come from the auth domain via the
+// composition root.
+func (s *Service) Routes(requireOrigin, requireAuth func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
-	r.Post("/", s.handleIngest)
-	r.Get("/", s.handleList)
-	r.Get("/{id}", s.handleDetail)
+	r.Get("/{id}/replay", s.handlePublicReplay)
+	r.Group(func(r chi.Router) {
+		r.Use(requireOrigin)
+		r.Use(requireAuth)
+		r.Post("/", s.handleIngest)
+		r.Get("/", s.handleList)
+		r.Get("/{id}", s.handleDetail)
+	})
 	return r
 }
 
@@ -205,6 +219,82 @@ func (s *Service) handleDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, toSummaryView(run))
+}
+
+// replayView is one accepted run as a spectator sees it: everything needed to
+// watch it back, and nothing about how it was judged. The event log is inlined
+// rather than linked so watching a leaderboard row is ONE request.
+type replayView struct {
+	RunID         uuid.UUID       `json:"runId"`
+	DisplayName   string          `json:"displayName"`
+	Mode          string          `json:"mode"`
+	DurationMs    *int32          `json:"durationMs,omitempty"`
+	WordCount     *int32          `json:"wordCount,omitempty"`
+	Lang          string          `json:"lang"`
+	Setup         json.RawMessage `json:"setup"`
+	ServerMetrics json.RawMessage `json:"serverMetrics"`
+	ServerScore   json.RawMessage `json:"serverScore"`
+	Grade         string          `json:"grade"`
+	AchievedAt    time.Time       `json:"achievedAt"`
+	Log           json.RawMessage `json:"log"`
+}
+
+// handlePublicReplay streams one accepted run for playback, to anyone.
+//
+// This is what makes a leaderboard row watchable: the board links a run id, and
+// this returns the setup, the log and the server's numbers in one response. The
+// owner-only ?log=1 path is untouched and still the only way to reach a run
+// that is pending, flagged or rejected.
+//
+// Rate-limited per IP: the log is the largest thing this server serves, and no
+// session is required to ask for one.
+func (s *Service) handlePublicReplay(w http.ResponseWriter, r *http.Request) {
+	if !s.replayLimiter.Allow(clientIP(r)) {
+		s.writeError(w, r, apiErrRateLimited)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, apiErrNotFound)
+		return
+	}
+
+	run, err := s.store.PublicReplay(r.Context(), id)
+	if err != nil {
+		s.writeNotFoundOr(w, r, err)
+		return
+	}
+	raw, err := gunzipLog(run.Log)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, replayView{
+		RunID:         run.RunID,
+		DisplayName:   run.DisplayName,
+		Mode:          run.Mode,
+		DurationMs:    run.DurationMs,
+		WordCount:     run.WordCount,
+		Lang:          run.Lang,
+		Setup:         run.Setup,
+		ServerMetrics: run.ServerMetrics,
+		ServerScore:   run.ServerScore,
+		Grade:         run.Grade,
+		AchievedAt:    run.AchievedAt,
+		Log:           raw,
+	})
+}
+
+// clientIP is the rate-limit key for the one unauthenticated endpoint here.
+// RemoteAddr only: the server is expected to sit behind a proxy that sets it,
+// and trusting a forwarded header would make the limit trivially bypassable.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // writeNotFoundOr maps ErrNotFound to a 404 and anything else to a generic 500.

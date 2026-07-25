@@ -50,12 +50,40 @@ const {
   scoreStep
 } = core
 
-// The dictionary every vector plays against: a real published one, so the
-// registry resolves its hash without any test-only seeding.
+// The dictionary every registry-backed vector plays against: a real published
+// one, so the registry resolves its hash without any test-only seeding.
 const LANG = 'german'
 const dictDoc = JSON.parse(readFileSync(join(here, '..', 'dicts', `${LANG}.json`), 'utf8'))
 const dictionary = { name: dictDoc.name, bcp47: dictDoc.bcp47 ?? LANG, words: dictDoc.words }
 const DICT_HASH = dictVersion(dictionary.words)
+
+/**
+ * A code dictionary: tokens carry their own layout (`\t` head, `\n` tail) the
+ * way monkeytype's code languages do. It is NOT published — `dicts/` holds no
+ * code language yet — so the vector built from it carries the dictionary inline
+ * and is replayed straight through the core instead of the registry-backed
+ * worker. It exists to pin the separator rule: a word ending in `\n` typed its
+ * own separator and must NOT also be credited a space.
+ */
+const codeDictionary = {
+  name: 'code_javascript_vector',
+  bcp47: 'en',
+  words: [
+    'function',
+    'greet(name)',
+    '{\n',
+    '\tconst',
+    'msg',
+    '=',
+    '`hi`;\n',
+    '\tconsole.log(msg);\n',
+    '}\n',
+    'export',
+    'default',
+    'greet;\n'
+  ]
+}
+const CODE_DICT_HASH = dictVersion(codeDictionary.words)
 
 /** Deterministic jitter so regenerating produces byte-identical vectors. */
 function lcg(seed) {
@@ -92,8 +120,18 @@ const noMods = { blind: false, fading: false, flashlight: false }
  * A typing session that mirrors the game store's dispatch semantics exactly:
  * stamp → dispatch → on reject, hand the seq back so the log stays contiguous.
  */
-function session({ config, generation, declaration, seed, jitterSeed = 7, fixedInterval = 0, commitAtSameInstant = false }) {
-  const generated = generateWords(dictionary, { seed, dictVersion: DICT_HASH, generation })
+function session({
+  config,
+  generation,
+  declaration,
+  seed,
+  jitterSeed = 7,
+  fixedInterval = 0,
+  commitAtSameInstant = false,
+  dict = dictionary,
+  dictHash = DICT_HASH
+}) {
+  const generated = generateWords(dict, { seed, dictVersion: dictHash, generation })
   if (generated.isErr()) throw new Error(`generation failed: ${generated.error.message}`)
   const words = generated.value.words
 
@@ -178,14 +216,23 @@ function typeWord(s, word) {
 }
 
 /** Build the exact RUNS.md POST body (features/run-submit/model/build-payload.ts). */
-function payloadOf({ config, generation, declaration, seed, finished, scoreVersion }) {
+function payloadOf({
+  config,
+  generation,
+  declaration,
+  seed,
+  finished,
+  scoreVersion,
+  dict = dictionary,
+  dictHash = DICT_HASH
+}) {
   const score = scoreVersion === 1 ? finished.scoreV1 : finished.scoreV2
   return {
     mode: config.mode,
     ...(config.mode === 'time' ? { durationMs: config.durationMs } : { wordCount: generation.length }),
-    lang: dictionary.bcp47,
+    lang: dict.bcp47,
     seed,
-    dictHash: DICT_HASH,
+    dictHash,
     scoreVersion,
     setup: { config, generation, declaration },
     clientMetrics: { wpm: finished.metrics.wpm, raw: finished.metrics.raw, acc: finished.metrics.accuracy },
@@ -383,6 +430,95 @@ function emit(name, description, expect, payload, extra = {}) {
     'Every keystroke exactly 80 ms apart with zero variance. No single flag is severe enough on its own, but uniform-intervals + zero-variance is a shape no hand produces: the bot_cadence rule must flag it.',
     { status: 'flagged', verdict: 'valid', flags: ['uniform-intervals', 'zero-variance'] },
     payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 })
+  )
+}
+
+// ── 8. nospace, and the player keeps pressing space ──────────────────────────
+// In nospace the word advances on the insert that fills it; a commit event has
+// no meaning. The reducer REFUSES it (kind `NospaceCommit`) instead of folding a
+// no-op, because an accepted event is a logged event — and `validateLog` throws
+// out an entire nospace log that contains one. This vector is the proof that a
+// habitual space press cannot invalidate an honest run: every space below is
+// rejected, the log comes out commit-free, and the run is accepted.
+{
+  const config = coreConfig({ nospace: true })
+  const generation = generationConfig({ length: 8 })
+  const seed = 8080808
+  const s = session({ config, generation, declaration: noMods, seed, jitterSeed: 13 })
+  for (let i = 0; i < generation.length; i++) {
+    typeWord(s, s.words[i]) // the last grapheme auto-commits (nospace)
+    s.commit() // the habitual separator press: refused, never logged
+  }
+  const finished = s.finish()
+  if (s.rejected !== generation.length) {
+    throw new Error(`vector 8: expected ${generation.length} refused commits, got ${s.rejected}`)
+  }
+  if (finished.log.events.some((event) => event.kind === 'commit')) {
+    throw new Error('vector 8: a commit reached the log — nospace runs would be invalidated')
+  }
+  emit(
+    'words-nospace-space-presses',
+    'nospace run whose player kept tapping space after every word. Each commit is refused by the reducer, so the submitted log is commit-free and the run is accepted — the guard against an honest nospace run being thrown out by validateLog.',
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 }),
+    { rejectedDispatches: s.rejected }
+  )
+}
+
+// ── 9. code dictionary: '\n' is the separator, not an extra one ──────────────
+// The targets carry their own layout, so the word that ends a line ends with a
+// typed '\n'. `separatorsOf` credits no phantom space for it — the numbers below
+// come out of the updated core, and goja must reproduce them exactly. The
+// dictionary is not published, so this vector carries it inline (see the Go
+// harness: inline-dictionary vectors replay through the core, not the registry).
+{
+  const config = coreConfig({ maxExtraChars: 40 })
+  const generation = generationConfig({ length: 9, rawTokens: true })
+  const seed = 20260725
+  const s = session({
+    config,
+    generation,
+    declaration: noMods,
+    seed,
+    jitterSeed: 29,
+    dict: codeDictionary,
+    dictHash: CODE_DICT_HASH
+  })
+  for (let i = 0; i < generation.length; i++) {
+    typeWord(s, s.words[i]) // includes the leading '\t' and the trailing '\n'
+    s.commit() // Enter typed the newline above, then separates the word
+  }
+  const finished = s.finish()
+  const lineEnders = s.words.filter((word) => word.endsWith('\n')).length
+  if (lineEnders === 0) throw new Error('vector 9: the generated run has no line ends')
+  // `separatorsOf`, restated: one space per committed word, minus every word that
+  // ended its own line, minus the last word of a count-finished run.
+  const lastEndsLine = s.words[generation.length - 1].endsWith('\n')
+  const expectedSpaces = generation.length - lineEnders - (lastEndsLine ? 0 : 1)
+  if (finished.metrics.spaces !== expectedSpaces) {
+    throw new Error(
+      `vector 9: separator accounting is off (spaces=${finished.metrics.spaces}, expected=${expectedSpaces}, lineEnders=${lineEnders})`
+    )
+  }
+  emit(
+    'code-newline-separator',
+    "Raw-token (code) dictionary: '\\t' indentation and a '\\n' at the end of every line-closing word. A word that ends its own line typed its separator, so it is credited no space — the rule the metrics and the score must reproduce.",
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({
+      config,
+      generation,
+      declaration: noMods,
+      seed,
+      finished,
+      scoreVersion: 2,
+      dict: codeDictionary,
+      dictHash: CODE_DICT_HASH
+    }),
+    {
+      dictionary: { name: codeDictionary.name, bcp47: codeDictionary.bcp47, words: codeDictionary.words },
+      lineEnders,
+      spaces: finished.metrics.spaces
+    }
   )
 }
 

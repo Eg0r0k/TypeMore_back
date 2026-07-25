@@ -127,3 +127,49 @@ sql:
             go_type:
               import: encoding/json
               type: RawMessage
+  - engine: postgresql
+    schema: db/migrations
+    queries: internal/leaderboard/queries.sql
+    gen:
+      go:
+        package: leaderboarddb
+        out: internal/leaderboard/leaderboarddb
+        sql_package: pgx/v5
+        emit_json_tags: false
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: uuid
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: citext
+            go_type: string
+          - db_type: citext
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+          - db_type: jsonb
+            go_type:
+              import: encoding/json
+              type: RawMessage
+          # wpm/raw/acc are stored exact (numeric) but every producer and
+          # consumer of them is a JSON double, so scan them as float64 rather
+          # than dragging pgtype.Numeric through the domain. Nothing in Go ever
+          # WRITES them: the projection copies numeric to numeric inside SQL.
+          - db_type: pg_catalog.numeric
+            go_type: float64

@@ -32,6 +32,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/replay"
@@ -127,7 +128,9 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 	if err != nil {
 		return err
 	}
-	rows, err := replaypg.New(pool).ListForCalibration(ctx, limit)
+	// nil projector: calibration judges runs to report what WOULD change and
+	// must not touch a read model while doing it.
+	rows, err := replaypg.New(pool, nil).ListForCalibration(ctx, limit)
 	if err != nil {
 		return err
 	}
@@ -304,7 +307,11 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	worker := replay.NewWorker(replaypg.New(pool), reg, replay.WorkerConfig{
+	// Revalidation moves real verdicts, so it carries the same leaderboard
+	// projector the server does: a run demoted here leaves its board in the same
+	// transaction (docs/LEADERBOARDS.md, "Maintenance").
+	board := leaderboardpg.New(pool, cfg.LeaderboardRequireVerifiedEmail)
+	worker := replay.NewWorker(replaypg.New(pool, board), reg, replay.WorkerConfig{
 		BatchSize:     batch,
 		ReplayTimeout: cfg.ReplayTimeout,
 		Policy:        policy,

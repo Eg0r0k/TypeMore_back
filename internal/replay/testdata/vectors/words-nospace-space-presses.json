@@ -1,0 +1,366 @@
+{
+  "name": "words-nospace-space-presses",
+  "description": "nospace run whose player kept tapping space after every word. Each commit is refused by the reducer, so the submitted log is commit-free and the run is accepted — the guard against an honest nospace run being thrown out by validateLog.",
+  "expect": {
+    "status": "accepted",
+    "verdict": "valid",
+    "flags": []
+  },
+  "payload": {
+    "mode": "words",
+    "wordCount": 8,
+    "lang": "german",
+    "seed": 8080808,
+    "dictHash": "804728e8",
+    "scoreVersion": 2,
+    "setup": {
+      "config": {
+        "mode": "words",
+        "durationMs": 60000,
+        "maxExtraChars": 20,
+        "difficulty": "normal",
+        "nospace": true,
+        "minWpm": 0
+      },
+      "generation": {
+        "mode": "words",
+        "length": 8,
+        "punctuation": false,
+        "numbers": false,
+        "randomCase": false,
+        "reverse": false
+      },
+      "declaration": {
+        "blind": false,
+        "fading": false,
+        "flashlight": false
+      }
+    },
+    "clientMetrics": {
+      "wpm": 117.01412239408204,
+      "raw": 117.01412239408204,
+      "acc": 1
+    },
+    "clientScore": {
+      "version": 2,
+      "total": 954,
+      "base": 582.5,
+      "comboPeak": 51,
+      "accMultiplier": 1,
+      "timeBonus": 1.4626765299260254,
+      "modMultiplier": 1.12
+    },
+    "log": {
+      "version": 1,
+      "events": [
+        {
+          "kind": "insert",
+          "seq": 1,
+          "t": 81,
+          "text": "W"
+        },
+        {
+          "kind": "insert",
+          "seq": 2,
+          "t": 182,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 3,
+          "t": 306,
+          "text": "s"
+        },
+        {
+          "kind": "insert",
+          "seq": 4,
+          "t": 379,
+          "text": "s"
+        },
+        {
+          "kind": "insert",
+          "seq": 5,
+          "t": 443,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 6,
+          "t": 533,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 7,
+          "t": 787,
+          "text": "C"
+        },
+        {
+          "kind": "insert",
+          "seq": 8,
+          "t": 857,
+          "text": "h"
+        },
+        {
+          "kind": "insert",
+          "seq": 9,
+          "t": 946,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 10,
+          "t": 1068,
+          "text": "p"
+        },
+        {
+          "kind": "insert",
+          "seq": 11,
+          "t": 1185,
+          "text": "s"
+        },
+        {
+          "kind": "insert",
+          "seq": 12,
+          "t": 1356,
+          "text": "D"
+        },
+        {
+          "kind": "insert",
+          "seq": 13,
+          "t": 1503,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 14,
+          "t": 1614,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 15,
+          "t": 1736,
+          "text": "s"
+        },
+        {
+          "kind": "insert",
+          "seq": 16,
+          "t": 1841,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 17,
+          "t": 1924,
+          "text": "h"
+        },
+        {
+          "kind": "insert",
+          "seq": 18,
+          "t": 2104,
+          "text": "T"
+        },
+        {
+          "kind": "insert",
+          "seq": 19,
+          "t": 2241,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 20,
+          "t": 2311,
+          "text": "ü"
+        },
+        {
+          "kind": "insert",
+          "seq": 21,
+          "t": 2387,
+          "text": "f"
+        },
+        {
+          "kind": "insert",
+          "seq": 22,
+          "t": 2495,
+          "text": "f"
+        },
+        {
+          "kind": "insert",
+          "seq": 23,
+          "t": 2555,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 24,
+          "t": 2684,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 25,
+          "t": 2944,
+          "text": "E"
+        },
+        {
+          "kind": "insert",
+          "seq": 26,
+          "t": 3018,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 27,
+          "t": 3166,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 28,
+          "t": 3229,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 29,
+          "t": 3369,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 30,
+          "t": 3452,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 31,
+          "t": 3641,
+          "text": "Z"
+        },
+        {
+          "kind": "insert",
+          "seq": 32,
+          "t": 3768,
+          "text": "u"
+        },
+        {
+          "kind": "insert",
+          "seq": 33,
+          "t": 3905,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 34,
+          "t": 4024,
+          "text": "k"
+        },
+        {
+          "kind": "insert",
+          "seq": 35,
+          "t": 4126,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 36,
+          "t": 4253,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 37,
+          "t": 4509,
+          "text": "H"
+        },
+        {
+          "kind": "insert",
+          "seq": 38,
+          "t": 4573,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 39,
+          "t": 4717,
+          "text": "m"
+        },
+        {
+          "kind": "insert",
+          "seq": 40,
+          "t": 4790,
+          "text": "b"
+        },
+        {
+          "kind": "insert",
+          "seq": 41,
+          "t": 4873,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 42,
+          "t": 4939,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 43,
+          "t": 5013,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 44,
+          "t": 5083,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 45,
+          "t": 5290,
+          "text": "K"
+        },
+        {
+          "kind": "insert",
+          "seq": 46,
+          "t": 5400,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 47,
+          "t": 5514,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 48,
+          "t": 5604,
+          "text": "p"
+        },
+        {
+          "kind": "insert",
+          "seq": 49,
+          "t": 5750,
+          "text": "f"
+        },
+        {
+          "kind": "insert",
+          "seq": 50,
+          "t": 5896,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 51,
+          "t": 6029,
+          "text": "n"
+        }
+      ]
+    }
+  },
+  "rejectedDispatches": 8
+}

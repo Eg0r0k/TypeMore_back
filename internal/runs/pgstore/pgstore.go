@@ -111,6 +111,30 @@ func (s *Store) RunLog(ctx context.Context, id, userID uuid.UUID) ([]byte, error
 	return log, nil
 }
 
+// PublicReplay returns one accepted run for public playback. Every access rule
+// lives in the query's WHERE clause, so "not accepted", "owner banned" and
+// "does not exist" all arrive here as the same no-rows error.
+func (s *Store) PublicReplay(ctx context.Context, id uuid.UUID) (runs.PublicReplay, error) {
+	row, err := s.q.GetPublicReplay(ctx, id)
+	if err != nil {
+		return runs.PublicReplay{}, mapErr(err)
+	}
+	return runs.PublicReplay{
+		RunID:         id,
+		DisplayName:   row.DisplayName,
+		Mode:          row.Mode,
+		DurationMs:    row.DurationMs,
+		WordCount:     row.WordCount,
+		Lang:          row.Lang,
+		Setup:         row.Setup,
+		Log:           row.Log,
+		ServerMetrics: row.ServerMetrics,
+		ServerScore:   row.ServerScore,
+		Grade:         row.Grade,
+		AchievedAt:    row.CreatedAt,
+	}, nil
+}
+
 // --- row conversions ---
 //
 // The three summary-shaped queries emit distinct-but-identical generated row

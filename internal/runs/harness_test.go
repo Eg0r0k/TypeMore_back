@@ -27,6 +27,8 @@ import (
 
 	"github.com/typemore/typemore-server/internal/auth"
 	authpg "github.com/typemore/typemore-server/internal/auth/pgstore"
+	"github.com/typemore/typemore-server/internal/leaderboard"
+	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/migrate"
 	"github.com/typemore/typemore-server/internal/runs"
@@ -79,27 +81,40 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// harness wires the auth + runs domains exactly as cmd/server does (runs mounted
-// behind RequireOrigin + RequireAuth), backed by a real Postgres, plus a
-// cookie-jar HTTP client.
+// harness wires the auth, runs and leaderboard domains exactly as cmd/server
+// does (runs mounted with its own auth boundary, boards public), backed by a
+// real Postgres, plus a cookie-jar HTTP client.
 type harness struct {
 	t      *testing.T
 	server *httptest.Server
 	client *http.Client
 	mailer *recorderMailer
 	pool   *pgxpool.Pool
+	// board is the leaderboard adapter this harness wired into the replay
+	// worker. Tests that move a run's status by hand use it to project through
+	// the same path production does.
+	board *leaderboardpg.Store
 }
 
 type harnessOpts struct {
-	runsRateEvery time.Duration
-	runsRateBurst int
+	runsRateEvery   time.Duration
+	runsRateBurst   int
+	replayRateEvery time.Duration
+	replayRateBurst int
+	// requireVerifiedEmail mirrors TYPEMORE_LEADERBOARD_REQUIRE_VERIFIED_EMAIL.
+	// Off by default here: this suite's users verify their email as part of
+	// login, and the gate has its own tests in internal/leaderboard.
+	requireVerifiedEmail bool
 }
 
 func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	t.Helper()
 	ctx := context.Background()
 
-	opts := harnessOpts{runsRateEvery: time.Millisecond, runsRateBurst: 1000}
+	opts := harnessOpts{
+		runsRateEvery: time.Millisecond, runsRateBurst: 1000,
+		replayRateEvery: time.Millisecond, replayRateBurst: 1000,
+	}
 	for _, m := range mutators {
 		m(&opts)
 	}
@@ -108,7 +123,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, `TRUNCATE runs, users, sessions, email_tokens, auth_identities, user_credentials RESTART IDENTITY CASCADE`)
+	_, err = pool.Exec(ctx, `TRUNCATE leaderboard_entries, bans, runs, users, sessions, email_tokens, auth_identities, user_credentials RESTART IDENTITY CASCADE`)
 	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -129,20 +144,33 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	runsStore := runspg.New(pool)
 	runsSvc := runs.NewService(runsStore,
 		auth.NewInMemoryRateLimiter(opts.runsRateEvery, opts.runsRateBurst),
+		auth.NewInMemoryRateLimiter(opts.replayRateEvery, opts.replayRateBurst),
 		func(c context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(c)
 			return u.ID, ok
 		},
 		logger)
 
+	// The leaderboard is wired exactly as cmd/server does it — one store that is
+	// both the public read model and the projector the replay worker calls
+	// inside its verdict transaction. Without it this suite would be testing a
+	// pipeline the deployment does not run.
+	boardStore := leaderboardpg.New(pool, opts.requireVerifiedEmail)
+	boardSvc := leaderboard.NewService(boardStore, func(c context.Context) (uuid.UUID, bool) {
+		u, ok := auth.UserFrom(c)
+		return u.ID, ok
+	}, logger)
+
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
+		r.Mount("/runs", runsSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
+		// /me needs a session; the auth middleware is applied inside the group
+		// so the two public routes stay public, as in cmd/server.
 		r.Group(func(r chi.Router) {
-			r.Use(authSvc.RequireOrigin)
-			r.Use(authSvc.RequireAuth)
-			r.Mount("/runs", runsSvc.Routes())
+			r.Use(authSvc.OptionalAuth)
+			r.Mount("/leaderboards", boardSvc.Routes())
 		})
 	})
 	server := httptest.NewServer(r)
@@ -154,7 +182,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
-	return &harness{t: t, server: server, client: client, mailer: mailer, pool: pool}
+	return &harness{t: t, server: server, client: client, mailer: mailer, pool: pool, board: boardStore}
 }
 
 // --- HTTP helpers ---

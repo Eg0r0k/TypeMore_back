@@ -408,7 +408,9 @@ judged by it, and the verdict is only meaningful with the `bundle_sha` beside it
    is the guard that no hard check was weakened;
    `TestSingleWeakFlagIsAcceptedWithTheFlagKept` and `TestBotCadenceIsFlagged`
    pin the two ends of the boundary.
-6. `make revalidate` to apply it to history.
+6. `make revalidate` to apply it to history. Runs that change status take their
+   leaderboard slots with them — the projector rides the same transaction, so a
+   demotion leaves the board and a promotion joins it, atomically.
 
 A policy change never touches a metric or a score. If a number moved, that was
 a bundle change and belongs in the section above.
@@ -419,8 +421,9 @@ a bundle change and belongs in the section above.
   fingerprint correlation, shadow-ban (BACKEND.md §11).
 - **The admin review queue** over `flagged` runs. The data it needs is now
   there (`validation.policy.suspicion`, sortable), the UI is not.
-- **Leaderboards and TP** — an `accepted` run does not yet update any read model
-  (SCORING_CONCEPT §4–5).
+- **TP / profile rating** — SCORING_CONCEPT §5, its own phase. Leaderboards are
+  no longer deferred: an accepted run of a ranked shape updates its board inside
+  the same transaction that writes the verdict ([`LEADERBOARDS.md`](LEADERBOARDS.md)).
 - **Automatic retry of `replay_timeout` / `replay_error` runs.** `attempts` is
   recorded but nothing re-queues them; today that is an operator's `UPDATE`,
   or a `make revalidate` after a policy bump.
@@ -432,6 +435,7 @@ a bundle change and belongs in the section above.
 
 - `docs/RUNS.md` — ingestion, the payload, and what it deliberately does not check
 - `docs/DICTIONARIES.md` — the registry the worker resolves `dict_hash` against
+- `docs/LEADERBOARDS.md` — the projection an accepted run feeds, and its rebuild
 - `internal/replay/corejs/README.md` — the vendored bundle and how to rebuild it
 - `internal/replay/testdata/README.md` — how the golden vectors are produced
 - `ARCHITECTURE.md` §4.2, BACKEND.md §1, §3 — why replay runs the client's code

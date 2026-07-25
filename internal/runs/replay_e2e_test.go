@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
 )
@@ -40,7 +41,9 @@ func goldenPayload(t *testing.T, name string) map[string]any {
 	return v.Payload
 }
 
-// replayOnce runs exactly one worker batch against the harness's database.
+// replayOnce runs exactly one worker batch against the harness's database, with
+// the leaderboard projector attached exactly as cmd/server attaches it — so a
+// verdict and the board move together, in one transaction, here too.
 func (h *harness) replayOnce(t *testing.T) {
 	t.Helper()
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
@@ -49,7 +52,8 @@ func (h *harness) replayOnce(t *testing.T) {
 	require.NoError(t, err)
 
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	w := replay.NewWorker(replaypg.New(h.pool), reg, replay.WorkerConfig{BatchSize: 10}, discard)
+	queue := replaypg.New(h.pool, leaderboardpg.New(h.pool, false))
+	w := replay.NewWorker(queue, reg, replay.WorkerConfig{BatchSize: 10}, discard)
 	_, err = w.RunBatch(context.Background(), core, discard)
 	require.NoError(t, err)
 }

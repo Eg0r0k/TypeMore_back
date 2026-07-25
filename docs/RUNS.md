@@ -23,6 +23,19 @@ equal to `TYPEMORE_FRONTEND_ORIGIN` (CSRF) and a valid session cookie. Errors ar
 | GET  | `/api/v1/runs?cursor=&limit=` | session | List own runs, newest-first, keyset-paginated (no log) |
 | GET  | `/api/v1/runs/{id}` | session | One own run's summary (no log) |
 | GET  | `/api/v1/runs/{id}?log=1` | session | Stream the gunzipped EventLog JSON (for the replay feature) |
+| GET  | `/api/v1/runs/{id}/replay` | **none** | One **accepted** run for public playback — setup, log, server numbers, grade, display name |
+
+The last one is the spectator surface behind a leaderboard row and is the only
+public route here: it serves accepted runs whose owner is not banned, and
+answers an indistinguishable `404` for everything else (pending, flagged,
+rejected, banned owner, nonexistent). It carries the verdict's result but never
+its reasoning — no `validation`, no client-reported numbers. Rate-limited per
+IP, because an event log is the heaviest payload the server serves and the route
+needs no session. Full shape and access matrix:
+[`LEADERBOARDS.md`](LEADERBOARDS.md).
+
+The owner-only `?log=1` path is unchanged and remains the only way to reach a
+run that is pending, flagged or rejected.
 
 ### POST body
 
@@ -185,15 +198,20 @@ An **accepted** run can still carry `flags` and a non-zero
 under `validation` as moderation detail: the client should render the former
 and ignore the latter.
 
+An accepted run of a **ranked shape** also lands on its leaderboard, in the same
+transaction that wrote the verdict ([`LEADERBOARDS.md`](LEADERBOARDS.md)).
+Nothing about that is visible on the run summary: the board is a projection, and
+`runs` stays the source of truth.
+
 ## Deliberately deferred
 
 Still out of scope for both ingestion and the worker:
 
 - **Anti-cheat beyond the core's own plausibility flags** — cross-run
   heuristics, fingerprint correlation, shadow-ban (BACKEND.md §11).
-- **The admin review queue** over `flagged` runs.
-- **Leaderboards / TP**: an `accepted` run does not yet update any read model
-  (SCORING_CONCEPT §4–5).
+- **The admin review queue** over `flagged` runs, and the handle that issues a
+  ban (the `bans` table and its read-side filter already exist).
+- **TP / profile rating** — SCORING_CONCEPT §5, its own phase.
 - **Rejecting an unknown `dictHash` at ingestion.** Ingestion still treats it as
   an opaque string; the worker resolves it against the registry
   ([`DICTIONARIES.md`](DICTIONARIES.md)) and flags `unknown_dict`.

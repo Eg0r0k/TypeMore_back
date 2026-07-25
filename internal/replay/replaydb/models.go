@@ -9,7 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type ActiveBan struct {
+	UserID uuid.UUID
+}
 
 type AuthIdentity struct {
 	ID              uuid.UUID
@@ -21,6 +26,14 @@ type AuthIdentity struct {
 	CreatedAt       time.Time
 }
 
+type Ban struct {
+	UserID    uuid.UUID
+	Reason    string
+	IssuedBy  *uuid.UUID
+	IssuedAt  time.Time
+	ExpiresAt *time.Time
+}
+
 type EmailToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -29,6 +42,49 @@ type EmailToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type LeaderboardEligibleRun struct {
+	RunID          uuid.UUID
+	UserID         uuid.UUID
+	Mode           string
+	DurationMs     *int32
+	WordCount      *int32
+	Lang           string
+	TextSourceKind string
+	Score          int64
+	Wpm            pgtype.Numeric
+	Raw            pgtype.Numeric
+	Acc            pgtype.Numeric
+	Mods           json.RawMessage
+	AchievedAt     time.Time
+}
+
+type LeaderboardEntry struct {
+	BucketKey  string
+	UserID     uuid.UUID
+	RunID      uuid.UUID
+	Score      int64
+	Wpm        pgtype.Numeric
+	Raw        pgtype.Numeric
+	Acc        pgtype.Numeric
+	Grade      string
+	Mods       json.RawMessage
+	AchievedAt time.Time
+}
+
+type LeaderboardRow struct {
+	BucketKey   string
+	UserID      uuid.UUID
+	DisplayName string
+	RunID       uuid.UUID
+	Score       int64
+	Wpm         pgtype.Numeric
+	Raw         pgtype.Numeric
+	Acc         pgtype.Numeric
+	Grade       string
+	Mods        json.RawMessage
+	AchievedAt  time.Time
 }
 
 type Match struct {

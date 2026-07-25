@@ -78,6 +78,28 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
+// PublicReplay is one ACCEPTED run as anyone may watch it: the setup needed to
+// regenerate its text, the log to play back, and the server's own numbers. It
+// carries no client-reported values and no validation detail — a spectator gets
+// the verdict's result, not its reasoning.
+//
+// Log is the stored gzip blob, decompressed by the handler exactly as the
+// owner-only ?log=1 path does.
+type PublicReplay struct {
+	RunID         uuid.UUID
+	DisplayName   string
+	Mode          string
+	DurationMs    *int32
+	WordCount     *int32
+	Lang          string
+	Setup         json.RawMessage
+	Log           []byte
+	ServerMetrics json.RawMessage
+	ServerScore   json.RawMessage
+	Grade         string
+	AchievedAt    time.Time
+}
+
 // Store is the runs persistence contract, declared at the consumer and
 // implemented by the Postgres adapter. A missing (or not-owned) run is reported
 // as ErrNotFound.
@@ -92,4 +114,8 @@ type Store interface {
 	Run(ctx context.Context, id, userID uuid.UUID) (Summary, error)
 	// RunLog returns the gzip log blob for one run owned by userID.
 	RunLog(ctx context.Context, id, userID uuid.UUID) ([]byte, error)
+	// PublicReplay returns one accepted run for public playback. A run that is
+	// not accepted, or whose owner is banned, is ErrNotFound — the same answer
+	// as one that does not exist.
+	PublicReplay(ctx context.Context, id uuid.UUID) (PublicReplay, error)
 }

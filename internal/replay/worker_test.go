@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,18 @@ type vector struct {
 	} `json:"expect"`
 	Payload            vectorPayload `json:"payload"`
 	RejectedDispatches int           `json:"rejectedDispatches"`
+	// Dictionary is set only for a vector whose language is NOT published yet
+	// (today: the code dictionary with '\t'/'\n' tokens). The registry resolves
+	// published hashes only, so such a vector is replayed straight through the
+	// core instead of the worker — see TestInlineDictionaryVectorsReplayBitExact.
+	Dictionary *struct {
+		Name  string   `json:"name"`
+		Bcp47 string   `json:"bcp47"`
+		Words []string `json:"words"`
+	} `json:"dictionary"`
+	// Spaces is the separator count the core credited (inline-dictionary
+	// vectors only): the '\n' rule in one number.
+	Spaces *int `json:"spaces"`
 }
 
 type vectorPayload struct {
@@ -212,6 +225,9 @@ func numbers(t *testing.T, raw json.RawMessage) map[string]any {
 // here would hide precisely the drift this worker exists to detect.
 func TestGoldenVectorsReplayBitExact(t *testing.T) {
 	for _, v := range loadVectors(t) {
+		if v.Dictionary != nil {
+			continue // not a published language: covered by the inline-dictionary test
+		}
 		t.Run(v.Name, func(t *testing.T) {
 			run := v.pendingRun(t)
 			d := judgeOne(t, run)
@@ -269,7 +285,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	require.GreaterOrEqual(t, len(vectors), 5)
 
 	var sawTime, sawWords, sawMods, sawRejectedBackspace, sawV1, sawV2, sawTypos bool
-	var sawWeakFlagAccepted, sawBotFlagged bool
+	var sawWeakFlagAccepted, sawBotFlagged, sawNospace, sawNewlineDict bool
 	for _, v := range vectors {
 		switch v.Payload.Mode {
 		case "time":
@@ -284,17 +300,38 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 			sawV2 = true
 		}
 		var setup struct {
+			Config struct {
+				Nospace bool `json:"nospace"`
+			} `json:"config"`
 			Generation struct {
 				Punctuation bool `json:"punctuation"`
 				Numbers     bool `json:"numbers"`
 				RandomCase  bool `json:"randomCase"`
+				RawTokens   bool `json:"rawTokens"`
 			} `json:"generation"`
 		}
 		require.NoError(t, json.Unmarshal(v.Payload.Setup, &setup))
 		if setup.Generation.Punctuation || setup.Generation.Numbers || setup.Generation.RandomCase {
 			sawMods = true
 		}
-		if v.RejectedDispatches > 0 {
+		// A nospace vector is only worth anything if the player DID press space:
+		// the commits must have been refused, so the log carries none.
+		if setup.Config.Nospace && v.RejectedDispatches > 0 {
+			sawNospace = true
+			assert.NotContains(t, string(v.Payload.Log), `"kind":"commit"`,
+				"%s: a commit reached a nospace log — validateLog would throw the run out", v.Name)
+		}
+		if v.Dictionary != nil && setup.Generation.RawTokens {
+			for _, word := range v.Dictionary.Words {
+				if strings.HasSuffix(word, "\n") {
+					sawNewlineDict = true
+					break
+				}
+			}
+		}
+		// The seq-hole class is about REJECTED BACKSPACES specifically; a nospace
+		// vector's refusals are commits and must not stand in for it.
+		if v.RejectedDispatches > 0 && !setup.Config.Nospace {
 			sawRejectedBackspace = true
 		}
 		if acc := numbers(t, v.Payload.ClientMetrics)["acc"]; acc != float64(1) {
@@ -316,6 +353,69 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	assert.True(t, sawTypos, "no imperfect-accuracy vector")
 	assert.True(t, sawWeakFlagAccepted, "no accepted-with-a-flag vector: the false-positive case is unguarded")
 	assert.True(t, sawBotFlagged, "no bot-shaped vector: the review path is unguarded")
+	assert.True(t, sawNospace, "no nospace-with-space-presses vector: the NospaceCommit guard is unpinned")
+	assert.True(t, sawNewlineDict, "no '\\n'-dictionary vector: the separator rule is unpinned")
+}
+
+// A vector whose language is not published yet cannot travel the worker path —
+// the registry only resolves shipped dictionaries, by design. It still has to
+// prove the same thing every other vector proves: the numbers V8 produced come
+// back out of goja, bit for bit, from the SAME bundle. So it is replayed here
+// with its dictionary handed straight to the core.
+//
+// Today this is the code dictionary: '\t' indentation and '\n' line ends, which
+// is what pins the separator rule (a word that ends its own line is credited no
+// space). The rule is invisible on every published dictionary — that is exactly
+// why the other seven vectors did not move when it landed.
+func TestInlineDictionaryVectorsReplayBitExact(t *testing.T) {
+	seen := 0
+	for _, v := range loadVectors(t) {
+		if v.Dictionary == nil {
+			continue
+		}
+		seen++
+		t.Run(v.Name, func(t *testing.T) {
+			core := mustCore(t, DefaultReplayTimeout)
+			body, err := json.Marshal(v.Dictionary)
+			require.NoError(t, err)
+
+			hash, err := core.DictVersion(v.Dictionary.Words)
+			require.NoError(t, err)
+			require.Equal(t, v.Payload.DictHash, hash, "the vector's dictHash is not this dictionary's fingerprint")
+
+			result, err := core.Replay(context.Background(), Input{
+				Seed:         v.Payload.Seed,
+				DictHash:     v.Payload.DictHash,
+				DictBody:     body,
+				Setup:        v.Payload.Setup,
+				Log:          v.Payload.Log,
+				ScoreVersion: v.Payload.ScoreVersion,
+			})
+			require.NoError(t, err)
+			require.Equal(t, v.Expect.Verdict, result.Verdict, "reason: %s", result.Reason)
+			assert.Equal(t, append([]string{}, v.Expect.Flags...), flagCodes(result.Flags))
+
+			client := numbers(t, v.Payload.ClientScore)
+			server := numbers(t, result.Score)
+			for field, want := range client {
+				assert.Equal(t, want, server[field], "score.%s", field)
+			}
+			assert.Equal(t, len(client), len(server), "score has extra/missing fields: %s", result.Score)
+
+			clientMetrics := numbers(t, v.Payload.ClientMetrics)
+			serverMetrics := numbers(t, result.Metrics)
+			assert.Equal(t, clientMetrics["wpm"], serverMetrics["wpm"], "metrics.wpm")
+			assert.Equal(t, clientMetrics["raw"], serverMetrics["raw"], "metrics.raw")
+			assert.Equal(t, clientMetrics["acc"], serverMetrics["accuracy"], "metrics.accuracy")
+
+			// The separator rule itself, in one number: the vector records the
+			// count the client's core credited, and the server must agree.
+			if v.Spaces != nil {
+				assert.Equal(t, float64(*v.Spaces), serverMetrics["spaces"], "metrics.spaces")
+			}
+		})
+	}
+	require.Positive(t, seen, "no inline-dictionary vector: the separator rule is unpinned")
 }
 
 // --- tampering --------------------------------------------------------------
@@ -526,12 +626,30 @@ func TestPathologicalLogTimesOutAndTheLoopStaysHealthy(t *testing.T) {
 
 	q := newFakeQueue(poison, healthy)
 	w, _ := testWorker(t, q)
-	// A short budget keeps the test quick; the mechanism is identical at 5s.
-	core := mustCore(t, 300*time.Millisecond)
+	// The budget is deliberately generous rather than tight. Both runs in this
+	// batch share ONE runtime and therefore one interrupt budget, so the second
+	// (healthy) run is judged under the same clock as the poisonous one — and at
+	// 300 ms this test failed under `-race` in a loaded container, where an
+	// ordinary ten-word replay can itself take a few hundred milliseconds and
+	// come back flagged as a timeout.
+	//
+	// Nothing below asserts a wall clock. The guarantees are *which* outcome came
+	// back: replay_timeout for the poison, a normal verdict for the run after it.
+	// A wider budget cannot make broken interrupt machinery look healthy — a
+	// hundred-million-word generation does not finish in two seconds on any
+	// machine — it only stops a slow machine from looking broken.
+	core := mustCore(t, 2*time.Second)
 
+	started := time.Now()
 	n, err := w.RunBatch(context.Background(), core, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	elapsed := time.Since(started)
 	require.NoError(t, err, "one poisonous run must not fail the batch")
 	require.Equal(t, 2, n)
+	// The relative claim, with an order-of-magnitude margin instead of a window:
+	// the watchdog cut the generation off. Left to run it would take minutes, so
+	// any machine slow enough to fail this is slow enough that nothing else in
+	// the suite would pass either.
+	require.Less(t, elapsed, 30*time.Second, "the interrupt did not cut the runaway generation short")
 
 	bad := q.decision(t, poison.ID)
 	require.Equal(t, StatusFlagged, bad.Status)
@@ -599,7 +717,14 @@ func TestBundleExportsAreBound(t *testing.T) {
 // The interrupt must be per-call: a runtime that timed out once has to keep
 // working, or one bad run would poison every run after it.
 func TestInterruptDoesNotLeakToTheNextCall(t *testing.T) {
-	core := mustCore(t, 150*time.Millisecond)
+	// A generous budget, for the same reason as the batch test above: the healthy
+	// replay that proves the runtime recovered is bounded by the SAME interrupt
+	// budget as the poisoned one, so at 150 ms a loaded `-race` container turned
+	// "the runtime recovered" into "the runtime timed out again". The assertions
+	// are about which error came back, never about how long anything took, so a
+	// wider budget removes the flake without removing the guarantee: a
+	// hundred-million-word generation still cannot finish inside it.
+	core := mustCore(t, 2*time.Second)
 	v := firstVector(t, "words-clean")
 	var setup setupParts
 	require.NoError(t, json.Unmarshal(v.Payload.Setup, &setup))
@@ -622,9 +747,15 @@ func TestInterruptDoesNotLeakToTheNextCall(t *testing.T) {
 	_, err := core.Replay(context.Background(), poisoned)
 	require.ErrorIs(t, err, ErrReplayTimeout)
 
-	res, err := core.Replay(context.Background(), in)
-	require.NoError(t, err, "the runtime must be usable again after an interrupt")
-	assert.Equal(t, verdictValid, res.Verdict)
+	// Three times, not once. A stale interrupt flag or a watchdog that was not
+	// retired shows up as an ErrReplayTimeout on a call that should be
+	// microseconds of work, and repeating the call widens the window in which a
+	// leaked deadline would be caught instead of narrowing it.
+	for i := range 3 {
+		res, err := core.Replay(context.Background(), in)
+		require.NoErrorf(t, err, "call %d: the runtime must be usable again after an interrupt", i+1)
+		assert.Equal(t, verdictValid, res.Verdict)
+	}
 }
 
 func registryForTest(t *testing.T) *Registry {

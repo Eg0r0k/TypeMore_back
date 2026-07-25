@@ -10,24 +10,41 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/typemore/typemore-server/internal/replay"
 	"github.com/typemore/typemore-server/internal/replay/replaydb"
 )
 
+// Projector is notified, inside the transaction that wrote a run's verdict,
+// that the run's status may have changed. It is how a downstream read model
+// (today: the leaderboard) stays exactly as fresh as the status column, with no
+// window in which a run is accepted but absent from its board — and no
+// possibility of a demoted run lingering on one, because a rollback takes the
+// projection with it.
+//
+// Declared here, at the consumer, and implemented by the leaderboard adapter:
+// neither domain imports the other, and the composition root decides whether a
+// deployment projects at all.
+type Projector interface {
+	ProjectRun(ctx context.Context, tx pgx.Tx, runID uuid.UUID) error
+}
+
 // Queue implements replay.Queue against Postgres.
 type Queue struct {
-	pool *pgxpool.Pool
-	q    *replaydb.Queries
+	pool      *pgxpool.Pool
+	q         *replaydb.Queries
+	projector Projector
 }
 
 // Compile-time check that Queue satisfies the consumer interface.
 var _ replay.Queue = (*Queue)(nil)
 
-// New builds a Queue from a pgx pool.
-func New(pool *pgxpool.Pool) *Queue {
-	return &Queue{pool: pool, q: replaydb.New(pool)}
+// New builds a Queue from a pgx pool. projector may be nil, which is what an
+// API-only replica or a test that only cares about verdicts passes.
+func New(pool *pgxpool.Pool, projector Projector) *Queue {
+	return &Queue{pool: pool, q: replaydb.New(pool), projector: projector}
 }
 
 // ProcessBatch is the whole queue protocol in one transaction: claim pending
@@ -100,6 +117,15 @@ func (q *Queue) inTx(
 		d := decide(ctx, runs[i])
 		if err := qtx.ApplyReplayDecision(ctx, toDecisionParams(runs[i].ID, d)); err != nil {
 			return 0, fmt.Errorf("replay/pgstore: apply decision for run %s: %w", runs[i].ID, err)
+		}
+		// Unconditionally, not "when the status changed": the projection is a
+		// recompute, so running it on an unchanged verdict is a no-op, while
+		// skipping it on a status the worker THINKS is unchanged would be a
+		// board that quietly disagrees with the runs table.
+		if q.projector != nil {
+			if err := q.projector.ProjectRun(ctx, tx, runs[i].ID); err != nil {
+				return 0, fmt.Errorf("replay/pgstore: project run %s: %w", runs[i].ID, err)
+			}
 		}
 	}
 	// Commit even on an empty claim: releasing the snapshot beats leaving an

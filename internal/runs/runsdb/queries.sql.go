@@ -71,6 +71,60 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (CreateRun
 	return i, err
 }
 
+const getPublicReplay = `-- name: GetPublicReplay :one
+SELECT r.setup, r.log, r.server_metrics, r.server_score,
+       run_grade((r.server_metrics ->> 'accuracy')::numeric)::text AS grade,
+       r.mode, r.duration_ms, r.word_count, r.lang, r.created_at,
+       u.display_name
+FROM runs r
+         JOIN users u ON u.id = r.user_id
+WHERE r.id = $1
+  AND r.status = 'accepted'
+  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+`
+
+type GetPublicReplayRow struct {
+	Setup         json.RawMessage
+	Log           []byte
+	ServerMetrics []byte
+	ServerScore   []byte
+	Grade         string
+	Mode          string
+	DurationMs    *int32
+	WordCount     *int32
+	Lang          string
+	CreatedAt     time.Time
+	DisplayName   string
+}
+
+// Everything needed to watch someone else's run: the setup to regenerate the
+// text, the log to play back, and the server's own verdict numbers.
+//
+// Three access rules are in the WHERE clause rather than in Go, so no caller can
+// reach this data without them: the run must be ACCEPTED (a flagged, rejected
+// or unjudged run is not a public artefact), and its owner must not be banned.
+// All three failures return no row, which the handler renders as one
+// indistinguishable 404 — a leaderboard must not leak who is under review.
+func (q *Queries) GetPublicReplay(ctx context.Context, runID uuid.UUID) (GetPublicReplayRow, error) {
+	row := q.db.QueryRow(ctx, getPublicReplay, runID)
+	var i GetPublicReplayRow
+	err := row.Scan(
+		&i.Setup,
+		&i.Log,
+		&i.ServerMetrics,
+		&i.ServerScore,
+		&i.Grade,
+		&i.Mode,
+		&i.DurationMs,
+		&i.WordCount,
+		&i.Lang,
+		&i.CreatedAt,
+		&i.DisplayName,
+	)
+	return i, err
+}
+
 const getRun = `-- name: GetRun :one
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,

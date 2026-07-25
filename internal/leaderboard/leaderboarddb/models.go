@@ -2,14 +2,13 @@
 // versions:
 //   sqlc v1.31.1
 
-package runsdb
+package leaderboarddb
 
 import (
 	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type ActiveBan struct {
@@ -53,9 +52,9 @@ type LeaderboardEligibleRun struct {
 	Lang           string
 	TextSourceKind string
 	Score          int64
-	Wpm            pgtype.Numeric
-	Raw            pgtype.Numeric
-	Acc            pgtype.Numeric
+	Wpm            float64
+	Raw            float64
+	Acc            float64
 	Mods           json.RawMessage
 	AchievedAt     time.Time
 }
@@ -65,9 +64,9 @@ type LeaderboardEntry struct {
 	UserID     uuid.UUID
 	RunID      uuid.UUID
 	Score      int64
-	Wpm        pgtype.Numeric
-	Raw        pgtype.Numeric
-	Acc        pgtype.Numeric
+	Wpm        float64
+	Raw        float64
+	Acc        float64
 	Grade      string
 	Mods       json.RawMessage
 	AchievedAt time.Time
@@ -79,9 +78,9 @@ type LeaderboardRow struct {
 	DisplayName string
 	RunID       uuid.UUID
 	Score       int64
-	Wpm         pgtype.Numeric
-	Raw         pgtype.Numeric
-	Acc         pgtype.Numeric
+	Wpm         float64
+	Raw         float64
+	Acc         float64
 	Grade       string
 	Mods        json.RawMessage
 	AchievedAt  time.Time

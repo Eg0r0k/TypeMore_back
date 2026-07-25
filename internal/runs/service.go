@@ -23,17 +23,26 @@ type RateLimiter interface {
 type UserIDFunc func(ctx context.Context) (uuid.UUID, bool)
 
 // Service holds the run-ingestion logic. HTTP handlers call it; it calls the
-// store and the limiter. The rate limiter is applied per user on ingestion only.
+// store and the limiters.
+//
+// There are two limiters because the two exposed costs are different: ingestion
+// is per-user and generous (a typing session is many runs), while public replay
+// is per-IP and modest (an event log is the heaviest payload this server hands
+// out, and the caller needs no account to ask for one).
 type Service struct {
-	store   Store
-	limiter RateLimiter
-	userID  UserIDFunc
-	log     *slog.Logger
+	store         Store
+	limiter       RateLimiter
+	replayLimiter RateLimiter
+	userID        UserIDFunc
+	log           *slog.Logger
 }
 
 // NewService wires the runs service.
-func NewService(store Store, limiter RateLimiter, userID UserIDFunc, log *slog.Logger) *Service {
-	return &Service{store: store, limiter: limiter, userID: userID, log: log}
+func NewService(store Store, limiter, replayLimiter RateLimiter, userID UserIDFunc, log *slog.Logger) *Service {
+	return &Service{
+		store: store, limiter: limiter, replayLimiter: replayLimiter,
+		userID: userID, log: log,
+	}
 }
 
 // currentUser resolves the authenticated user id, writing an unauthorized error

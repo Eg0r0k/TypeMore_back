@@ -1,0 +1,149 @@
+-- Bucketed score leaderboards (docs/LEADERBOARDS.md).
+--
+-- Reads go through leaderboard_rows (ban-filtered by construction); writes go
+-- through RecomputeLeaderboardCell, which is the ONLY statement that mutates
+-- the table — promotion, demotion and rebuild are all the same operation.
+
+-- name: RunBucketCell :one
+-- The cell a run belongs to, resolved WITHOUT looking at its status: a run that
+-- just lost its accepted status still has to say which cell to recompute.
+SELECT user_id, mode, duration_ms, word_count, lang,
+       run_text_source_kind(setup)::text AS text_source_kind
+FROM runs
+WHERE id = @run_id;
+
+-- name: RecomputeLeaderboardCell :exec
+-- Set one (bucket, player) cell to that player's best eligible run, or clear it
+-- when nothing is left. This single statement covers every case:
+--
+--   new personal best      the ORDER BY picks the new run
+--   worse run submitted    the ORDER BY keeps the old one, DO UPDATE no-ops
+--   run demoted            it drops out of leaderboard_eligible_runs and the
+--                          next best takes the slot
+--   only entry demoted     `best` is empty, so the DELETE fires
+--
+-- Writing it as "recompute the cell" rather than "upsert if better" is what
+-- makes demotion correct for free, and it is why a rebuild can reuse this
+-- statement verbatim instead of reimplementing the rule.
+--
+-- Siblings are matched on the bucket COMPONENTS, never by parsing bucket_key:
+-- the key's format has exactly one producer, and it is in Go.
+WITH best AS (
+    SELECT e.*
+    FROM leaderboard_eligible_runs e
+    WHERE e.user_id = @user_id
+      AND e.mode = @mode
+      AND e.duration_ms IS NOT DISTINCT FROM sqlc.narg(duration_ms)::int
+      AND e.word_count IS NOT DISTINCT FROM sqlc.narg(word_count)::int
+      AND e.lang = @lang
+      AND e.text_source_kind = @text_source_kind
+      -- The economic barrier against throwaway accounts. Off by config, and
+      -- flipping it needs a rebuild to take effect on existing runs.
+      --
+      -- Note `ai.user_id = @user_id`, NOT `= e.user_id`. The two are the same
+      -- value — `e.user_id = @user_id` is asserted five lines above — but
+      -- correlating on the column makes this a SubPlan the executor runs once
+      -- per CANDIDATE RUN instead of an InitPlan it runs once per statement.
+      -- Measured (docs/PERFORMANCE.md, zone 4): a six-run cell 34.6 ms → 8.0 ms,
+      -- and a player with 100 000 runs in one bucket 1 m 30 s → 458 ms, which is
+      -- the gate costing nothing at all. This projection runs inside the replay
+      -- worker's verdict transaction, holding its row locks, so the difference
+      -- is not academic.
+      AND (NOT @require_verified_email::boolean
+           OR EXISTS (SELECT 1 FROM auth_identities ai
+                      WHERE ai.user_id = @user_id AND ai.email_verified))
+    ORDER BY e.score DESC, e.achieved_at ASC, e.run_id ASC
+    LIMIT 1
+),
+cleared AS (
+    DELETE FROM leaderboard_entries le
+    WHERE le.bucket_key = @bucket_key
+      AND le.user_id = @user_id
+      AND NOT EXISTS (SELECT 1 FROM best)
+)
+INSERT INTO leaderboard_entries
+    (bucket_key, user_id, run_id, score, wpm, raw, acc, grade, mods, achieved_at)
+SELECT @bucket_key, b.user_id, b.run_id, b.score, b.wpm, b.raw, b.acc,
+       run_grade(b.acc), b.mods, b.achieved_at
+FROM best b
+ON CONFLICT (bucket_key, user_id) DO UPDATE
+    SET run_id      = EXCLUDED.run_id,
+        score       = EXCLUDED.score,
+        wpm         = EXCLUDED.wpm,
+        raw         = EXCLUDED.raw,
+        acc         = EXCLUDED.acc,
+        grade       = EXCLUDED.grade,
+        mods        = EXCLUDED.mods,
+        achieved_at = EXCLUDED.achieved_at
+    -- An unchanged best is left physically alone.
+    WHERE leaderboard_entries.run_id <> EXCLUDED.run_id;
+
+-- name: EnumerateLeaderboardCells :many
+-- Every (player, bucket) cell that currently has an eligible run. The rebuild
+-- walks this and calls RecomputeLeaderboardCell on each, so the rebuilt table is
+-- produced by the same statement that maintains it incrementally.
+SELECT DISTINCT e.user_id, e.mode, e.duration_ms, e.word_count, e.lang,
+                e.text_source_kind
+FROM leaderboard_eligible_runs e
+WHERE (NOT @require_verified_email::boolean
+       OR EXISTS (SELECT 1 FROM auth_identities ai
+                  WHERE ai.user_id = e.user_id AND ai.email_verified))
+ORDER BY e.user_id, e.mode, e.duration_ms, e.word_count, e.lang,
+         e.text_source_kind;
+
+-- name: ClearLeaderboard :exec
+-- Rebuild step one. TRUNCATE is transactional in Postgres, so a failed rebuild
+-- leaves the old board untouched rather than an empty one.
+TRUNCATE leaderboard_entries;
+
+-- name: CountLeaderboardEntries :one
+SELECT count(*) FROM leaderboard_entries;
+
+-- name: ListLeaderboardBuckets :many
+-- The board index. Counts are ban-filtered like every other read, so a bucket
+-- whose only player is banned reports zero rather than one.
+SELECT bucket_key, count(*)::bigint AS entries
+FROM leaderboard_rows
+GROUP BY bucket_key
+ORDER BY bucket_key;
+
+-- name: ListLeaderboardPageFirst :many
+-- Page one: best score first, earliest achievement first on a tie, user_id as
+-- the final tiebreak so the order is total (and therefore pageable).
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+       achieved_at
+FROM leaderboard_rows
+WHERE bucket_key = @bucket_key
+ORDER BY score DESC, achieved_at ASC, user_id ASC
+LIMIT @row_limit;
+
+-- name: ListLeaderboardPageAfter :many
+-- The keyset continuation of the ordering above. Spelled out rather than as a
+-- row comparison because the directions are mixed (score DESC, the rest ASC).
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+       achieved_at
+FROM leaderboard_rows
+WHERE bucket_key = @bucket_key
+  AND (score < @score
+       OR (score = @score AND achieved_at > @achieved_at)
+       OR (score = @score AND achieved_at = @achieved_at AND user_id > @user_id))
+ORDER BY score DESC, achieved_at ASC, user_id ASC
+LIMIT @row_limit;
+
+-- name: CountLeaderboardAbove :one
+-- How many visible entries outrank this position. Rank = that + 1, which is what
+-- makes the rank on a cursor page exact instead of a guess carried in the token.
+SELECT count(*)::bigint
+FROM leaderboard_rows
+WHERE bucket_key = @bucket_key
+  AND (score > @score
+       OR (score = @score AND achieved_at < @achieved_at)
+       OR (score = @score AND achieved_at = @achieved_at AND user_id < @user_id));
+
+-- name: GetLeaderboardEntry :one
+-- One player's entry in one bucket. A banned player has none (the view), which
+-- is exactly the 204 the /me endpoint wants.
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+       achieved_at
+FROM leaderboard_rows
+WHERE bucket_key = @bucket_key AND user_id = @user_id;

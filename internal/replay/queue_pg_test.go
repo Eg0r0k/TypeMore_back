@@ -218,7 +218,7 @@ func TestQueueProcessesAPendingRun(t *testing.T) {
 	v := loadVector(t, "words-clean")
 	id := insertPending(t, pool, user, v)
 
-	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{BatchSize: 10})
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 	n, err := w.RunBatch(context.Background(), core, discardLogger())
@@ -301,7 +301,7 @@ func TestTwoWorkersNeverProcessTheSameRunTwice(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 2 {
-		q := countingQueue{inner: replaypg.New(pool), mu: &mu, seen: seen}
+		q := countingQueue{inner: replaypg.New(pool, nil), mu: &mu, seen: seen}
 		w := newTestWorker(t, q, cfg)
 		core, err := replay.NewCore(replay.DefaultReplayTimeout)
 		require.NoError(t, err)
@@ -347,7 +347,7 @@ func TestVerdictsCommitWithTheClaim(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{
 		BatchSize:    2,
 		PollInterval: 10 * time.Millisecond,
 	})
@@ -393,7 +393,7 @@ func TestRevalidateIsBoundedAndIdempotent(t *testing.T) {
 		insertPending(t, pool, user, loadVector(t, "words-bot-cadence")),
 	}
 
-	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{BatchSize: 10})
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 
@@ -443,7 +443,7 @@ func TestRevalidateAppliesTheCurrentPolicy(t *testing.T) {
 	weak := insertPending(t, pool, user, loadVector(t, "words-one-fast-interval"))
 	bot := insertPending(t, pool, user, loadVector(t, "words-bot-cadence"))
 
-	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{BatchSize: 10})
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 
@@ -493,7 +493,7 @@ func TestRevalidateIgnoresPendingRuns(t *testing.T) {
 	user := seedUser(t, pool)
 	id := insertPending(t, pool, user, loadVector(t, "words-clean"))
 
-	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{BatchSize: 10})
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 
