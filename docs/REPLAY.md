@@ -26,9 +26,12 @@ flowchart TD
   G -- no --> F3["flagged: score_mismatch"]
   G -- yes --> H{"metrics within 1e-9?"}
   H -- no --> F4["flagged: metric_mismatch"]
-  H -- yes --> I{"plausibility flags?"}
-  I -- yes --> F5["flagged: plausibility_flags"]
-  I -- no --> J["accepted"]
+  H -- yes --> P["suspicion = Σ weight × severity"]
+  P --> I{"bot-shaped combination?"}
+  I -- yes --> F5["flagged: bot_pattern"]
+  I -- no --> J{"suspicion ≥ threshold?"}
+  J -- yes --> F6["flagged: suspicion_threshold"]
+  J -- no --> K["accepted<br/>(flags + suspicion kept)"]
 ```
 
 Per run, in order:
@@ -67,14 +70,19 @@ Generation is linear and cheap next to folding the log.
 | `validateLog` verdict `invalid` | `rejected` | the core's own reason | unchanged |
 | server score total ≠ client score total | `flagged` | `score_mismatch` | unchanged |
 | a client metric differs by > 1e-9 | `flagged` | `metric_mismatch` | unchanged |
-| plausibility flags raised | `flagged` | `plausibility_flags` | unchanged |
+| a bot-shaped flag combination fired | `flagged` | `bot_pattern` | unchanged |
+| suspicion ≥ review threshold | `flagged` | `suspicion_threshold` | unchanged |
 | none of the above | `accepted` | *(absent)* | unchanged |
 
 Precedence is top to bottom. An **invalid log outranks a mismatch**: numbers
 recomputed from a log the reducer refused are meaningless, so they are not
 stored at all (`server_metrics` / `server_score` stay NULL).
 
-`bundle_sha` is recorded on **every** decision, including the failures.
+`bundle_sha` and `policy_version` are recorded on **every** decision, including
+the failures.
+
+Note what is **not** in the table: *"a plausibility flag was raised"*. A single
+weak flag never sends a run to review — see [Review policy](#review-policy).
 
 ### Why the score comparison has no epsilon
 
@@ -90,41 +98,208 @@ server's come straight out of the runtime. The tolerance covers the last bits of
 that round trip and nothing more — the tampering test nudges a metric by `1e-6`
 and is flagged.
 
-### What the flags mean
+## Review policy
 
-`validation.flags[]` is the core's own scored anti-cheat output
-(`shared/core/validate.ts`): `multi-grapheme-insert`, `paste`, `min-interval`,
-`uniform-intervals`, `zero-variance`, `superhuman-burst`, `afk-heavy`,
-`trailing-afk`. Each carries a severity in `[0, 1]` and a human detail string.
-They never invalidate a run on their own — they route it to review.
+`validateLog` emits scored plausibility flags (`shared/core/validate.ts`):
+`multi-grapheme-insert`, `paste`, `min-interval`, `uniform-intervals`,
+`zero-variance`, `superhuman-burst`, `afk-heavy`, `trailing-afk`. Each carries a
+severity in `[0, 1]` and a human detail string.
+
+**These are signals, not verdicts.** The policy is what turns them into a
+status, and it exists because the obvious rule does not work.
+
+### What was wrong with "any flag ⇒ flagged"
+
+The first version of this worker flagged a run whenever `len(flags) > 0`. On the
+first 23 real runs that produced 11 flagged, of which **10 were noise**:
+
+- 8 × `min-interval` at severity ≈ 0.02 — one or two keystroke intervals under
+  15 ms out of 70–98. That is ordinary key rollover, not a machine.
+- 2 × `afk-heavy` at 0.80–0.93 — abandoned runs, already punished by their own
+  score.
+
+A queue that is 90% rollover is a queue nobody reads, which means the one
+genuinely interesting run in it never gets looked at. The severity the core
+already computes was being thrown away.
+
+### Weights
+
+Suspicion is `Σ weight[code] × severity`. A weight is what a *maximally severe*
+instance of that flag is worth, so the table reads as "how much review does this
+signal deserve at its worst". Defaults live in `internal/replay/policy.go`;
+`make calibrate` is how they were chosen.
+
+| Flag | Weight | Why |
+|---|---|---|
+| `zero-variance` | 1.00 | Every interval identical to the millisecond. A hand cannot do this. |
+| `uniform-intervals` | 0.90 | ≥90% of intervals within ±2 ms of the mean. Same signal, slightly softer — a metronome-steady typist is rare, not impossible. |
+| `superhuman-burst` | 0.80 | Above the WPM ceiling at flawless accuracy. Severity is a ratio against 2× the ceiling, so a short genuine burst stays well under the threshold. |
+| `paste` | 0.80 | Text that arrived without being typed. Unambiguous, but severity is pastes/events, so one paste in a long log stays small. |
+| `multi-grapheme-insert` | 0.50 | More than one grapheme per event. Usually an IME or a mobile keyboard, occasionally automation. |
+| `min-interval` | 0.30 | Intervals under 15 ms. **The false-positive generator.** One or two in a hundred is rollover; a log where most intervals are impossible also trips `superhuman-burst`, and the two together clear the bar. |
+| `afk-heavy` | 0.02 | See below. |
+| `trailing-afk` | 0.02 | See below. |
+
+**Review threshold: `1.00`** — one maximally severe strong flag, or a believable
+combination of weaker ones. On real data the worst run scores `0.027`, two
+orders of magnitude below it; the bot-shaped fixture scores `1.90`.
+
+### Why AFK is worth almost nothing
+
+**An idle or abandoned run is a bad run, not a suspicious one.** The duration
+keeps running, WPM collapses, and the result is a bad result — there is no
+advantage to be gained by walking away from the keyboard, so idleness is not an
+anti-cheat signal at all. It is a shape of play.
+
+The flags are still recorded on every run: "how many runs get abandoned" is a
+real product question, and a moderator looking at a specific run wants to know.
+They simply do not route to review. The weight is deliberately non-zero rather
+than zero so a run that is *both* mostly idle *and* otherwise suspicious still
+tips a little further.
+
+A maximally idle run (`afk-heavy` 1.0 + `trailing-afk` 1.0) scores `0.04`
+against a `1.00` threshold — pinned by `TestAfkFlagsDoNotReachReview`.
+
+### Combination rules
+
+Some shapes are suspicious even when no single severity is large. These bypass
+the threshold entirely: they are shapes, not magnitudes, so **no amount of
+weight tuning can hide them** (`TestBotCadenceFiresEvenWithZeroWeights`).
+
+| Rule | Fires when | Why |
+|---|---|---|
+| `bot_cadence` | `uniform-intervals` **and** `zero-variance` both present | Machine timing. The two reinforce rather than repeat each other: uniformity is a ratio, variance is absolute. |
+| `sustained_superhuman` | `superhuman-burst` present **and** `metrics.durationSec ≥ 10 s` | A two-second flurry above the ceiling is rollover or a short sample. Ten seconds of it is a claim that needs a human. |
+
+The duration floor reads the **server's** own `durationSec`. Unreadable metrics
+make the rule abstain rather than fire on a guess.
+
+### Accepted runs keep their flags
+
+An `accepted` run stores its flags, its suspicion and the threshold it was
+compared against. Moderation can ask "show me accepted runs above 0.5 suspicion"
+without re-running anything, and a future tightening has the evidence it needs
+already on disk. None of it is exposed to the player — `docs/RUNS.md` lists the
+summary fields the client sees.
+
+### Tuning
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TYPEMORE_REPLAY_FLAG_WEIGHTS` | *(unset)* | Per-code overrides, `code=weight,code=weight`. Unlisted codes keep their default. |
+| `TYPEMORE_REPLAY_REVIEW_THRESHOLD` | `1.0` | Suspicion at or above which a run is flagged. |
+| `TYPEMORE_REPLAY_SUSTAINED_BURST_SEC` | `10` | Duration floor for `sustained_superhuman`. |
+
+An unknown flag code or an unparseable weight is a **startup error**. A typo in
+a tuning knob must stop the process, not leave a check that looks configured and
+is not.
+
+Because the weights are tunable, `policy_version` alone would not explain a
+verdict on a server running an override — so the effective suspicion and
+threshold are stored on the row as well.
+
+### Policy versioning
+
+`CurrentPolicyVersion` (`internal/replay/policy.go`) identifies the rule set.
+Bump it whenever weights, threshold, or combination rules change in a way that
+would re-judge an already-judged run, then run `make revalidate`.
+
+`bundle_sha` and `policy_version` answer different questions and move
+independently:
+
+- **`bundle_sha`** — which code produced the numbers. Changes when the core
+  bundle is re-vendored.
+- **`policy_version`** — which rules turned those numbers into a status. Changes
+  when the table above changes; the numbers are untouched.
+
+`policy_version IS NULL` means the run was judged before the policy existed
+(the original "any flag ⇒ flagged" rule).
+
+## Tooling
+
+### `make calibrate` — dry run, writes nothing
+
+Re-validates stored runs through the current bundle **and** the current policy,
+then prints what it finds: per-flag firing rate with min/mean/max severity and
+the maximum contribution each flag can make, a suspicion histogram, the worst
+offenders with their flags, and the status changes the policy would apply. Run
+it before touching a weight.
+
+It judges through `replay.Judge` — the exact function the worker calls — so the
+report cannot disagree with what revalidation would do.
+
+### `make revalidate` — bounded, idempotent
+
+Re-judges runs whose `policy_version` is behind the current one, claiming them
+with the same `FOR UPDATE SKIP LOCKED` discipline as the queue, so it can run
+while the worker is live. Idempotent by construction: applying a decision sets
+`policy_version`, so the row stops matching and a second pass finds nothing.
+
+It re-runs the **full replay**, not just the scoring rules, so it also picks up a
+bundle change. Pending runs are never touched — those belong to the worker.
+
+Both read the same `TYPEMORE_` environment as the server, so they judge with the
+deployment's policy, overrides included.
+
+### Unpublished dictionaries
+
+A run whose `dict_hash` is not in the registry is **flagged `unknown_dict`,
+never rejected**. The text cannot be regenerated, so the run cannot be judged —
+but that is the server's problem (a dictionary was rotated, or a hash was never
+published), not evidence against the player. Rejecting it would destroy a
+possibly-legitimate result over a deployment detail.
+
+If the dictionary comes back, `make revalidate` re-evaluates the run and it gets
+a real verdict. That is the other half of the immutability rule in
+`docs/DICTIONARIES.md`: a published `dict_hash` must stay published precisely so
+these runs stay judgeable.
 
 ## Storage
 
-`00004_replay.sql` adds to `runs`:
+`00004_replay.sql` and `00005_replay_policy.sql` add to `runs`:
 
 | Column | Meaning |
 |---|---|
 | `server_metrics` | The core's recomputed `Metrics`, verbatim |
 | `server_score` | The core's recomputed `ScoreResult`, verbatim |
-| `validation` | `{verdict, reason?, flags[], divergence?}` |
+| `validation` | `{verdict, reason?, flags[], policy{}, divergence?}` |
 | `bundle_sha` | SHA-256 of the bundle that produced the numbers |
+| `policy_version` | The rule set that turned them into a status (NULL = pre-policy) |
 | `validated_at` | When the verdict was written |
 | `attempts` | Failed replays so far (timeout / core error only) |
 | `last_error` | The last failure, for operator triage |
 
 `verdict` is the core's `valid` / `invalid`, or the server's own `error` when the
 run could not be replayed at all. `divergence` names the first field that
-disagreed and carries **both** numbers, so a reviewer never has to re-run
-anything:
+disagreed and carries **both** numbers, and `policy` is the arithmetic behind
+the status — so a reviewer never has to re-run anything:
 
 ```json
 {
   "verdict": "valid",
   "reason": "score_mismatch",
   "flags": [],
+  "policy": { "version": 1, "suspicion": 0, "threshold": 1 },
   "divergence": { "field": "total", "client": 5640, "server": 1410 }
 }
 ```
+
+An accepted run that raised a weak flag looks like this — note that it is
+`accepted` *and* carries the evidence:
+
+```json
+{
+  "verdict": "valid",
+  "flags": [
+    { "code": "min-interval", "score": 0.0122, "detail": "1/82 intervals < 15ms" }
+  ],
+  "policy": { "version": 1, "suspicion": 0.003659, "threshold": 1 }
+}
+```
+
+`policy.rules` lists any combination rules that fired, and `policy.unknownFlags`
+lists flag codes the weights table has no entry for — always empty in a healthy
+deployment, non-empty when the bundle has moved ahead of the policy.
 
 **`client_metrics` and `client_score` are never overwritten.** The pair — what
 the client claimed and what the server computed — *is* the evidence, and a
@@ -214,19 +389,44 @@ judged by it, and the verdict is only meaningful with the `bundle_sha` beside it
    (`SCORING_CONCEPT.md` §7.6): add `scoreV3` alongside, never edit a version in
    place. Regenerate the vectors (`node internal/replay/testdata/generate.mjs`)
    only once you have decided the change is intended, and read the diff.
-4. Runs already judged are **not** re-judged automatically. A rebalance is a
-   deliberate batch: `UPDATE runs SET status='pending' WHERE bundle_sha = '<old>'`
-   and let the worker drain them.
+4. Runs already judged are **not** re-judged automatically. Re-running them
+   through the new bundle is what `make revalidate` does once
+   `CurrentPolicyVersion` is bumped; to re-judge without a policy change,
+   requeue deliberately:
+   `UPDATE runs SET status='pending' WHERE bundle_sha = '<old>'`.
+
+## Changing the review policy
+
+1. `make calibrate` against a database with real runs. Read the firing rates
+   and the histogram: a weight change that moves nothing, or moves everything,
+   is the wrong change.
+2. Edit the weights / threshold / rules in `internal/replay/policy.go`.
+3. Bump `CurrentPolicyVersion`.
+4. `make calibrate` again — the "transitions" block at the bottom is the exact
+   set of status changes you are about to make. Look at them.
+5. `go test ./internal/replay/`. `TestTamperedFixturesStayCaughtUnderThePolicy`
+   is the guard that no hard check was weakened;
+   `TestSingleWeakFlagIsAcceptedWithTheFlagKept` and `TestBotCadenceIsFlagged`
+   pin the two ends of the boundary.
+6. `make revalidate` to apply it to history.
+
+A policy change never touches a metric or a score. If a number moved, that was
+a bundle change and belongs in the section above.
 
 ## Deliberately still deferred
 
 - **Anti-cheat beyond the core's flags** — cross-run heuristics, device
   fingerprint correlation, shadow-ban (BACKEND.md §11).
-- **The admin review queue** over `flagged` runs.
+- **The admin review queue** over `flagged` runs. The data it needs is now
+  there (`validation.policy.suspicion`, sortable), the UI is not.
 - **Leaderboards and TP** — an `accepted` run does not yet update any read model
   (SCORING_CONCEPT §4–5).
 - **Automatic retry of `replay_timeout` / `replay_error` runs.** `attempts` is
-  recorded but nothing re-queues them; today that is an operator's `UPDATE`.
+  recorded but nothing re-queues them; today that is an operator's `UPDATE`,
+  or a `make revalidate` after a policy bump.
+- **Scheduled revalidation.** `make revalidate` is a deliberate operator action,
+  not a cron job — a policy change should be applied by someone who has read the
+  calibration output.
 
 ## Related
 

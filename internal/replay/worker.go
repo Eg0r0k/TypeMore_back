@@ -43,6 +43,8 @@ type WorkerConfig struct {
 	// the shutdown signal. The batch runs on an uncancelled context so it can
 	// commit its work rather than roll it back.
 	ShutdownGrace time.Duration
+	// Policy is the flag-scoring rule set. The zero value means DefaultPolicy.
+	Policy Policy
 }
 
 func (c WorkerConfig) withDefaults() WorkerConfig {
@@ -60,6 +62,9 @@ func (c WorkerConfig) withDefaults() WorkerConfig {
 	}
 	if c.ShutdownGrace <= 0 {
 		c.ShutdownGrace = 30 * time.Second
+	}
+	if c.Policy.Version == 0 {
+		c.Policy = DefaultPolicy()
 	}
 	return c
 }
@@ -101,6 +106,8 @@ func (w *Worker) Run(ctx context.Context) error {
 		"pollInterval", w.cfg.PollInterval,
 		"replayTimeout", w.cfg.ReplayTimeout,
 		"bundleSha", bundleSHA[:12],
+		"policyVersion", w.cfg.Policy.Version,
+		"reviewThreshold", w.cfg.Policy.ReviewThreshold,
 	)
 
 	var wg sync.WaitGroup
@@ -168,14 +175,36 @@ type batchTally struct {
 	failed int
 }
 
-// RunBatch claims and processes one batch. Exported so tests can drive exactly
-// one pass without racing a poll loop.
+// RunBatch claims and processes one batch of PENDING runs. Exported so tests
+// can drive exactly one pass without racing a poll loop.
 func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (int, error) {
+	return w.runBatch(ctx, core, log, "replay batch done", func(decide func(context.Context, PendingRun) Decision) (int, error) {
+		return w.queue.ProcessBatch(ctx, w.cfg.BatchSize, decide)
+	})
+}
+
+// RevalidateBatch re-judges one batch of runs whose policy_version is behind the
+// current one. Same judging path as the queue — the numbers are recomputed from
+// the log, not read back — so a revalidation also picks up a bundle change.
+// Idempotent: a run it touches stops matching the claim.
+func (w *Worker) RevalidateBatch(ctx context.Context, core *Core, log *slog.Logger) (int, error) {
+	return w.runBatch(ctx, core, log, "revalidate batch done", func(decide func(context.Context, PendingRun) Decision) (int, error) {
+		return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Policy.Version, w.cfg.BatchSize, decide)
+	})
+}
+
+func (w *Worker) runBatch(
+	ctx context.Context,
+	core *Core,
+	log *slog.Logger,
+	msg string,
+	process func(func(context.Context, PendingRun) Decision) (int, error),
+) (int, error) {
 	var tally batchTally
 	started := time.Now()
 
-	claimed, err := w.queue.ProcessBatch(ctx, w.cfg.BatchSize, func(ctx context.Context, run PendingRun) Decision {
-		d := w.judge(ctx, core, run)
+	claimed, err := process(func(ctx context.Context, run PendingRun) Decision {
+		d := Judge(ctx, core, w.reg, w.cfg.Policy, run)
 		switch d.Status {
 		case StatusAccepted:
 			tally.accepted++
@@ -193,7 +222,7 @@ func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (in
 		return 0, err
 	}
 	if claimed > 0 {
-		log.InfoContext(ctx, "replay batch done",
+		log.InfoContext(ctx, msg,
 			"claimed", claimed,
 			"accepted", tally.accepted,
 			"flagged", tally.flagged,
@@ -205,18 +234,22 @@ func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (in
 	return claimed, nil
 }
 
-// judge replays one run and maps the outcome onto a decision. It never returns
-// an error: every failure mode is a decision, which is what keeps one bad run
-// from wedging the queue.
-func (w *Worker) judge(ctx context.Context, core *Core, run PendingRun) Decision {
-	body, ok := w.reg.Body(run.DictHash)
+// Judge replays one run and maps the outcome onto a decision under the given
+// policy. It never returns an error: every failure mode is a decision, which is
+// what keeps one bad run from wedging the queue.
+//
+// Exported because the worker is not the only caller — `replayctl calibrate`
+// judges runs without writing, and it has to reach the verdict by exactly the
+// same route or its report would be a fiction.
+func Judge(ctx context.Context, core *Core, reg *Registry, policy Policy, run PendingRun) Decision {
+	body, ok := reg.Body(run.DictHash)
 	if !ok {
-		return decide(run, Result{}, ErrUnknownDict)
+		return policy.Decide(run, Result{}, ErrUnknownDict)
 	}
 
 	logJSON, err := gunzip(run.Log)
 	if err != nil {
-		return decide(run, Result{}, fmt.Errorf("replay: decompress log: %w", err))
+		return policy.Decide(run, Result{}, fmt.Errorf("replay: decompress log: %w", err))
 	}
 
 	res, err := core.Replay(ctx, Input{
@@ -227,7 +260,7 @@ func (w *Worker) judge(ctx context.Context, core *Core, run PendingRun) Decision
 		Log:          logJSON,
 		ScoreVersion: run.ScoreVersion,
 	})
-	return decide(run, res, err)
+	return policy.Decide(run, res, err)
 }
 
 // gunzip decompresses a stored event log, refusing anything absurdly large.

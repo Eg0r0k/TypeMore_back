@@ -155,12 +155,12 @@ fields are **absent** until then, so "not replayed yet" is distinguishable from
 | `status` | `pending` → `accepted` / `flagged` / `rejected` |
 | `serverMetrics` | The core's recomputed `Metrics` |
 | `serverScore` | The core's recomputed `ScoreResult` |
-| `validation` | `{verdict, reason?, flags[], divergence?}` |
+| `validation` | `{verdict, reason?, flags[], policy{}, divergence?}` |
 | `validatedAt` | When the verdict was written |
 
 `clientMetrics` / `clientScore` are never overwritten: the pair is the evidence
-a mismatch is judged on. The pipeline, the decision table, and the queue design
-are in [`REPLAY.md`](REPLAY.md).
+a mismatch is judged on. The pipeline, the decision table, the review policy and
+the queue design are in [`REPLAY.md`](REPLAY.md).
 
 ```json
 {
@@ -172,11 +172,18 @@ are in [`REPLAY.md`](REPLAY.md).
     "verdict": "valid",
     "reason": "score_mismatch",
     "flags": [],
+    "policy": { "version": 1, "suspicion": 0, "threshold": 1 },
     "divergence": { "field": "total", "client": 5640, "server": 1410 }
   },
   "validatedAt": "2026-07-24T21:00:03Z"
 }
 ```
+
+An **accepted** run can still carry `flags` and a non-zero
+`policy.suspicion` — a weak plausibility signal is recorded, not acted on
+(REPLAY.md, "Review policy"). Treat `status` as the verdict and everything
+under `validation` as moderation detail: the client should render the former
+and ignore the latter.
 
 ## Deliberately deferred
 

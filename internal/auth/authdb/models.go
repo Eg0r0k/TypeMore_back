@@ -51,6 +51,7 @@ type Run struct {
 	ServerScore   []byte
 	Validation    []byte
 	BundleSha     *string
+	PolicyVersion *int16
 	ValidatedAt   *time.Time
 	Attempts      int16
 	LastError     *string

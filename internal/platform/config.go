@@ -130,6 +130,24 @@ type Config struct {
 	// ReplayShutdownGrace bounds how long an in-flight batch may take to finish
 	// after the shutdown signal, so verdicts commit instead of rolling back.
 	ReplayShutdownGrace time.Duration `env:"REPLAY_SHUTDOWN_GRACE" envDefault:"30s"`
+
+	// --- Replay review policy (docs/REPLAY.md, "Review policy") ---
+	//
+	// Which plausibility flags are worth what, and how much weighted severity
+	// sends a run to a human. Defaults live in internal/replay; these override
+	// them, and a typo here is a startup failure rather than a silently
+	// disarmed check.
+
+	// ReplayFlagWeights overrides individual flag weights, as
+	// "code=weight,code=weight" (e.g. "min-interval=0.4,paste=1.0"). Unlisted
+	// codes keep their default; an unknown code is an error.
+	ReplayFlagWeights string `env:"REPLAY_FLAG_WEIGHTS"`
+	// ReplayReviewThreshold is the suspicion at or above which a run is
+	// flagged for review. Zero keeps the calibrated default.
+	ReplayReviewThreshold float64 `env:"REPLAY_REVIEW_THRESHOLD"`
+	// ReplaySustainedBurstSec is the duration floor for the sustained-burst
+	// combination rule. Zero keeps the calibrated default.
+	ReplaySustainedBurstSec float64 `env:"REPLAY_SUSTAINED_BURST_SEC"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

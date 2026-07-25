@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -27,8 +28,9 @@ type vector struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Expect      struct {
-		Status  string `json:"status"`
-		Verdict string `json:"verdict"`
+		Status  string   `json:"status"`
+		Verdict string   `json:"verdict"`
+		Flags   []string `json:"flags"`
 	} `json:"expect"`
 	Payload            vectorPayload `json:"payload"`
 	RejectedDispatches int           `json:"rejectedDispatches"`
@@ -120,6 +122,13 @@ func (q *fakeQueue) ProcessBatch(ctx context.Context, limit int32, decide func(c
 	return n, nil
 }
 
+// ProcessStalePolicyBatch has nothing to re-judge in memory: the fake's runs are
+// consumed by ProcessBatch, and the revalidation path is covered against a real
+// database in queue_pg_test.go where policy_version actually exists.
+func (q *fakeQueue) ProcessStalePolicyBatch(context.Context, int16, int32, func(context.Context, PendingRun) Decision) (int, error) {
+	return 0, nil
+}
+
 func (q *fakeQueue) decision(t *testing.T, id uuid.UUID) Decision {
 	t.Helper()
 	q.mu.Lock()
@@ -131,23 +140,52 @@ func (q *fakeQueue) decision(t *testing.T, id uuid.UUID) Decision {
 
 func testWorker(t *testing.T, q Queue) (*Worker, *Core) {
 	t.Helper()
+	return testWorkerWithPolicy(t, q, DefaultPolicy())
+}
+
+func testWorkerWithPolicy(t *testing.T, q Queue, p Policy) (*Worker, *Core) {
+	t.Helper()
 	core, err := NewCore(DefaultReplayTimeout)
 	require.NoError(t, err)
 	reg, err := NewRegistry(core)
 	require.NoError(t, err)
-	w := NewWorker(q, reg, WorkerConfig{BatchSize: 50}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := NewWorker(q, reg, WorkerConfig{BatchSize: 50, Policy: p}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w, core
 }
 
-// judgeOne runs a single run through the worker's decision path.
+// judgeOne runs a single run through the worker's decision path under the
+// default (shipped) policy.
 func judgeOne(t *testing.T, run PendingRun) Decision {
 	t.Helper()
+	return judgeOneWithPolicy(t, run, DefaultPolicy())
+}
+
+func judgeOneWithPolicy(t *testing.T, run PendingRun, p Policy) Decision {
+	t.Helper()
 	q := newFakeQueue(run)
-	w, _ := testWorker(t, q)
+	w, _ := testWorkerWithPolicy(t, q, p)
 	n, err := w.RunBatch(context.Background(), mustCore(t, DefaultReplayTimeout), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 	return q.decision(t, run.ID)
+}
+
+// audit decodes the validation document a decision carries.
+func audit(t *testing.T, d Decision) validationDoc {
+	t.Helper()
+	var doc validationDoc
+	require.NoError(t, json.Unmarshal(d.Validation, &doc))
+	return doc
+}
+
+// flagCodes lists a report's flag codes, sorted, for set comparisons.
+func flagCodes(flags []Flag) []string {
+	out := make([]string, 0, len(flags))
+	for _, f := range flags {
+		out = append(out, f.Code)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func mustCore(t *testing.T, timeout time.Duration) *Core {
@@ -180,14 +218,28 @@ func TestGoldenVectorsReplayBitExact(t *testing.T) {
 
 			require.Equal(t, v.Expect.Status, d.Status, "validation: %s", d.Validation)
 			assert.Equal(t, bundleSHA, d.BundleSHA)
+			assert.Equal(t, CurrentPolicyVersion, d.PolicyVersion)
 			assert.Empty(t, d.LastError)
 			assert.Zero(t, d.Attempts)
 
-			var doc validationDoc
-			require.NoError(t, json.Unmarshal(d.Validation, &doc))
+			doc := audit(t, d)
 			assert.Equal(t, v.Expect.Verdict, doc.Verdict)
-			assert.Empty(t, doc.Reason)
 			assert.Nil(t, doc.Divergence)
+
+			// The flags a vector raises are part of its contract: they are what
+			// the policy is calibrated against.
+			assert.Equal(t, append([]string{}, v.Expect.Flags...), flagCodes(doc.Flags))
+
+			// The policy block is attached to EVERY valid decision — an accepted
+			// run keeps its flags and its arithmetic for moderation.
+			require.NotNil(t, doc.Policy, "no policy block on a valid decision")
+			assert.Equal(t, CurrentPolicyVersion, doc.Policy.Version)
+			assert.Equal(t, DefaultReviewThreshold, doc.Policy.Threshold)
+			assert.Empty(t, doc.Policy.UnknownFlags, "the bundle emits a flag the weights table does not know")
+			if d.Status == StatusAccepted {
+				assert.Empty(t, doc.Reason)
+				assert.Less(t, doc.Policy.Suspicion, doc.Policy.Threshold)
+			}
 
 			// Score: every numeric field, compared exactly.
 			client := numbers(t, v.Payload.ClientScore)
@@ -214,9 +266,10 @@ func TestGoldenVectorsReplayBitExact(t *testing.T) {
 // blind.
 func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	vectors := loadVectors(t)
-	require.GreaterOrEqual(t, len(vectors), 3, "the brief asks for 3-5 real logs")
+	require.GreaterOrEqual(t, len(vectors), 5)
 
 	var sawTime, sawWords, sawMods, sawRejectedBackspace, sawV1, sawV2, sawTypos bool
+	var sawWeakFlagAccepted, sawBotFlagged bool
 	for _, v := range vectors {
 		switch v.Payload.Mode {
 		case "time":
@@ -247,6 +300,12 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 		if acc := numbers(t, v.Payload.ClientMetrics)["acc"]; acc != float64(1) {
 			sawTypos = true
 		}
+		if len(v.Expect.Flags) > 0 && v.Expect.Status == StatusAccepted {
+			sawWeakFlagAccepted = true
+		}
+		if v.Expect.Status == StatusFlagged {
+			sawBotFlagged = true
+		}
 	}
 	assert.True(t, sawTime, "no time-mode vector")
 	assert.True(t, sawWords, "no words-mode vector")
@@ -255,6 +314,8 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	assert.True(t, sawV1, "no scoreVersion 1 vector")
 	assert.True(t, sawV2, "no scoreVersion 2 vector")
 	assert.True(t, sawTypos, "no imperfect-accuracy vector")
+	assert.True(t, sawWeakFlagAccepted, "no accepted-with-a-flag vector: the false-positive case is unguarded")
+	assert.True(t, sawBotFlagged, "no bot-shaped vector: the review path is unguarded")
 }
 
 // --- tampering --------------------------------------------------------------

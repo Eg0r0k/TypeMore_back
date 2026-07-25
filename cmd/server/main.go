@@ -120,6 +120,14 @@ func run() error {
 	// below, after the HTTP server has stopped accepting requests — the deferred
 	// Wait runs before the deferred pool.Close, so in-flight batches still have
 	// a database.
+	//
+	// The review policy is resolved up front: a typo in a weight override must
+	// stop the process, not leave a check quietly disarmed.
+	policy, err := replay.DefaultPolicy().WithOverrides(
+		cfg.ReplayFlagWeights, cfg.ReplayReviewThreshold, cfg.ReplaySustainedBurstSec)
+	if err != nil {
+		return err
+	}
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	if cfg.ReplayEnabled {
@@ -129,6 +137,7 @@ func run() error {
 			Concurrency:   cfg.ReplayConcurrency,
 			ReplayTimeout: cfg.ReplayTimeout,
 			ShutdownGrace: cfg.ReplayShutdownGrace,
+			Policy:        policy,
 		}, logger)
 		workers.Add(1)
 		go func() {

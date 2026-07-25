@@ -92,7 +92,7 @@ const noMods = { blind: false, fading: false, flashlight: false }
  * A typing session that mirrors the game store's dispatch semantics exactly:
  * stamp → dispatch → on reject, hand the seq back so the log stays contiguous.
  */
-function session({ config, generation, declaration, seed, jitterSeed = 7 }) {
+function session({ config, generation, declaration, seed, jitterSeed = 7, fixedInterval = 0, commitAtSameInstant = false }) {
   const generated = generateWords(dictionary, { seed, dictVersion: DICT_HASH, generation })
   if (generated.isErr()) throw new Error(`generation failed: ${generated.error.message}`)
   const words = generated.value.words
@@ -106,10 +106,15 @@ function session({ config, generation, declaration, seed, jitterSeed = 7 }) {
   let t = 0
   let rejected = 0
 
-  const step = () => {
-    // 60–150 ms between keystrokes: human, and comfortably above the
-    // min-interval plausibility threshold (15 ms).
-    t += 60 + Math.floor(rng() * 90)
+  // `fixedInterval` is the bot cadence: an identical gap every keystroke, which
+  // is what makes zero-variance and uniform-intervals fire. Otherwise 60-150 ms
+  // of jitter — human, and comfortably above the 15 ms min-interval threshold.
+  const step = (override) => {
+    if (override !== undefined) {
+      t += override
+      return
+    }
+    t += fixedInterval > 0 ? fixedInterval : 60 + Math.floor(rng() * 90)
   }
 
   const send = (make) => {
@@ -134,12 +139,15 @@ function session({ config, generation, declaration, seed, jitterSeed = 7 }) {
     get now() {
       return t
     },
-    type(text) {
-      step()
+    type(text, dtOverride) {
+      step(dtOverride)
       return send((s, at) => insertEvent(s, at, text))
     },
     commit() {
-      step()
+      // Under a fixed cadence the commit must share the previous instant, or
+      // the gap across a word boundary would be two steps and the interval
+      // series would no longer be uniform (mirrors the core suite's typeAll).
+      if (!commitAtSameInstant) step()
       return send((s, at) => commitEvent(s, at))
     },
     back(unit = 'char') {
@@ -313,6 +321,68 @@ function emit(name, description, expect, payload, extra = {}) {
     'Mistyped and corrected characters, submitted under scoreVersion 1 (scoreOfLog). Exercises acc-squared, a broken combo, and the v1 scoring route.',
     { status: 'accepted', verdict: 'valid', flags: [] },
     payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 1 })
+  )
+}
+
+// ── 6. one sub-15ms interval in an otherwise human run (the false positive) ──
+// This is the shape that made 8 of 11 real runs get flagged under the original
+// "any flag => flagged" rule: ordinary key rollover. It MUST come out accepted,
+// with the flag still recorded.
+{
+  const config = coreConfig()
+  const generation = generationConfig({ length: 10 })
+  const seed = 5150
+  const s = session({ config, generation, declaration: noMods, seed, jitterSeed: 17 })
+  let nudged = false
+  for (let i = 0; i < generation.length; i++) {
+    const word = [...s.words[i]]
+    for (let c = 0; c < word.length; c++) {
+      // Exactly one interval under the 15 ms threshold, in the middle of the run.
+      if (!nudged && i === 4 && c === 1) {
+        s.type(word[c], 9)
+        nudged = true
+        continue
+      }
+      s.type(word[c])
+    }
+    s.commit()
+  }
+  const finished = s.finish()
+  if (!nudged) throw new Error('vector 6 did not produce its fast interval')
+  emit(
+    'words-one-fast-interval',
+    'A single 9 ms interval in an otherwise human run — ordinary key rollover. Raises min-interval at a tiny severity and MUST be accepted, with the flag kept for moderation.',
+    { status: 'accepted', verdict: 'valid', flags: ['min-interval'] },
+    payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 })
+  )
+}
+
+// ── 7. bot cadence: identical intervals end to end ───────────────────────────
+// Every keystroke exactly 80 ms apart, commits sharing the previous instant, so
+// the interval series has zero variance. Trips uniform-intervals AND
+// zero-variance together — the bot_cadence combination rule.
+{
+  const config = coreConfig()
+  const generation = generationConfig({ length: 12 })
+  const seed = 606061
+  const s = session({
+    config,
+    generation,
+    declaration: noMods,
+    seed,
+    fixedInterval: 80,
+    commitAtSameInstant: true
+  })
+  for (let i = 0; i < generation.length; i++) {
+    typeWord(s, s.words[i])
+    s.commit()
+  }
+  const finished = s.finish()
+  emit(
+    'words-bot-cadence',
+    'Every keystroke exactly 80 ms apart with zero variance. No single flag is severe enough on its own, but uniform-intervals + zero-variance is a shape no hand produces: the bot_cadence rule must flag it.',
+    { status: 'flagged', verdict: 'valid', flags: ['uniform-intervals', 'zero-variance'] },
+    payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 })
   )
 }
 

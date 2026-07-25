@@ -36,6 +36,13 @@ with no test-only seeding.
 | `words-mods` | punctuation + numbers + randomCase generation, expert difficulty, blind declared: the scoreV2 mod multiplier, derived from the setup alone |
 | `words-rejected-backspace` | Locked backspace and ctrl+backspace at every word boundary — rejected, never logged, and **must not** consume a seq |
 | `words-typos-v1` | Typos and corrections (acc < 1, broken combo) submitted under `scoreVersion: 1` |
+| `words-one-fast-interval` | One 9 ms interval in an otherwise human run — ordinary key rollover. Raises `min-interval` at a tiny severity and **must be accepted**, with the flag kept. The false-positive case the review policy exists for. |
+| `words-bot-cadence` | Every keystroke exactly 80 ms apart, zero variance. No single flag is severe enough alone, but `uniform-intervals` + `zero-variance` is a shape no hand makes — **must be flagged** by the `bot_cadence` rule. |
+
+The last two are synthetic in their *timing* only: the log, the metrics and the
+score are still produced by driving the real core, so their flags and severities
+are the core's own output rather than numbers invented for a test. They pin the
+two ends of the review boundary (docs/REPLAY.md, "Review policy").
 
 `TestGoldenVectorsCoverTheContractSurface` asserts that this table stays true, so
 a regeneration cannot quietly drop a case and leave the suite green.

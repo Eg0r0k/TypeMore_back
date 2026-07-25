@@ -8,6 +8,7 @@ package replaydb
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -19,10 +20,11 @@ SET status         = $1,
     server_score   = $3,
     validation     = $4,
     bundle_sha     = $5,
-    attempts       = $6,
-    last_error     = NULLIF($7::text, ''),
+    policy_version = $6,
+    attempts       = $7,
+    last_error     = NULLIF($8::text, ''),
     validated_at   = now()
-WHERE id = $8
+WHERE id = $9
 `
 
 type ApplyReplayDecisionParams struct {
@@ -31,6 +33,7 @@ type ApplyReplayDecisionParams struct {
 	ServerScore   []byte
 	Validation    []byte
 	BundleSha     *string
+	PolicyVersion *int16
 	Attempts      int16
 	LastError     string
 	ID            uuid.UUID
@@ -38,7 +41,8 @@ type ApplyReplayDecisionParams struct {
 
 // Record one verdict. client_metrics / client_score are deliberately untouched:
 // the client's numbers and the server's sit side by side forever, because the
-// pair IS the evidence a mismatch is judged on.
+// pair IS the evidence a mismatch is judged on. bundle_sha and policy_version
+// together say which code and which rules produced this row.
 func (q *Queries) ApplyReplayDecision(ctx context.Context, arg ApplyReplayDecisionParams) error {
 	_, err := q.db.Exec(ctx, applyReplayDecision,
 		arg.Status,
@@ -46,6 +50,7 @@ func (q *Queries) ApplyReplayDecision(ctx context.Context, arg ApplyReplayDecisi
 		arg.ServerScore,
 		arg.Validation,
 		arg.BundleSha,
+		arg.PolicyVersion,
 		arg.Attempts,
 		arg.LastError,
 		arg.ID,
@@ -76,9 +81,9 @@ type ClaimPendingRunsRow struct {
 	Attempts      int16
 }
 
-// Replay worker queue (docs/REPLAY.md). Two statements, both executed inside the
-// SAME transaction: the claim takes the row locks, the decision writes the
-// verdict, and the commit releases both together.
+// Replay worker queue + revalidation (docs/REPLAY.md). The claim and the
+// decision are executed inside the SAME transaction: the claim takes the row
+// locks, the decision writes the verdict, and the commit releases both together.
 // The queue scan. FOR UPDATE SKIP LOCKED lets N workers share one queue with no
 // broker and no 'processing' status: a row another worker already holds is
 // stepped over, and a worker that dies rolls its rows straight back to
@@ -102,6 +107,128 @@ func (q *Queries) ClaimPendingRuns(ctx context.Context, limit int32) ([]ClaimPen
 			&i.ClientScore,
 			&i.Log,
 			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimStalePolicyRuns = `-- name: ClaimStalePolicyRuns :many
+SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
+       log, attempts
+FROM runs
+WHERE status <> 'pending'
+  AND (policy_version IS NULL OR policy_version < $1)
+ORDER BY created_at
+FOR UPDATE SKIP LOCKED
+LIMIT $2
+`
+
+type ClaimStalePolicyRunsParams struct {
+	PolicyVersion *int16
+	RowLimit      int32
+}
+
+type ClaimStalePolicyRunsRow struct {
+	ID            uuid.UUID
+	Seed          int64
+	DictHash      string
+	ScoreVersion  int16
+	Setup         json.RawMessage
+	ClientMetrics json.RawMessage
+	ClientScore   json.RawMessage
+	Log           []byte
+	Attempts      int16
+}
+
+// The revalidation scan: runs already judged, but under a policy older than the
+// current one (NULL = judged before the policy existed at all). Same locking
+// discipline as the queue, so a revalidation pass and the worker can run at the
+// same time without either seeing the other's rows. Uses runs_stale_policy_idx.
+func (q *Queries) ClaimStalePolicyRuns(ctx context.Context, arg ClaimStalePolicyRunsParams) ([]ClaimStalePolicyRunsRow, error) {
+	rows, err := q.db.Query(ctx, claimStalePolicyRuns, arg.PolicyVersion, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimStalePolicyRunsRow{}
+	for rows.Next() {
+		var i ClaimStalePolicyRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Seed,
+			&i.DictHash,
+			&i.ScoreVersion,
+			&i.Setup,
+			&i.ClientMetrics,
+			&i.ClientScore,
+			&i.Log,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsForCalibration = `-- name: ListRunsForCalibration :many
+SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
+       log, attempts, status, policy_version, created_at
+FROM runs
+WHERE status <> 'pending'
+ORDER BY created_at
+LIMIT $1
+`
+
+type ListRunsForCalibrationRow struct {
+	ID            uuid.UUID
+	Seed          int64
+	DictHash      string
+	ScoreVersion  int16
+	Setup         json.RawMessage
+	ClientMetrics json.RawMessage
+	ClientScore   json.RawMessage
+	Log           []byte
+	Attempts      int16
+	Status        string
+	PolicyVersion *int16
+	CreatedAt     time.Time
+}
+
+// Read-only sample for `make calibrate`: everything the decision needs, plus the
+// status the run currently carries so a dry run can report what would change.
+// No locking, no ordering surprises — oldest first, bounded by the caller.
+func (q *Queries) ListRunsForCalibration(ctx context.Context, rowLimit int32) ([]ListRunsForCalibrationRow, error) {
+	rows, err := q.db.Query(ctx, listRunsForCalibration, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunsForCalibrationRow{}
+	for rows.Next() {
+		var i ListRunsForCalibrationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Seed,
+			&i.DictHash,
+			&i.ScoreVersion,
+			&i.Setup,
+			&i.ClientMetrics,
+			&i.ClientScore,
+			&i.Log,
+			&i.Attempts,
+			&i.Status,
+			&i.PolicyVersion,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

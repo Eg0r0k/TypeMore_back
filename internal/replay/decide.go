@@ -29,7 +29,7 @@ const (
 	// ReasonUnknownDict — the run's dict_hash is not in the registry, so its
 	// text cannot be regenerated. Flagged, never rejected: the run may simply
 	// predate a dictionary rotation, which is the server's fault, not the
-	// player's.
+	// player's. `make revalidate` re-evaluates it if the dictionary returns.
 	ReasonUnknownDict = "unknown_dict"
 	// ReasonReplayTimeout — the core exceeded its interrupt budget.
 	ReasonReplayTimeout = "replay_timeout"
@@ -39,9 +39,12 @@ const (
 	ReasonScoreMismatch = "score_mismatch"
 	// ReasonMetricMismatch — a client-reported metric differs from the server's.
 	ReasonMetricMismatch = "metric_mismatch"
-	// ReasonPlausibility — the log is valid and the numbers agree, but the core
-	// raised anti-cheat flags.
-	ReasonPlausibility = "plausibility_flags"
+	// ReasonSuspicionThreshold — the log is valid and the numbers agree, but the
+	// weighted flag severities reached the review threshold.
+	ReasonSuspicionThreshold = "suspicion_threshold"
+	// ReasonBotPattern — a bot-shaped flag combination fired. Independent of the
+	// threshold: a shape, not a magnitude.
+	ReasonBotPattern = "bot_pattern"
 )
 
 // metricTolerance bounds the metric comparison. The two sides run the same code
@@ -56,17 +59,42 @@ const metricTolerance = 1e-9
 // ErrUnknownDict marks a run whose dictionary the registry does not know.
 var ErrUnknownDict = errors.New("replay: unknown dict_hash")
 
-// validationDoc is the `validation` jsonb column: the core's report plus the
-// decision reason and, when numbers disagreed, which one and by how much.
+// validationDoc is the `validation` jsonb column: the core's report, the policy
+// arithmetic that judged it, and — when numbers disagreed — which one and by
+// how much.
+//
+// Flags and the policy block are written on EVERY valid decision, accepted ones
+// included: moderation needs to see that a run raised min-interval and scored
+// 0.009 suspicion, and it needs that visible without re-running anything. None
+// of it is exposed to the player (docs/RUNS.md lists the summary fields).
 type validationDoc struct {
 	Verdict string `json:"verdict"`
 	Reason  string `json:"reason,omitempty"`
 	Flags   []Flag `json:"flags"`
+	// Policy is the arithmetic behind the status: which rule set ran, what the
+	// flags summed to, what it was compared against, and which combination
+	// rules fired.
+	Policy *policyDoc `json:"policy,omitempty"`
 	// Divergence names the first field whose value did not match the client's.
 	// Both numbers are stored so a reviewer never has to re-run anything; the
 	// full objects live in client_metrics/client_score and
 	// server_metrics/server_score beside it.
 	Divergence *divergence `json:"divergence,omitempty"`
+}
+
+// policyDoc is the audit trail for one policy evaluation. The effective
+// threshold is recorded alongside the suspicion because the weights are
+// env-tunable: policy_version alone would not explain a verdict on a server
+// running an override.
+type policyDoc struct {
+	Version   int16    `json:"version"`
+	Suspicion float64  `json:"suspicion"`
+	Threshold float64  `json:"threshold"`
+	Rules     []string `json:"rules,omitempty"`
+	// UnknownFlags are codes the bundle emitted that the weights table has no
+	// entry for. Always empty in a healthy deployment; non-empty means the
+	// bundle moved ahead of the policy.
+	UnknownFlags []string `json:"unknownFlags,omitempty"`
 }
 
 // divergence is one client/server disagreement. Client is a pointer so a field
@@ -101,29 +129,34 @@ type serverMetricsDoc struct {
 	Accuracy float64 `json:"accuracy"`
 }
 
-// decide maps a replay outcome onto the run's new state.
+// Decide maps a replay outcome onto the run's new state.
 //
 // It is pure and total: every input produces a decision, which is what keeps a
 // poisonous run from wedging the loop. The table, in precedence order:
 //
-//	unknown dictionary        → flagged  unknown_dict        (attempts unchanged)
-//	replay timed out          → flagged  replay_timeout      (attempts + 1)
-//	core threw / undecodable  → flagged  replay_error        (attempts + 1)
-//	verdict invalid           → rejected reason from the core
-//	score total differs       → flagged  score_mismatch
-//	a metric differs > 1e-9   → flagged  metric_mismatch
-//	plausibility flags raised → flagged  plausibility_flags
-//	otherwise                 → accepted
+//	unknown dictionary          → flagged  unknown_dict         (attempts unchanged)
+//	replay timed out            → flagged  replay_timeout       (attempts + 1)
+//	core threw / undecodable    → flagged  replay_error         (attempts + 1)
+//	verdict invalid             → rejected reason from the core
+//	score total differs         → flagged  score_mismatch
+//	a metric differs > 1e-9     → flagged  metric_mismatch
+//	bot-shaped combination      → flagged  bot_pattern
+//	suspicion ≥ threshold       → flagged  suspicion_threshold
+//	otherwise                   → accepted (flags and suspicion still recorded)
 //
 // An invalid log outranks a mismatch: numbers recomputed from a log the reducer
 // refused are meaningless, so they are not stored at all.
-func decide(run PendingRun, res Result, replayErr error) Decision {
-	base := Decision{BundleSHA: bundleSHA, Attempts: run.Attempts}
+//
+// Note what is NOT in the table: "a plausibility flag was raised". A single weak
+// flag never sends a run to review — see Policy for why, and what replaced it.
+func (p Policy) Decide(run PendingRun, res Result, replayErr error) Decision {
+	base := Decision{BundleSHA: bundleSHA, PolicyVersion: p.Version, Attempts: run.Attempts}
 
 	switch {
 	case errors.Is(replayErr, ErrUnknownDict):
 		// Not the player's fault and not retryable by waiting: an operator has
-		// to republish the dictionary. Attempts stay put.
+		// to republish the dictionary. Attempts stay put, and `make revalidate`
+		// re-evaluates the run if the dictionary comes back.
 		return withValidation(base, StatusFlagged, validationDoc{
 			Verdict: verdictError,
 			Reason:  ReasonUnknownDict,
@@ -159,7 +192,22 @@ func decide(run PendingRun, res Result, replayErr error) Decision {
 	base.ServerMetrics = res.Metrics
 	base.ServerScore = res.Score
 
-	doc := validationDoc{Verdict: verdictValid, Flags: res.Flags}
+	// The policy block is attached to every valid decision — accepted included.
+	// An accepted run KEEPS its flags and its suspicion so moderation can audit
+	// the boundary without re-running anything.
+	rules := p.Combinations(res.Flags, res.Metrics)
+	suspicion := p.Suspicion(res.Flags)
+	doc := validationDoc{
+		Verdict: verdictValid,
+		Flags:   res.Flags,
+		Policy: &policyDoc{
+			Version:      p.Version,
+			Suspicion:    roundSuspicion(suspicion),
+			Threshold:    p.ReviewThreshold,
+			Rules:        rules,
+			UnknownFlags: p.UnknownFlagCodes(res.Flags),
+		},
+	}
 
 	if d, err := compareScore(run.ClientScore, res.Score); err != nil {
 		base.Attempts = run.Attempts + 1
@@ -167,6 +215,7 @@ func decide(run PendingRun, res Result, replayErr error) Decision {
 			Verdict: verdictError,
 			Reason:  ReasonReplayError,
 			Flags:   res.Flags,
+			Policy:  doc.Policy,
 		}, err.Error())
 	} else if d != nil {
 		doc.Reason, doc.Divergence = ReasonScoreMismatch, d
@@ -179,17 +228,30 @@ func decide(run PendingRun, res Result, replayErr error) Decision {
 			Verdict: verdictError,
 			Reason:  ReasonReplayError,
 			Flags:   res.Flags,
+			Policy:  doc.Policy,
 		}, err.Error())
 	} else if d != nil {
 		doc.Reason, doc.Divergence = ReasonMetricMismatch, d
 		return withValidation(base, StatusFlagged, doc, "")
 	}
 
-	if len(res.Flags) > 0 {
-		doc.Reason = ReasonPlausibility
+	// A shape outranks a magnitude: no weight tuning should be able to hide a
+	// combination that only a machine produces.
+	if len(rules) > 0 {
+		doc.Reason = ReasonBotPattern
+		return withValidation(base, StatusFlagged, doc, "")
+	}
+	if suspicion >= p.ReviewThreshold {
+		doc.Reason = ReasonSuspicionThreshold
 		return withValidation(base, StatusFlagged, doc, "")
 	}
 	return withValidation(base, StatusAccepted, doc, "")
+}
+
+// roundSuspicion trims the stored suspicion to six decimals. The comparison
+// above uses the full double; this only keeps the audit JSON readable.
+func roundSuspicion(v float64) float64 {
+	return math.Round(v*1e6) / 1e6
 }
 
 // withValidation finalises a decision by encoding its validation document. The

@@ -178,6 +178,7 @@ type runRow struct {
 	ServerScore   []byte
 	Validation    []byte
 	BundleSha     *string
+	PolicyVersion *int16
 	ValidatedAt   *time.Time
 	Attempts      int16
 	LastError     *string
@@ -188,10 +189,10 @@ func fetchRun(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) runRow {
 	var r runRow
 	err := pool.QueryRow(context.Background(), `
 		SELECT status, server_metrics, server_score, validation, bundle_sha,
-		       validated_at, attempts, last_error
+		       policy_version, validated_at, attempts, last_error
 		FROM runs WHERE id = $1`, id).
 		Scan(&r.Status, &r.ServerMetrics, &r.ServerScore, &r.Validation, &r.BundleSha,
-			&r.ValidatedAt, &r.Attempts, &r.LastError)
+			&r.PolicyVersion, &r.ValidatedAt, &r.Attempts, &r.LastError)
 	require.NoError(t, err)
 	return r
 }
@@ -255,6 +256,15 @@ type countingQueue struct {
 
 func (q countingQueue) ProcessBatch(ctx context.Context, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
 	return q.inner.ProcessBatch(ctx, limit, func(ctx context.Context, run replay.PendingRun) replay.Decision {
+		q.mu.Lock()
+		q.seen[run.ID]++
+		q.mu.Unlock()
+		return decide(ctx, run)
+	})
+}
+
+func (q countingQueue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
+	return q.inner.ProcessStalePolicyBatch(ctx, policyVersion, limit, func(ctx context.Context, run replay.PendingRun) replay.Decision {
 		q.mu.Lock()
 		q.seen[run.ID]++
 		q.mu.Unlock()
@@ -366,4 +376,129 @@ func TestVerdictsCommitWithTheClaim(t *testing.T) {
 	require.NoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM runs WHERE status = 'accepted'`).Scan(&accepted))
 	assert.Equal(t, 4, accepted)
+}
+
+// --- revalidation -------------------------------------------------------------
+
+// `make revalidate` walks runs judged under an older policy forward, and is
+// idempotent: the second pass finds nothing because the first set
+// policy_version.
+func TestRevalidateIsBoundedAndIdempotent(t *testing.T) {
+	pool := newPool(t)
+	user := seedUser(t, pool)
+
+	ids := []uuid.UUID{
+		insertPending(t, pool, user, loadVector(t, "words-clean")),
+		insertPending(t, pool, user, loadVector(t, "words-one-fast-interval")),
+		insertPending(t, pool, user, loadVector(t, "words-bot-cadence")),
+	}
+
+	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	core, err := replay.NewCore(replay.DefaultReplayTimeout)
+	require.NoError(t, err)
+
+	// Judge them normally first.
+	n, err := w.RunBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	require.Equal(t, len(ids), n)
+
+	// Freshly judged runs are already at the current policy, so there is
+	// nothing stale to walk forward.
+	n, err = w.RevalidateBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	assert.Zero(t, n, "a just-judged run must not be re-judged")
+
+	// Simulate rows judged by an older policy (and, for one of them, by no
+	// policy at all — the pre-policy NULL).
+	_, err = pool.Exec(context.Background(),
+		`UPDATE runs SET policy_version = 0 WHERE id = ANY($1)`, ids[:2])
+	require.NoError(t, err)
+	_, err = pool.Exec(context.Background(),
+		`UPDATE runs SET policy_version = NULL WHERE id = $1`, ids[2])
+	require.NoError(t, err)
+
+	n, err = w.RevalidateBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	assert.Equal(t, len(ids), n, "every stale run should be claimed")
+
+	// Idempotent: nothing left.
+	n, err = w.RevalidateBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	assert.Zero(t, n)
+
+	for _, id := range ids {
+		row := fetchRun(t, pool, id)
+		require.NotNil(t, row.PolicyVersion, "run %s has no policy_version", id)
+		assert.Equal(t, replay.CurrentPolicyVersion, *row.PolicyVersion)
+	}
+}
+
+// The policy decides the status, and revalidation is what applies a policy
+// change to history: the same three runs land accepted / accepted / flagged.
+func TestRevalidateAppliesTheCurrentPolicy(t *testing.T) {
+	pool := newPool(t)
+	user := seedUser(t, pool)
+
+	clean := insertPending(t, pool, user, loadVector(t, "words-clean"))
+	weak := insertPending(t, pool, user, loadVector(t, "words-one-fast-interval"))
+	bot := insertPending(t, pool, user, loadVector(t, "words-bot-cadence"))
+
+	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	core, err := replay.NewCore(replay.DefaultReplayTimeout)
+	require.NoError(t, err)
+
+	// Pretend an older policy flagged everything that raised a flag — which is
+	// exactly what the pre-policy rule did.
+	_, err = w.RunBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	_, err = pool.Exec(context.Background(),
+		`UPDATE runs SET status = 'flagged', policy_version = NULL`)
+	require.NoError(t, err)
+
+	n, err := w.RevalidateBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	require.Equal(t, 3, n)
+
+	assert.Equal(t, replay.StatusAccepted, fetchRun(t, pool, clean).Status,
+		"a clean run must come back from review")
+	assert.Equal(t, replay.StatusAccepted, fetchRun(t, pool, weak).Status,
+		"one rollover interval must come back from review")
+	assert.Equal(t, replay.StatusFlagged, fetchRun(t, pool, bot).Status,
+		"the bot-shaped run must stay in review")
+
+	// The accepted run kept its flag and its arithmetic: moderation can still
+	// see why it was close.
+	var validation []byte
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT validation FROM runs WHERE id = $1`, weak).Scan(&validation))
+	var doc struct {
+		Flags  []map[string]any `json:"flags"`
+		Policy struct {
+			Version   int16   `json:"version"`
+			Suspicion float64 `json:"suspicion"`
+			Threshold float64 `json:"threshold"`
+		} `json:"policy"`
+	}
+	require.NoError(t, json.Unmarshal(validation, &doc))
+	assert.Len(t, doc.Flags, 1, "the flag must survive acceptance")
+	assert.Equal(t, replay.CurrentPolicyVersion, doc.Policy.Version)
+	assert.Positive(t, doc.Policy.Suspicion)
+	assert.Less(t, doc.Policy.Suspicion, doc.Policy.Threshold)
+}
+
+// Revalidation must never touch the worker's own queue: a pending run belongs
+// to the worker, not to a re-judge.
+func TestRevalidateIgnoresPendingRuns(t *testing.T) {
+	pool := newPool(t)
+	user := seedUser(t, pool)
+	id := insertPending(t, pool, user, loadVector(t, "words-clean"))
+
+	w := newTestWorker(t, replaypg.New(pool), replay.WorkerConfig{BatchSize: 10})
+	core, err := replay.NewCore(replay.DefaultReplayTimeout)
+	require.NoError(t, err)
+
+	n, err := w.RevalidateBatch(context.Background(), core, discardLogger())
+	require.NoError(t, err)
+	assert.Zero(t, n, "a pending run must be left for the worker")
+	assert.Equal(t, replay.StatusPending, fetchRun(t, pool, id).Status)
 }

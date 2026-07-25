@@ -13,6 +13,8 @@
 #   make core-bundle re-vendor the TS core bundle from the frontend checkout
 #   make vectors     regenerate the replay golden vectors (read the diff!)
 #   make tools       install golangci-lint into your Go bin
+#   make calibrate   dry-run the replay review policy over stored runs
+#   make revalidate  re-judge runs whose policy_version is behind current
 
 BINARY := typemore-server
 PKG    := github.com/typemore/typemore-server
@@ -42,7 +44,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle vectors migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -82,6 +84,20 @@ core-bundle:
 vectors:
 	node internal/replay/testdata/generate.mjs
 	go test ./internal/replay/
+
+## calibrate: dry-run the review policy over stored runs — writes NOTHING
+# Prints per-flag firing rates, a suspicion histogram, the worst offenders and
+# the status changes the current policy would make. Run this BEFORE changing a
+# weight or the threshold. Reads TYPEMORE_DATABASE_URL (and any
+# TYPEMORE_REPLAY_* overrides) exactly as the server does.
+calibrate:
+	go run ./cmd/replayctl calibrate
+
+## revalidate: re-judge runs whose policy_version is behind the current one
+# Bounded and idempotent: applying a decision sets policy_version, so a second
+# pass finds nothing. Run it after bumping CurrentPolicyVersion.
+revalidate:
+	go run ./cmd/replayctl revalidate
 
 ## tidy: sync go.mod/go.sum
 tidy:

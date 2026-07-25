@@ -6,6 +6,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -39,6 +40,49 @@ func New(pool *pgxpool.Pool) *Queue {
 // rows this one holds. The cost is transaction duration, which is bounded by
 // batchSize × the per-run interrupt budget. See docs/REPLAY.md.
 func (q *Queue) ProcessBatch(ctx context.Context, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
+	return q.inTx(ctx, decide, func(qtx *replaydb.Queries) ([]replay.PendingRun, error) {
+		rows, err := qtx.ClaimPendingRuns(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]replay.PendingRun, len(rows))
+		for i := range rows {
+			out[i] = toPendingRun(rows[i].ID, rows[i].Seed, rows[i].DictHash, rows[i].ScoreVersion,
+				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts)
+		}
+		return out, nil
+	})
+}
+
+// ProcessStalePolicyBatch re-judges runs whose policy_version is behind the
+// current one, with the same locking discipline as the queue. Idempotent by
+// construction: applying the decision sets policy_version, so the row stops
+// matching the claim and a second pass finds nothing.
+func (q *Queue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
+	return q.inTx(ctx, decide, func(qtx *replaydb.Queries) ([]replay.PendingRun, error) {
+		rows, err := qtx.ClaimStalePolicyRuns(ctx, replaydb.ClaimStalePolicyRunsParams{
+			PolicyVersion: &policyVersion,
+			RowLimit:      limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]replay.PendingRun, len(rows))
+		for i := range rows {
+			out[i] = toPendingRun(rows[i].ID, rows[i].Seed, rows[i].DictHash, rows[i].ScoreVersion,
+				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts)
+		}
+		return out, nil
+	})
+}
+
+// inTx is the shared unit of work behind both batch operations: one
+// transaction, one claim, one decision per row, one commit.
+func (q *Queue) inTx(
+	ctx context.Context,
+	decide func(context.Context, replay.PendingRun) replay.Decision,
+	claim func(*replaydb.Queries) ([]replay.PendingRun, error),
+) (int, error) {
 	tx, err := q.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("replay/pgstore: begin: %w", err)
@@ -48,44 +92,41 @@ func (q *Queue) ProcessBatch(ctx context.Context, limit int32, decide func(conte
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := q.q.WithTx(tx)
-	rows, err := qtx.ClaimPendingRuns(ctx, limit)
+	runs, err := claim(qtx)
 	if err != nil {
 		return 0, fmt.Errorf("replay/pgstore: claim: %w", err)
 	}
-	if len(rows) == 0 {
-		// Nothing to do — commit (releasing the snapshot) rather than leaving an
-		// idle transaction behind on an empty queue.
-		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("replay/pgstore: commit: %w", err)
-		}
-		return 0, nil
-	}
-
-	for i := range rows {
-		row := &rows[i]
-		d := decide(ctx, toPendingRun(row))
-		if err := qtx.ApplyReplayDecision(ctx, toDecisionParams(row.ID, d)); err != nil {
-			return 0, fmt.Errorf("replay/pgstore: apply decision for run %s: %w", row.ID, err)
+	for i := range runs {
+		d := decide(ctx, runs[i])
+		if err := qtx.ApplyReplayDecision(ctx, toDecisionParams(runs[i].ID, d)); err != nil {
+			return 0, fmt.Errorf("replay/pgstore: apply decision for run %s: %w", runs[i].ID, err)
 		}
 	}
-
+	// Commit even on an empty claim: releasing the snapshot beats leaving an
+	// idle transaction behind on an empty queue.
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("replay/pgstore: commit: %w", err)
 	}
-	return len(rows), nil
+	return len(runs), nil
 }
 
-func toPendingRun(r *replaydb.ClaimPendingRunsRow) replay.PendingRun {
+// toPendingRun builds the domain row from the columns both claim queries
+// select. They are distinct generated types with identical shapes, so the
+// converter takes the fields rather than one of the two structs.
+func toPendingRun(
+	id uuid.UUID, seed int64, dictHash string, scoreVersion int16,
+	setup, clientMetrics, clientScore json.RawMessage, log []byte, attempts int16,
+) replay.PendingRun {
 	return replay.PendingRun{
-		ID:            r.ID,
-		Seed:          r.Seed,
-		DictHash:      r.DictHash,
-		ScoreVersion:  r.ScoreVersion,
-		Setup:         r.Setup,
-		ClientMetrics: r.ClientMetrics,
-		ClientScore:   r.ClientScore,
-		Log:           r.Log,
-		Attempts:      r.Attempts,
+		ID:            id,
+		Seed:          seed,
+		DictHash:      dictHash,
+		ScoreVersion:  scoreVersion,
+		Setup:         setup,
+		ClientMetrics: clientMetrics,
+		ClientScore:   clientScore,
+		Log:           log,
+		Attempts:      attempts,
 	}
 }
 
@@ -94,6 +135,10 @@ func toDecisionParams(id uuid.UUID, d replay.Decision) replaydb.ApplyReplayDecis
 	if d.BundleSHA != "" {
 		bundle = &d.BundleSHA
 	}
+	var policy *int16
+	if d.PolicyVersion > 0 {
+		policy = &d.PolicyVersion
+	}
 	return replaydb.ApplyReplayDecisionParams{
 		ID:            id,
 		Status:        d.Status,
@@ -101,7 +146,29 @@ func toDecisionParams(id uuid.UUID, d replay.Decision) replaydb.ApplyReplayDecis
 		ServerScore:   d.ServerScore,
 		Validation:    d.Validation,
 		BundleSha:     bundle,
+		PolicyVersion: policy,
 		Attempts:      d.Attempts,
 		LastError:     d.LastError,
 	}
+}
+
+// ListForCalibration reads judged runs without locking or writing anything —
+// the input to `replayctl calibrate`. Deliberately NOT part of the replay.Queue
+// interface: the worker has no business reading rows it will not judge.
+func (q *Queue) ListForCalibration(ctx context.Context, limit int32) ([]replay.CalibrationRun, error) {
+	rows, err := q.q.ListRunsForCalibration(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("replay/pgstore: list for calibration: %w", err)
+	}
+	out := make([]replay.CalibrationRun, len(rows))
+	for i := range rows {
+		out[i] = replay.CalibrationRun{
+			PendingRun: toPendingRun(rows[i].ID, rows[i].Seed, rows[i].DictHash, rows[i].ScoreVersion,
+				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts),
+			Status:        rows[i].Status,
+			PolicyVersion: rows[i].PolicyVersion,
+			CreatedAt:     rows[i].CreatedAt,
+		}
+	}
+	return out, nil
 }

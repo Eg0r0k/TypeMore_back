@@ -82,6 +82,7 @@ type Run struct {
 	ValidatedAt   *time.Time
 	Attempts      int16
 	LastError     *string
+	PolicyVersion *int16
 }
 
 type Session struct {
