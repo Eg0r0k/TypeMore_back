@@ -23,15 +23,16 @@ equal to `TYPEMORE_FRONTEND_ORIGIN` (CSRF) and a valid session cookie. Errors ar
 | GET  | `/api/v1/runs?cursor=&limit=` | session | List own runs, newest-first, keyset-paginated (no log) |
 | GET  | `/api/v1/runs/{id}` | session | One own run's summary (no log) |
 | GET  | `/api/v1/runs/{id}?log=1` | session | Stream the gunzipped EventLog JSON (for the replay feature) |
-| GET  | `/api/v1/runs/{id}/replay` | **none** | One **accepted** run for public playback — setup, log, server numbers, grade, display name |
+| GET  | `/api/v1/runs/{id}/replay` | **none** | One **accepted** run's playback metadata — setup, seed, dictHash, server numbers, grade, display name |
+| GET  | `/api/v1/runs/{id}/replay/log` | **none** | The same run's EventLog, as the stored gzip bytes (`Content-Encoding: gzip`) |
 
-The last one is the spectator surface behind a leaderboard row and is the only
-public route here: it serves accepted runs whose owner is not banned, and
-answers an indistinguishable `404` for everything else (pending, flagged,
-rejected, banned owner, nonexistent). It carries the verdict's result but never
-its reasoning — no `validation`, no client-reported numbers. Rate-limited per
-IP, because an event log is the heaviest payload the server serves and the route
-needs no session. Full shape and access matrix:
+The last two are the spectator surface behind a leaderboard row and the only
+public routes here: they serve accepted runs whose owner is not banned, and
+answer an indistinguishable `404` for everything else (pending, flagged,
+rejected, banned owner, nonexistent). They carry the verdict's result but never
+its reasoning — no `validation`, no client-reported numbers. Both draw on one
+per-IP token bucket, because an event log is the heaviest payload the server
+serves and neither route needs a session. Full shape and access matrix:
 [`LEADERBOARDS.md`](LEADERBOARDS.md).
 
 The owner-only `?log=1` path is unchanged and remains the only way to reach a

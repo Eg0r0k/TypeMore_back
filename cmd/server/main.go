@@ -213,9 +213,9 @@ func run() error {
 		// play client-side and still need to pick a language.
 		r.Mount("/dictionaries", dictSvc.Routes())
 		// Runs: the ingestion and own-runs routes require a session (guests play
-		// client-only); GET /runs/{id}/replay is public and the runs router
-		// draws that line itself, so the middleware is passed in rather than
-		// wrapped around the whole mount.
+		// client-only); GET /runs/{id}/replay and its /log sibling are public
+		// and the runs router draws that line itself, so the middleware is
+		// passed in rather than wrapped around the whole mount.
 		r.Mount("/runs", runsSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
 		// Leaderboards are public: a board nobody can read without an account is
 		// a board nobody links to. OptionalAuth resolves the session WITHOUT

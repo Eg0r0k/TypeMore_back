@@ -28,7 +28,9 @@ type UserIDFunc func(ctx context.Context) (uuid.UUID, bool)
 // There are two limiters because the two exposed costs are different: ingestion
 // is per-user and generous (a typing session is many runs), while public replay
 // is per-IP and modest (an event log is the heaviest payload this server hands
-// out, and the caller needs no account to ask for one).
+// out, and the caller needs no account to ask for one). BOTH public replay
+// routes — metadata and log — draw on that one bucket, so splitting the payload
+// did not double what an anonymous IP may command.
 type Service struct {
 	store         Store
 	limiter       RateLimiter

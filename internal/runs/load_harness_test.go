@@ -92,16 +92,24 @@ func (h *harness) sendBody(path string, body []byte) (int, error) {
 	return resp.StatusCode, err
 }
 
-// fetchDiscard GETs path and streams the body straight to io.Discard.
+// fetchDiscard GETs path and streams the body straight to io.Discard, counting
+// the bytes that actually crossed the socket.
 //
 // Discarding rather than buffering is deliberate: holding a 2 MiB replay on the
 // client side would add a copy per in-flight request to the very heap peak
 // these tests are trying to attribute to the server.
+//
+// Accept-Encoding is set BY HAND for the same reason. Go's Transport
+// transparently gunzips a response only when it added that header itself, and a
+// client-side gunzip of the replay log — in this process, against this heap —
+// would land in the server's measurement. Setting it here also makes the byte
+// count comparable with the raw-socket burst driver, which never decompresses.
 func (h *harness) fetchDiscard(path string) (status int, n int64, err error) {
 	req, err := http.NewRequest(http.MethodGet, h.server.URL+path, http.NoBody)
 	if err != nil {
 		return 0, 0, err
 	}
+	req.Header.Set("Accept-Encoding", "gzip")
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return 0, 0, err

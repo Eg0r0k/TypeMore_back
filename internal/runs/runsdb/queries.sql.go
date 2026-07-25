@@ -48,8 +48,8 @@ type CreateRunRow struct {
 
 // Queries for the runs domain. sqlc generates type-safe Go from these into
 // internal/runs/runsdb. The gzip log blob is written once at ingestion and read
-// back only through GetRunLog (the ?log=1 detail flag); the summary queries
-// deliberately never SELECT it.
+// back only through GetRunLog (the ?log=1 detail flag) and GetPublicReplayLog
+// (the public log route); the summary queries deliberately never SELECT it.
 func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (CreateRunRow, error) {
 	row := q.db.QueryRow(ctx, createRun,
 		arg.UserID,
@@ -72,10 +72,10 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (CreateRun
 }
 
 const getPublicReplay = `-- name: GetPublicReplay :one
-SELECT r.setup, r.log, r.server_metrics, r.server_score,
+SELECT r.setup, r.server_metrics, r.server_score,
        run_grade((r.server_metrics ->> 'accuracy')::numeric)::text AS grade,
-       r.mode, r.duration_ms, r.word_count, r.lang, r.created_at,
-       u.display_name
+       r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.created_at, u.display_name
 FROM runs r
          JOIN users u ON u.id = r.user_id
 WHERE r.id = $1
@@ -86,7 +86,6 @@ WHERE r.id = $1
 
 type GetPublicReplayRow struct {
 	Setup         json.RawMessage
-	Log           []byte
 	ServerMetrics []byte
 	ServerScore   []byte
 	Grade         string
@@ -94,12 +93,23 @@ type GetPublicReplayRow struct {
 	DurationMs    *int32
 	WordCount     *int32
 	Lang          string
+	Seed          int64
+	DictHash      string
 	CreatedAt     time.Time
 	DisplayName   string
 }
 
-// Everything needed to watch someone else's run: the setup to regenerate the
-// text, the log to play back, and the server's own verdict numbers.
+// Everything needed to describe someone else's run: the setup and the seed to
+// regenerate the text, the dict_hash to verify the dictionary that regeneration
+// is fed, and the server's own verdict numbers. The log is NOT here — it is a
+// separate route (GetPublicReplayLog) so the stored gzip blob can go straight
+// to the socket instead of being gunzipped into a JSON envelope
+// (docs/PERFORMANCE.md, zone 6).
+//
+// seed and dict_hash are the same two columns the owner's authenticated summary
+// already exposes (docs/RUNS.md); the word list is regenerated on the client
+// from them, so the server never ships a word list it would then have to keep
+// in sync with the core's generator.
 //
 // Three access rules are in the WHERE clause rather than in Go, so no caller can
 // reach this data without them: the run must be ACCEPTED (a flagged, rejected
@@ -111,7 +121,6 @@ func (q *Queries) GetPublicReplay(ctx context.Context, runID uuid.UUID) (GetPubl
 	var i GetPublicReplayRow
 	err := row.Scan(
 		&i.Setup,
-		&i.Log,
 		&i.ServerMetrics,
 		&i.ServerScore,
 		&i.Grade,
@@ -119,10 +128,35 @@ func (q *Queries) GetPublicReplay(ctx context.Context, runID uuid.UUID) (GetPubl
 		&i.DurationMs,
 		&i.WordCount,
 		&i.Lang,
+		&i.Seed,
+		&i.DictHash,
 		&i.CreatedAt,
 		&i.DisplayName,
 	)
 	return i, err
+}
+
+const getPublicReplayLog = `-- name: GetPublicReplayLog :one
+SELECT r.log
+FROM runs r
+         JOIN users u ON u.id = r.user_id
+WHERE r.id = $1
+  AND r.status = 'accepted'
+  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+`
+
+// The stored gzip event log of one publicly watchable run, and nothing else, so
+// the log route never re-reads the metadata it is not going to serve.
+//
+// The WHERE clause is the SAME THREE RULES, spelled the same way, including the
+// join to users: eligibility for the log must be eligibility for the metadata,
+// character for character, or the two routes drift into two access matrices.
+func (q *Queries) GetPublicReplayLog(ctx context.Context, runID uuid.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getPublicReplayLog, runID)
+	var log []byte
+	err := row.Scan(&log)
+	return log, err
 }
 
 const getRun = `-- name: GetRun :one

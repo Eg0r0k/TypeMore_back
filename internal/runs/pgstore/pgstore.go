@@ -111,7 +111,7 @@ func (s *Store) RunLog(ctx context.Context, id, userID uuid.UUID) ([]byte, error
 	return log, nil
 }
 
-// PublicReplay returns one accepted run for public playback. Every access rule
+// PublicReplay returns one accepted run's playback metadata. Every access rule
 // lives in the query's WHERE clause, so "not accepted", "owner banned" and
 // "does not exist" all arrive here as the same no-rows error.
 func (s *Store) PublicReplay(ctx context.Context, id uuid.UUID) (runs.PublicReplay, error) {
@@ -126,13 +126,25 @@ func (s *Store) PublicReplay(ctx context.Context, id uuid.UUID) (runs.PublicRepl
 		DurationMs:    row.DurationMs,
 		WordCount:     row.WordCount,
 		Lang:          row.Lang,
+		Seed:          row.Seed,
+		DictHash:      row.DictHash,
 		Setup:         row.Setup,
-		Log:           row.Log,
 		ServerMetrics: row.ServerMetrics,
 		ServerScore:   row.ServerScore,
 		Grade:         row.Grade,
 		AchievedAt:    row.CreatedAt,
 	}, nil
+}
+
+// PublicReplayLog returns the stored gzip event log of one accepted run. The
+// blob is handed back untouched — no gunzip, no copy beyond the driver's own
+// read — because the handler writes exactly these bytes to the socket.
+func (s *Store) PublicReplayLog(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	log, err := s.q.GetPublicReplayLog(ctx, id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return log, nil
 }
 
 // --- row conversions ---

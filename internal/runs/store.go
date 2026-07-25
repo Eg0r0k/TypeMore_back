@@ -78,13 +78,21 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
-// PublicReplay is one ACCEPTED run as anyone may watch it: the setup needed to
-// regenerate its text, the log to play back, and the server's own numbers. It
-// carries no client-reported values and no validation detail — a spectator gets
-// the verdict's result, not its reasoning.
+// PublicReplay is one ACCEPTED run as anyone may watch it: everything needed to
+// SET UP the playback, and the server's own numbers. It carries no
+// client-reported values and no validation detail — a spectator gets the
+// verdict's result, not its reasoning.
 //
-// Log is the stored gzip blob, decompressed by the handler exactly as the
-// owner-only ?log=1 path does.
+// Seed and DictHash are here because the words are not: the client regenerates
+// the exact text from (seed, generation) through the core's own generator and
+// checks the dictionary it used hashes to DictHash first. Shipping a word list
+// instead would be a second copy of the generator's output for the server to
+// keep in sync. Both columns are already on the owner's authenticated summary.
+//
+// The event log is deliberately NOT here. It is served by its own route from
+// PublicReplayLog, as the stored gzip bytes, because inlining it cost 5.5 MiB
+// of live heap per request to hand out a 373 KiB blob (docs/PERFORMANCE.md,
+// zone 6).
 type PublicReplay struct {
 	RunID         uuid.UUID
 	DisplayName   string
@@ -92,8 +100,9 @@ type PublicReplay struct {
 	DurationMs    *int32
 	WordCount     *int32
 	Lang          string
+	Seed          int64
+	DictHash      string
 	Setup         json.RawMessage
-	Log           []byte
 	ServerMetrics json.RawMessage
 	ServerScore   json.RawMessage
 	Grade         string
@@ -114,8 +123,14 @@ type Store interface {
 	Run(ctx context.Context, id, userID uuid.UUID) (Summary, error)
 	// RunLog returns the gzip log blob for one run owned by userID.
 	RunLog(ctx context.Context, id, userID uuid.UUID) ([]byte, error)
-	// PublicReplay returns one accepted run for public playback. A run that is
+	// PublicReplay returns one accepted run's playback metadata. A run that is
 	// not accepted, or whose owner is banned, is ErrNotFound — the same answer
 	// as one that does not exist.
 	PublicReplay(ctx context.Context, id uuid.UUID) (PublicReplay, error)
+	// PublicReplayLog returns the STORED gzip event log of one accepted run,
+	// uncompressed by nobody: the handler writes these bytes to the socket
+	// under Content-Encoding: gzip. Eligibility is identical to PublicReplay —
+	// the same three rules, in the same WHERE clause — so the two routes cannot
+	// answer differently about who may watch what.
+	PublicReplayLog(ctx context.Context, id uuid.UUID) ([]byte, error)
 }

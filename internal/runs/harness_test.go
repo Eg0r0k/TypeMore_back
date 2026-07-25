@@ -226,6 +226,23 @@ func (h *harness) get(path string) *http.Response {
 	return resp
 }
 
+// getRaw is `get` with the transparent-decompression opt-out. Go's Transport
+// gunzips a response only when IT added the Accept-Encoding header; sending the
+// header explicitly hands the body back exactly as it came off the socket,
+// which is the only way to assert on what the replay log route actually wrote.
+func (h *harness) getRaw(path string, headers map[string]string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodGet, h.server.URL+path, http.NoBody)
+	require.NoError(h.t, err)
+	req.Header.Set("Accept-Encoding", "gzip")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := h.client.Do(req)
+	require.NoError(h.t, err)
+	return resp
+}
+
 // login registers, verifies, and logs in a fresh user, leaving a live session
 // in the cookie jar. It returns the new user's id.
 func (h *harness) login(email, password, name string) string {

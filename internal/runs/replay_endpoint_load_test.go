@@ -16,12 +16,14 @@ import (
 	"github.com/typemore/typemore-server/internal/perf"
 )
 
-// Zone 6 — GET /api/v1/runs/{id}/replay, the public, unauthenticated endpoint
-// that serves the heaviest payload this server produces.
+// Zone 6 — the public, unauthenticated replay pair. GET /runs/{id}/replay is
+// metadata-only JSON; GET /runs/{id}/replay/log carries the heaviest payload
+// this server produces, and is what everything below measures.
 //
 // As in zone 5 the client shares the process with the server, so heap figures
 // are upper bounds on the server's own use; the bodies are streamed to
-// io.Discard so the client side contributes read buffers, not copies.
+// io.Discard, and never decompressed client-side, so the client contributes
+// read buffers rather than copies of the thing being measured.
 
 const zone6 = "6 replay"
 
@@ -32,12 +34,12 @@ const zone6 = "6 replay"
 // is loading" for a payload of this size.
 var (
 	replayP50Budget = perf.Budget{
-		Zone: zone6, Workload: "GET /runs/{id}/replay, max run, p50 at 20 concurrent",
+		Zone: zone6, Workload: "GET /runs/{id}/replay/log, max run, p50 at 20 concurrent",
 		Limit:     250 * time.Millisecond,
 		Rationale: "a spectator's click blocks on this; there is no local preview to mask it",
 	}
 	replayP99Budget = perf.Budget{
-		Zone: zone6, Workload: "GET /runs/{id}/replay, max run, p99 at 20 concurrent",
+		Zone: zone6, Workload: "GET /runs/{id}/replay/log, max run, p99 at 20 concurrent",
 		Limit:     600 * time.Millisecond,
 		Rationale: "the tail may look like a page load, never like a hang",
 	}
@@ -46,7 +48,7 @@ var (
 const replayConcurrency = 20
 
 // storeMaxAcceptedRun ingests the largest submittable run and puts it in the one
-// state the public endpoint serves.
+// state the public endpoints serve.
 //
 // The verdict is written in SQL rather than produced by the real worker: the
 // fixture is 39 913 synthetic single-character inserts against a 10 000-word
@@ -92,7 +94,7 @@ func storeMaxAcceptedRun(t *testing.T, h *harness) (id string, rawLogBytes int) 
 }
 
 // TestLoadReplayMaxRunConcurrent is the memory and latency question: twenty
-// spectators pulling the same maximal run at the same instant.
+// spectators pulling the same maximal run's log at the same instant.
 func TestLoadReplayMaxRunConcurrent(t *testing.T) {
 	h := newHarness(t, func(o *harnessOpts) {
 		o.runsRateBurst = 10_000
@@ -100,14 +102,19 @@ func TestLoadReplayMaxRunConcurrent(t *testing.T) {
 	})
 	h.login("replay-max@example.com", "correct horse battery", "replaymax")
 	id, rawLogBytes := storeMaxAcceptedRun(t, h)
-	path := "/api/v1/runs/" + id + "/replay"
+	path := "/api/v1/runs/" + id + "/replay/log"
+
+	// The other half of a watch, for contrast: the metadata envelope no longer
+	// carries the log, so it should be kilobytes against the log's hundreds.
+	_, meta, err := h.fetchDiscard("/api/v1/runs/" + id + "/replay")
+	require.NoError(t, err)
 
 	status, served, err := h.fetchDiscard(path)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, status)
 	perf.Report(t, zone6, "served replay body",
-		fmt.Sprintf("%s (%d bytes) wrapping a %s event log",
-			perf.MiB(uint64(served)), served, perf.MiB(uint64(rawLogBytes))))
+		fmt.Sprintf("%s (%d bytes) of stored gzip for a %s event log, beside a %d-byte metadata envelope",
+			perf.MiB(uint64(served)), served, perf.MiB(uint64(rawLogBytes)), meta))
 
 	h.warmPool()
 	res := h.burst(replayConcurrency, h.wire(http.MethodGet, path, nil))
@@ -137,26 +144,26 @@ func TestLoadReplayMaxRunConcurrent(t *testing.T) {
 			float64(growth(res.peakHeap, res.baseline))/float64(replayConcurrency*int(served)),
 			perf.MiB(uint64(replayConcurrency*int(served)))))
 
-	// The handler gunzips the whole log into a []byte and then hands it to
-	// json.NewEncoder, which compacts it into a second buffer before a byte
-	// reaches the socket — so a concurrent fetch is expected to cost multiples of
-	// the payload, not one payload. 192 MiB for 20 in flight is that expectation
-	// (~2 MiB served, ~3 live copies, plus the gzip blob and encoder growth) with
-	// margin. The ceiling matters more here than in zone 5 because this route
-	// needs no session: whatever it costs, an anonymous client can ask for.
+	// The handler now writes the STORED blob: one query result, one Write, no
+	// gunzip and no encoder buffer. A concurrent fetch should therefore cost
+	// about one payload each rather than the ~3 live copies the inlined version
+	// paid. The 192 MiB ceiling is left where it was on purpose — it is what an
+	// unauthenticated route is allowed to cost, not what this one is expected
+	// to, and a regression back to buffering has to go red against it.
 	perf.AssertBytes(t, zone6,
-		fmt.Sprintf("peak heap, %d concurrent max-run replays", replayConcurrency),
+		fmt.Sprintf("peak heap, %d concurrent max-run replay logs", replayConcurrency),
 		res.peakHeap, 192<<20,
 		"an unauthenticated route must not be able to price itself out of a 512 MiB instance")
 }
 
 // TestLoadReplayAllocationMultiplier answers "does it stream or does it buffer"
-// with a number: how many bytes the process allocates to serve one replay,
+// with a number: how many bytes the process allocates to serve one replay log,
 // against the size of the thing it served.
 //
-// The response is drained to io.Discard, so a streaming implementation would
-// land near 1× plus small fixed buffers. Anything at 3× or above means the
-// payload exists several times over at once, per concurrent request.
+// The response is drained to io.Discard and never decompressed client-side, so
+// a passthrough implementation lands near 1× plus small fixed buffers. Anything
+// at 3× or above means the payload exists several times over at once, per
+// concurrent request — which is exactly what the inlined-log version did.
 func TestLoadReplayAllocationMultiplier(t *testing.T) {
 	h := newHarness(t, func(o *harnessOpts) {
 		o.runsRateBurst = 10_000
@@ -164,7 +171,7 @@ func TestLoadReplayAllocationMultiplier(t *testing.T) {
 	})
 	h.login("replay-alloc@example.com", "correct horse battery", "replayalloc")
 	id, rawLogBytes := storeMaxAcceptedRun(t, h)
-	path := "/api/v1/runs/" + id + "/replay"
+	path := "/api/v1/runs/" + id + "/replay/log"
 
 	status, served, err := h.fetchDiscard(path)
 	require.NoError(t, err)
@@ -223,7 +230,7 @@ func TestLoadReplayRateLimitShedsBeforeMemory(t *testing.T) {
 	})
 	h.login("replay-flood@example.com", "correct horse battery", "replayflood")
 	id, _ := storeMaxAcceptedRun(t, h)
-	path := "/api/v1/runs/" + id + "/replay"
+	path := "/api/v1/runs/" + id + "/replay/log"
 
 	// No warm fetch: one would spend a token, and the burst below has to be the
 	// whole bucket. The pool is warmed instead, which costs nothing on this route.
@@ -280,14 +287,15 @@ func TestLoadReplayRateLimitShedsBeforeMemory(t *testing.T) {
 		"one unauthenticated IP must not be able to claim a quarter of a 512 MiB instance")
 }
 
-// getPublicReplaySQL is the query behind the endpoint, copied verbatim from
-// internal/runs/runsdb/queries.sql.go. Copied rather than imported because the
-// generated constant is unexported; if the two drift, the assertion below stops
-// describing the endpoint and this comment is the reason to re-copy it.
-const getPublicReplaySQL = `SELECT r.setup, r.log, r.server_metrics, r.server_score,
+// getPublicReplaySQL / getPublicReplayLogSQL are the two queries behind the two
+// public routes, copied verbatim from internal/runs/runsdb/queries.sql.go.
+// Copied rather than imported because the generated constants are unexported;
+// if they drift, the assertions below stop describing the endpoints and this
+// comment is the reason to re-copy them.
+const getPublicReplaySQL = `SELECT r.setup, r.server_metrics, r.server_score,
        run_grade((r.server_metrics ->> 'accuracy')::numeric)::text AS grade,
-       r.mode, r.duration_ms, r.word_count, r.lang, r.created_at,
-       u.display_name
+       r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.created_at, u.display_name
 FROM runs r
          JOIN users u ON u.id = r.user_id
 WHERE r.id = $1
@@ -295,7 +303,17 @@ WHERE r.id = $1
   AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
   AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)`
 
-// TestLoadPlanPublicReplay pins the SHAPE of the endpoint's only query.
+const getPublicReplayLogSQL = `SELECT r.log
+FROM runs r
+         JOIN users u ON u.id = r.user_id
+WHERE r.id = $1
+  AND r.status = 'accepted'
+  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)`
+
+// TestLoadPlanPublicReplay pins the SHAPE of BOTH queries the pair of public
+// routes runs — watching a row is two requests now, so one pinned plan would
+// leave half the click unmeasured.
 //
 // A latency budget on a table with one run in it proves nothing — every plan is
 // fast at n=1. What has to hold at every volume is that the lookup is anchored
@@ -310,13 +328,23 @@ func TestLoadPlanPublicReplay(t *testing.T) {
 	h.login("replay-plan@example.com", "correct horse battery", "replayplan")
 	id, _ := storeMaxAcceptedRun(t, h)
 
-	plan, err := perf.Explain(context.Background(), h.pool, getPublicReplaySQL, uuid.MustParse(id))
-	require.NoError(t, err)
-	perf.AssertPlan(t, plan, perf.PlanAssertion{
-		Zone:        zone6,
-		Query:       "GetPublicReplay",
-		WantAny:     []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"},
-		NoSeqScanOn: []string{"runs", "users"},
-		NoSort:      true,
-	})
+	for _, q := range []struct {
+		name string
+		sql  string
+	}{
+		{"GetPublicReplay", getPublicReplaySQL},
+		{"GetPublicReplayLog", getPublicReplayLogSQL},
+	} {
+		plan, err := perf.Explain(context.Background(), h.pool, q.sql, uuid.MustParse(id))
+		require.NoError(t, err)
+		perf.AssertPlan(t, plan, perf.PlanAssertion{
+			Zone:        zone6,
+			Query:       q.name,
+			WantAny:     []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"},
+			NoSeqScanOn: []string{"runs", "users"},
+			NoSort:      true,
+		})
+		perf.Report(t, zone6, q.name+" plan",
+			fmt.Sprintf("%v in %.2f ms", plan.Nodes, plan.TotalMs))
+	}
 }

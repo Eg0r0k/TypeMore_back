@@ -28,10 +28,11 @@ const (
 // Routes returns the runs router, mounted at /api/v1/runs.
 //
 // The auth boundary is drawn HERE rather than by the caller wrapping the whole
-// mount, because one route is deliberately outside it: GET /{id}/replay serves
-// accepted runs to anyone, which is what makes a leaderboard row watchable
-// without an account. Keeping the split next to the routes means the public one
-// cannot be widened by an unrelated change to the mount.
+// mount, because two routes are deliberately outside it: GET /{id}/replay and
+// GET /{id}/replay/log serve accepted runs to anyone, which is what makes a
+// leaderboard row watchable without an account. Keeping the split next to the
+// routes means the public ones cannot be widened by an unrelated change to the
+// mount.
 //
 // requireOrigin is the CSRF check (a no-op on safe methods) and requireAuth
 // rejects sessionless requests; both come from the auth domain via the
@@ -39,6 +40,7 @@ const (
 func (s *Service) Routes(requireOrigin, requireAuth func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/{id}/replay", s.handlePublicReplay)
+	r.Get("/{id}/replay/log", s.handlePublicReplayLog)
 	r.Group(func(r chi.Router) {
 		r.Use(requireOrigin)
 		r.Use(requireAuth)
@@ -222,8 +224,20 @@ func (s *Service) handleDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // replayView is one accepted run as a spectator sees it: everything needed to
-// watch it back, and nothing about how it was judged. The event log is inlined
-// rather than linked so watching a leaderboard row is ONE request.
+// SET UP the playback, and nothing about how the run was judged.
+//
+// `seed` and `dictHash` are what stand in for the word list. The client feeds
+// (seed, setup.generation) to the core's own generator to reproduce the exact
+// text, after checking that the dictionary it holds hashes to `dictHash` — the
+// same check the live match path makes. Serialising the words here instead
+// would put a second copy of the generator's output on the wire for the server
+// to keep in step with the core. Both fields are already on the owner's
+// authenticated summary (docs/RUNS.md), so this is reach, not disclosure.
+//
+// The event log is NOT here. It has its own route (handlePublicReplayLog),
+// because inlining it meant gunzipping a 373 KiB blob into 2.0 MiB and letting
+// the JSON encoder compact that into a third buffer — 5.5 MiB live per request
+// (docs/PERFORMANCE.md, zone 6).
 type replayView struct {
 	RunID         uuid.UUID       `json:"runId"`
 	DisplayName   string          `json:"displayName"`
@@ -231,23 +245,34 @@ type replayView struct {
 	DurationMs    *int32          `json:"durationMs,omitempty"`
 	WordCount     *int32          `json:"wordCount,omitempty"`
 	Lang          string          `json:"lang"`
+	Seed          int64           `json:"seed"`
+	DictHash      string          `json:"dictHash"`
 	Setup         json.RawMessage `json:"setup"`
 	ServerMetrics json.RawMessage `json:"serverMetrics"`
 	ServerScore   json.RawMessage `json:"serverScore"`
 	Grade         string          `json:"grade"`
 	AchievedAt    time.Time       `json:"achievedAt"`
-	Log           json.RawMessage `json:"log"`
 }
 
-// handlePublicReplay streams one accepted run for playback, to anyone.
+// toReplayView converts the domain PublicReplay to its JSON view. As with
+// summaryView, the two structs share field names, types, and order (only json
+// tags differ), so a plain conversion suffices.
+func toReplayView(p PublicReplay) replayView {
+	return replayView(p)
+}
+
+// replayLogCacheControl: a judged run's event log is immutable. The row is
+// written once at ingestion and never updated — revalidation only ever moves
+// the verdict columns — so the run id alone identifies the bytes forever.
+const replayLogCacheControl = "public, max-age=31536000, immutable"
+
+// handlePublicReplay serves one accepted run's playback METADATA, to anyone.
 //
-// This is what makes a leaderboard row watchable: the board links a run id, and
-// this returns the setup, the log and the server's numbers in one response. The
-// owner-only ?log=1 path is untouched and still the only way to reach a run
-// that is pending, flagged or rejected.
-//
-// Rate-limited per IP: the log is the largest thing this server serves, and no
-// session is required to ask for one.
+// This is half of what makes a leaderboard row watchable: the board links a run
+// id, this returns the setup and the server's numbers, and
+// GET /{id}/replay/log returns the log itself. The owner-only ?log=1 path is
+// untouched and still the only way to reach a run that is pending, flagged or
+// rejected.
 func (s *Service) handlePublicReplay(w http.ResponseWriter, r *http.Request) {
 	if !s.replayLimiter.Allow(clientIP(r)) {
 		s.writeError(w, r, apiErrRateLimited)
@@ -264,29 +289,95 @@ func (s *Service) handlePublicReplay(w http.ResponseWriter, r *http.Request) {
 		s.writeNotFoundOr(w, r, err)
 		return
 	}
-	raw, err := gunzipLog(run.Log)
+
+	s.writeJSON(w, http.StatusOK, toReplayView(run))
+}
+
+// handlePublicReplayLog serves the run's event log as the STORED GZIP BYTES.
+//
+// Nothing is decompressed, re-encoded or base64'd: the blob the ingest path
+// wrote goes straight to the ResponseWriter under Content-Encoding: gzip, and
+// every conforming client — every browser, Go's own Transport, curl with
+// --compressed — decodes it into the plain EventLog JSON it always was. That is
+// the whole point. Zone 6 measured the inlined version at 7.5 MiB allocated and
+// 5.5 MiB LIVE per request to hand out a 373 KiB blob; passthrough is ~0.4 MiB.
+//
+// The cost, accepted deliberately: watching a row is now TWO requests instead of
+// one, because a gzip stream cannot be a field inside a JSON object.
+//
+// No Vary: Accept-Encoding. The dictionary routes need it because they choose
+// between two representations; this route has exactly one, always gzip, so
+// claiming the response varies would be false and would only cost caches a
+// dimension.
+//
+// Rate limiting: the SAME per-IP bucket as the metadata route, by construction —
+// one limiter, one key. Giving the new route its own bucket would have doubled
+// what one anonymous IP may command the moment the payload was split in two,
+// which is a refactor quietly loosening a security control. A spectator now
+// spends two tokens per run watched; the default burst of 30 is therefore 15
+// runs, and the memory that burst can command went DOWN, not up.
+func (s *Service) handlePublicReplayLog(w http.ResponseWriter, r *http.Request) {
+	if !s.replayLimiter.Allow(clientIP(r)) {
+		s.writeError(w, r, apiErrRateLimited)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		s.writeError(w, r, err)
+		s.writeError(w, r, apiErrNotFound)
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, replayView{
-		RunID:         run.RunID,
-		DisplayName:   run.DisplayName,
-		Mode:          run.Mode,
-		DurationMs:    run.DurationMs,
-		WordCount:     run.WordCount,
-		Lang:          run.Lang,
-		Setup:         run.Setup,
-		ServerMetrics: run.ServerMetrics,
-		ServerScore:   run.ServerScore,
-		Grade:         run.Grade,
-		AchievedAt:    run.AchievedAt,
-		Log:           raw,
-	})
+	// Eligibility is resolved BEFORE the conditional check, even though a 304
+	// needs no bytes: answering "not modified" for a run the caller may not
+	// watch would be a second, softer answer beside the 404 the access matrix
+	// promises. One query, the same three rules, then caching.
+	gz, err := s.store.PublicReplayLog(r.Context(), id)
+	if err != nil {
+		s.writeNotFoundOr(w, r, err)
+		return
+	}
+
+	etag := `"` + id.String() + `"`
+	h := w.Header()
+	h.Set("Cache-Control", replayLogCacheControl)
+	h.Set("ETag", etag)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	// application/json is the type of the DECODED representation, which is what
+	// Content-Type describes; Content-Encoding says how it arrived.
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Encoding", "gzip")
+	h.Set("Content-Length", strconv.Itoa(len(gz)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(gz)
 }
 
-// clientIP is the rate-limit key for the one unauthenticated endpoint here.
+// etagMatches implements the If-None-Match comparison for our strong ETags:
+// "*" matches anything, otherwise any list member equal to the tag (weak
+// prefixes are tolerated — the weak comparison function is the correct one for
+// If-None-Match, RFC 9110 §13.1.2).
+//
+// internal/replay/http.go carries the same twelve lines for the dictionary
+// assets. They are not shared because the only place to share them from would
+// make the runs domain import the replay domain — dragging goja and the whole
+// vendored core bundle behind a header parser.
+func etagMatches(ifNoneMatch, etag string) bool {
+	if ifNoneMatch == "" {
+		return false
+	}
+	for candidate := range strings.SplitSeq(ifNoneMatch, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP is the rate-limit key for the two unauthenticated endpoints here.
 // RemoteAddr only: the server is expected to sit behind a proxy that sets it,
 // and trusting a forwarded header would make the limit trivially bypassable.
 func clientIP(r *http.Request) string {

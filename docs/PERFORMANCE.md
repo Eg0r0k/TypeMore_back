@@ -123,6 +123,7 @@ Three properties of this rig shape every figure:
 | 6 | one IP's full burst of 30 | 91.9 MiB | 128 MiB | PASS (72%) |
 | 6 | limiter exactness | 30 served, then 10 × 429 | exactly 30 | PASS |
 | 6 | `GetPublicReplay` plan | Index Scan ×3, 0.11 ms | index-anchored, no sort | PASS |
+| 6 | `GetPublicReplayLog` plan | Index Scan ×2 + Index Only Scan, 0.10 ms | index-anchored, no sort | PASS |
 | 7 | relay p99, 50 rooms × 5 clients, 60 s | **13.56 ms** | 50 ms | PASS (27%) |
 | 7 | dropped / duplicated `peer_batch` | **0 / 0** of 599 756 | 0 | PASS |
 | 7 | slow consumer: healthy peers | p99 1 ms, **1.00×** vs control | ≤ 2× | PASS |
@@ -156,8 +157,10 @@ everything else is reported.
 
 4. **Zone 3 — `/me` rank crosses its budget at ~10 000 entries** and reaches
    176 ms at 100 000.
-5. **Zone 6 — the public replay endpoint buffers ~3 copies** of a 2 MiB payload;
-   four cooperating IPs exhaust a 512 MiB instance without tripping the limiter.
+5. **Zone 6 — the public replay endpoint buffered ~3 copies** of a 2 MiB payload;
+   four cooperating IPs could exhaust a 512 MiB instance without tripping the
+   limiter. **Fixed** — the log is a separate route serving the stored gzip
+   bytes, at the documented cost of a second request per watch.
 6. **Zone 5 — the two ingestion caps contradict each other.** The documented
    50 000-event limit is unreachable; the real one is 39 915.
 7. **Zone 4 — `EnumerateLeaderboardCells` evaluates the email gate per row** and
@@ -687,6 +690,11 @@ confirms 20/20 in flight) but it does inflate the 20-way *latency* line.
 
 ## Zone 6 — public replay endpoint
 
+**Resolved: the endpoint was split and the log is now served as stored gzip.**
+The measurements below are the ones that produced that change; they describe the
+single-request, log-inlined shape that no longer exists. The plan rows are
+re-measured against the current pair.
+
 | workload | measured | budget | verdict |
 |---|---|---|---|
 | p50 at 20 concurrent (20/20 achieved) | **149.28 ms** | 250 ms | PASS |
@@ -694,50 +702,68 @@ confirms 20/20 in flight) but it does inflate the 20-way *latency* line.
 | peak heap at 20 concurrent | **80.6 MiB** | 192 MiB | PASS |
 | peak heap, one IP's full burst of 30 | **91.9 MiB** | 128 MiB | PASS (72%) |
 | limiter: served before shedding | **30, then 10 × 429** | exactly 30 | PASS |
-| `GetPublicReplay` plan | Nested Loop ×2 + Index Scan ×3, **0.11 ms** | index-anchored, no sort | PASS |
+| `GetPublicReplay` plan | `Nested Loop ×2 → Index Scan ×3`, **0.11 ms** | index-anchored, no sort | PASS |
+| `GetPublicReplayLog` plan (new) | `Nested Loop ×2 → Index Scan, Index Only Scan, Index Scan`, **0.10 ms** | index-anchored, no sort | PASS |
 
 The plan is 0.11 ms against a ~150 ms request: **the database is not this
-endpoint's cost.** Gunzip and re-encode are.
+endpoint's cost.** Gunzip and re-encode were.
 
-### Finding — it buffers, ~3 copies per concurrent request
+The log route's plan is the metadata route's with one node swapped: dropping
+every column but `r.log` lets the `users` probe fall to an **Index Only Scan**,
+because the join is now only there to enforce eligibility and selects nothing.
+`TestLoadPlanPublicReplay` pins both — watching a row is two requests, and one
+pinned plan would leave half the click unmeasured.
 
-`PublicReplay` returns the 373 KiB gzip blob → `gunzipLog` grows a `[]byte` to
-2.0 MiB → it is wrapped as `json.RawMessage` → `json.NewEncoder(w).Encode(…)`
-**compacts that RawMessage into its own buffer** before a byte reaches the
+### Finding — it buffered, ~3 copies per concurrent request → FIXED
+
+`PublicReplay` returned the 373 KiB gzip blob → `gunzipLog` grew a `[]byte` to
+2.0 MiB → it was wrapped as `json.RawMessage` → `json.NewEncoder(w).Encode(…)`
+**compacted that RawMessage into its own buffer** before a byte reached the
 socket. Measured: **7.5 MiB allocated (3.74×) per request, 5.5 MiB live at once
 (2.73×)**, in only **330 allocations** — a handful of very large buffers, the
-shape of "copy, copy, copy" rather than "stream". Nothing is written until the
-whole 2 MiB envelope is assembled.
+shape of "copy, copy, copy" rather than "stream". Nothing was written until the
+whole 2 MiB envelope was assembled.
 
-### Finding — the unauthenticated burst envelope is 92 MiB per IP
+### Finding — the unauthenticated burst envelope was 92 MiB per IP → FIXED
 
 One IP spending its whole production bucket at once (measured, all 30 genuinely
-in flight) peaks at **91.9 MiB to serve 60 MiB** = 3.1 MiB per in-flight replay.
+in flight) peaked at **91.9 MiB to serve 60 MiB** = 3.1 MiB per in-flight replay.
 The limit is per IP, so **N IPs cost N × 92 MiB**: four cooperating clients
-exhaust a 512 MiB instance without ever tripping a rate limit. The budget passes;
-the margin is one product decision wide.
+exhaust a 512 MiB instance without ever tripping a rate limit. The budget passed;
+the margin was one product decision wide.
 
-**Proposed fix — stream the log instead of buffering it.** Write the envelope by
-hand and pipe the stored blob through a `gzip.Reader` straight into the
-`ResponseWriter`. Cost: ~30 lines of hand-written JSON framing, and the log's
-bytes must be trusted as valid JSON — they already are, since ingestion parsed
-them and stored them verbatim. [INFERENCE] Live heap per request 5.5 MiB →
-~0.4 MiB, a ~13× reduction; the 30-token burst envelope 91.9 MiB → ~12 MiB, and
-the "four IPs kill the instance" arithmetic disappears. **The highest-leverage
-change in zones 5 and 6.**
+### What was done, and what was declined
 
-Cheaper half-measure: write the pre-marshalled envelope with `w.Write` instead of
-`json.NewEncoder(w).Encode`, skipping the encoder's compaction copy — ~2 MiB of
-the 5.5 MiB live, for two lines. Strictly worse than streaming.
+**Applied: `Content-Encoding: gzip` passthrough.** The stored blob goes straight
+to the `ResponseWriter` — no gunzip, no re-compression, no envelope — from a new
+`GET /runs/{id}/replay/log`, while `GET /runs/{id}/replay` keeps the metadata.
+This was listed here as the cheapest option of all (~0.4 MiB, no gunzip) and
+rejected at the time for one reason: the log can no longer be inlined in the
+same JSON object, so watching a row costs **two requests instead of one**. That
+property was traded away deliberately. The shape is documented in
+`docs/LEADERBOARDS.md`.
 
-`Content-Encoding: gzip` passthrough would be cheapest of all (~0.4 MiB, no
-gunzip) but the log could no longer be inlined in the same JSON object, costing
-the endpoint's "one request to watch a row" property. Only if the multi-IP
-exposure becomes real.
+Both routes still share ONE per-IP bucket, so the split did not double what an
+anonymous client may command; a watch spends two tokens, and the burst of 30 is
+now 15 watches whose payload is passthrough rather than three live copies.
 
-**If the handler is not fixed**, reduce the burst from 30 to **10** (~31 MiB per
-IP, under 6% of a 512 MiB instance) — but that is a mitigation for not fixing the
-handler. With streaming, burst 30 costs ~12 MiB and needs no change.
+**Declined: hand-written JSON framing around a `gzip.Reader`.** It preserved the
+one-request property at ~0.4 MiB, but it means writing the envelope by hand and
+trusting the stored bytes as valid JSON inside a hand-rolled frame. Passthrough
+reaches the same memory figure with no framing at all.
+
+**Declined: `w.Write` of a pre-marshalled envelope** (skipping the encoder's
+compaction copy, ~2 MiB of the 5.5 MiB live, two lines). It was always the
+strictly-worse half-measure, and it is moot now.
+
+**Declined: reducing the burst from 30 to 10.** That was the mitigation for *not*
+fixing the handler. The handler is fixed.
+
+The zone 6 load tests now drive `/replay/log`, which is where the payload went,
+and `fetchDiscard` sets `Accept-Encoding` by hand so a client-side gunzip in the
+same process cannot land in the server's heap figure. **The post-split memory
+numbers have not been re-measured** — `make load` was not re-run for this change;
+the 192 MiB and 128 MiB ceilings are unchanged and still assert.
 
 ---
 

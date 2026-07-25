@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -141,8 +142,9 @@ func TestUnrankedShapeNeverRanks(t *testing.T) {
 	assert.Equal(t, http.StatusOK, h.get("/api/v1/runs/"+ingested.ID+"/replay").StatusCode)
 }
 
-// The public replay endpoint is the other half of a watchable board: the row
-// carries a run id, and anyone may fetch that run's setup, log and numbers.
+// The public replay endpoints are the other half of a watchable board: the row
+// carries a run id, one request returns everything needed to set the playback
+// up, and a second returns the log itself.
 func TestPublicReplayServesAnAcceptedRun(t *testing.T) {
 	h := newHarness(t)
 	h.login("watch@example.com", "correct horse battery", "watched")
@@ -164,11 +166,12 @@ func TestPublicReplayServesAnAcceptedRun(t *testing.T) {
 		Mode          string          `json:"mode"`
 		WordCount     *int32          `json:"wordCount"`
 		Lang          string          `json:"lang"`
+		Seed          int64           `json:"seed"`
+		DictHash      string          `json:"dictHash"`
 		Setup         json.RawMessage `json:"setup"`
 		ServerMetrics map[string]any  `json:"serverMetrics"`
 		ServerScore   map[string]any  `json:"serverScore"`
 		Grade         string          `json:"grade"`
-		Log           json.RawMessage `json:"log"`
 	}](t, resp)
 
 	assert.Equal(t, ingested.ID, view.RunID)
@@ -179,27 +182,94 @@ func TestPublicReplayServesAnAcceptedRun(t *testing.T) {
 	assert.Equal(t, "german", view.Lang)
 	assert.Equal(t, "SS", view.Grade)
 
-	// The setup is what regenerates the text, and the log is the run itself:
-	// both must be complete enough to replay client-side without another call.
+	// The setup regenerates the text only together with the seed, and the
+	// dictionary that feeds the generator has to be the one the run was played
+	// against — which is what dictHash lets the client check before it trusts a
+	// single regenerated word.
 	assert.JSONEq(t, mustJSON(t, payload["setup"]), string(view.Setup))
-	assert.JSONEq(t, mustJSON(t, payload["log"]), string(view.Log),
-		"the log must round-trip byte-for-byte through gzip storage")
+	assert.EqualValues(t, payload["seed"], view.Seed)
+	assert.Equal(t, payload["dictHash"], view.DictHash)
 
 	// The server's numbers ride along so a viewer sees the authoritative result.
 	assert.Equal(t, payload["clientScore"].(map[string]any)["total"], view.ServerScore["total"])
 	assert.Equal(t, payload["clientMetrics"].(map[string]any)["wpm"], view.ServerMetrics["wpm"])
 
+	// The log is a SECOND request now, and the metadata must not smuggle it.
+	raw := decodeInto[map[string]any](t, h.get("/api/v1/runs/"+ingested.ID+"/replay"))
+	assert.NotContains(t, raw, "log", "the log has its own route; inlining it is what zone 6 measured")
+
 	// It carries nothing about HOW the run was judged: a spectator gets the
 	// result, not the moderation trail.
-	raw := decodeInto[map[string]any](t, h.get("/api/v1/runs/"+ingested.ID+"/replay"))
 	assert.NotContains(t, raw, "validation")
 	assert.NotContains(t, raw, "clientScore")
 	assert.NotContains(t, raw, "clientMetrics")
+
+	// The log route, through a client that decompresses like a browser does.
+	logResp := h.get("/api/v1/runs/" + ingested.ID + "/replay/log")
+	require.Equal(t, http.StatusOK, logResp.StatusCode)
+	assert.JSONEq(t, mustJSON(t, payload["log"]), string(readBody(t, logResp)),
+		"the log must round-trip byte-for-byte through gzip storage")
 }
 
-// The access matrix. Everything that is not a public, accepted, unbanned run is
-// the same 404 — a spectator must not be able to tell "under review" from
-// "never existed".
+// The log route hands over the STORED BLOB. Not a re-compression of it, not a
+// gunzip-and-regzip, not base64 — the bytes ingestion wrote, with the headers
+// that tell a client what they are.
+//
+// Everything here reads the response with Accept-Encoding set by hand, because
+// Go's Transport only auto-decompresses a body whose Accept-Encoding IT added.
+func TestPublicReplayLogServesTheStoredBytes(t *testing.T) {
+	h := newHarness(t)
+	h.login("rawlog@example.com", "correct horse battery", "rawlogger")
+
+	ingested := decodeInto[struct {
+		ID string `json:"id"`
+	}](t, h.post("/api/v1/runs", goldenPayload(t, "words-clean")))
+	h.replayOnce(t)
+
+	var stored []byte
+	require.NoError(t, h.pool.QueryRow(context.Background(),
+		`SELECT log FROM runs WHERE id = $1`, ingested.ID).Scan(&stored))
+	require.NotEmpty(t, stored)
+
+	path := "/api/v1/runs/" + ingested.ID + "/replay/log"
+	resp := h.getRaw(path, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Equal(t, strconv.Itoa(len(stored)), resp.Header.Get("Content-Length"),
+		"Content-Length must describe the COMPRESSED bytes actually written")
+	assert.Equal(t, "public, max-age=31536000, immutable", resp.Header.Get("Cache-Control"))
+	assert.Equal(t, `"`+ingested.ID+`"`, resp.Header.Get("ETag"))
+
+	body := readBody(t, resp)
+	assert.Equal(t, stored, body, "the body must BE the stored blob, byte for byte")
+
+	// One gunzip must yield JSON. A double-gzipped body would gunzip to gzip
+	// bytes instead, so this is the assertion that "no re-compression" is true
+	// rather than merely intended.
+	var log map[string]any
+	require.NoError(t, json.Unmarshal(gunzip(t, body), &log),
+		"one gunzip must produce the EventLog JSON, not another gzip stream")
+	assert.EqualValues(t, 1, log["version"])
+	assert.NotEmpty(t, log["events"])
+
+	// Immutable means revalidation costs no body.
+	notModified := h.getRaw(path, map[string]string{"If-None-Match": `"` + ingested.ID + `"`})
+	require.Equal(t, http.StatusNotModified, notModified.StatusCode)
+	assert.Empty(t, readBody(t, notModified))
+	assert.Equal(t, `"`+ingested.ID+`"`, notModified.Header.Get("ETag"))
+
+	// A stale validator is served in full again.
+	stale := h.getRaw(path, map[string]string{"If-None-Match": `"not-this-run"`})
+	require.Equal(t, http.StatusOK, stale.StatusCode)
+	assert.Equal(t, stored, readBody(t, stale))
+}
+
+// The access matrix, which BOTH public routes answer identically. Everything
+// that is not a public, accepted, unbanned run is the same 404 — a spectator
+// must not be able to tell "under review" from "never existed", and must not be
+// able to learn it from whichever of the two routes was left behind.
 func TestPublicReplayAccessMatrix(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -230,24 +300,29 @@ func TestPublicReplayAccessMatrix(t *testing.T) {
 				h.ban(userID)
 			}
 
-			// Even the OWNER gets the public answer here: the endpoint is the
+			// Even the OWNER gets the public answer here: the endpoints are the
 			// spectator surface, and their own run stays reachable through the
 			// authenticated ?log=1 path instead.
 			resp := h.get("/api/v1/runs/" + ingested.ID + "/replay")
 			assert.Equal(t, tc.want, resp.StatusCode)
+			logResp := h.get("/api/v1/runs/" + ingested.ID + "/replay/log")
+			assert.Equal(t, tc.want, logResp.StatusCode, "the log route must not be a second access matrix")
+			_ = readBody(t, logResp)
 		})
 	}
 
 	t.Run("nonexistent run", func(t *testing.T) {
 		h := newHarness(t)
-		resp := h.get("/api/v1/runs/00000000-0000-0000-0000-000000000000/replay")
-		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, http.StatusNotFound,
+			h.get("/api/v1/runs/00000000-0000-0000-0000-000000000000/replay").StatusCode)
+		assert.Equal(t, http.StatusNotFound,
+			h.get("/api/v1/runs/00000000-0000-0000-0000-000000000000/replay/log").StatusCode)
 	})
 
 	t.Run("not even a uuid", func(t *testing.T) {
 		h := newHarness(t)
-		resp := h.get("/api/v1/runs/nonsense/replay")
-		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, http.StatusNotFound, h.get("/api/v1/runs/nonsense/replay").StatusCode)
+		assert.Equal(t, http.StatusNotFound, h.get("/api/v1/runs/nonsense/replay/log").StatusCode)
 	})
 }
 
@@ -265,16 +340,19 @@ func TestBanHidesTheBoardRowAndTheReplay(t *testing.T) {
 	const bucket = "time:15000:german:seeded"
 	require.Len(t, h.boardEntries(bucket), 1)
 	require.Equal(t, http.StatusOK, h.get("/api/v1/runs/"+ingested.ID+"/replay").StatusCode)
+	require.Equal(t, http.StatusOK, h.get("/api/v1/runs/"+ingested.ID+"/replay/log").StatusCode)
 
 	h.ban(userID)
 
 	assert.Empty(t, h.boardEntries(bucket), "a banned player must leave every board")
 	assert.Equal(t, http.StatusNotFound, h.get("/api/v1/runs/"+ingested.ID+"/replay").StatusCode)
+	assert.Equal(t, http.StatusNotFound, h.get("/api/v1/runs/"+ingested.ID+"/replay/log").StatusCode)
 
 	// The projection was never touched, so unbanning is instant.
 	h.unban(userID)
 	assert.Len(t, h.boardEntries(bucket), 1)
 	assert.Equal(t, http.StatusOK, h.get("/api/v1/runs/"+ingested.ID+"/replay").StatusCode)
+	assert.Equal(t, http.StatusOK, h.get("/api/v1/runs/"+ingested.ID+"/replay/log").StatusCode)
 }
 
 // A demotion applied to an already-ranked run must take its board slot with it,
