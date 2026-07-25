@@ -14,7 +14,7 @@
 #   make vectors     regenerate the replay golden vectors (read the diff!)
 #   make tools       install golangci-lint into your Go bin
 #   make calibrate   dry-run the replay review policy over stored runs
-#   make revalidate  re-judge runs whose policy_version is behind current
+#   make revalidate  re-judge runs behind the current policy OR core bundle
 #   make rebuild-leaderboards  recompute the boards from accepted runs
 #   make leaderboards          print the board index (bucket=KEY for one board)
 #   make load        run the performance & load suite (docs/PERFORMANCE.md)
@@ -97,9 +97,12 @@ vectors:
 calibrate:
 	go run ./cmd/replayctl calibrate
 
-## revalidate: re-judge runs whose policy_version is behind the current one
-# Bounded and idempotent: applying a decision sets policy_version, so a second
-# pass finds nothing. Run it after bumping CurrentPolicyVersion.
+## revalidate: re-judge runs behind the current policy OR the current bundle
+# Keys on BOTH: policy_version < CurrentPolicyVersion (the rules moved) and
+# bundle_sha <> the vendored bundle's digest (the code that produced the numbers
+# moved). Bounded and idempotent: applying a decision writes both columns, so a
+# second pass finds nothing. Run it after bumping CurrentPolicyVersion or after
+# `make core-bundle`.
 revalidate:
 	go run ./cmd/replayctl revalidate
 

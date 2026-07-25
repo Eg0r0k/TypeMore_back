@@ -183,13 +183,20 @@ func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (in
 	})
 }
 
-// RevalidateBatch re-judges one batch of runs whose policy_version is behind the
-// current one. Same judging path as the queue — the numbers are recomputed from
-// the log, not read back — so a revalidation also picks up a bundle change.
-// Idempotent: a run it touches stops matching the claim.
+// RevalidateBatch re-judges one batch of runs that are no longer current on
+// either axis: policy_version behind CurrentPolicyVersion, or bundle_sha
+// different from the vendored bundle's. Same judging path as the queue — the
+// numbers are recomputed from the log, not read back — so a bundle change is
+// re-judged with the code that now disagrees with the row.
+//
+// bundleSHA is the SAME value Policy.Decide stamps onto every decision, so
+// "what the claim looks for" and "what the apply writes" cannot drift into two
+// digests and revalidate the same rows forever.
+//
+// Idempotent: a run it touches stops matching both arms of the claim.
 func (w *Worker) RevalidateBatch(ctx context.Context, core *Core, log *slog.Logger) (int, error) {
 	return w.runBatch(ctx, core, log, "revalidate batch done", func(decide func(context.Context, PendingRun) Decision) (int, error) {
-		return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Policy.Version, w.cfg.BatchSize, decide)
+		return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Policy.Version, bundleSHA, w.cfg.BatchSize, decide)
 	})
 }
 

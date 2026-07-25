@@ -137,8 +137,9 @@ func (q *fakeQueue) ProcessBatch(ctx context.Context, limit int32, decide func(c
 
 // ProcessStalePolicyBatch has nothing to re-judge in memory: the fake's runs are
 // consumed by ProcessBatch, and the revalidation path is covered against a real
-// database in queue_pg_test.go where policy_version actually exists.
-func (q *fakeQueue) ProcessStalePolicyBatch(context.Context, int16, int32, func(context.Context, PendingRun) Decision) (int, error) {
+// database in queue_pg_test.go where policy_version and bundle_sha actually
+// exist.
+func (q *fakeQueue) ProcessStalePolicyBatch(context.Context, int16, string, int32, func(context.Context, PendingRun) Decision) (int, error) {
 	return 0, nil
 }
 

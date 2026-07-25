@@ -16,15 +16,34 @@ FOR UPDATE SKIP LOCKED
 LIMIT $1;
 
 -- name: ClaimStalePolicyRuns :many
--- The revalidation scan: runs already judged, but under a policy older than the
--- current one (NULL = judged before the policy existed at all). Same locking
--- discipline as the queue, so a revalidation pass and the worker can run at the
--- same time without either seeing the other's rows. Uses runs_stale_policy_idx.
+-- The revalidation scan: runs already judged, but by rules or by CODE that are
+-- no longer current. Two independent reasons to re-judge, because bundle_sha and
+-- policy_version answer different questions (docs/REPLAY.md, "Policy
+-- versioning"):
+--
+--   policy_version behind (or NULL, i.e. judged before the policy existed)
+--       the rules that turned the numbers into a status have moved
+--   bundle_sha not the current one
+--       the code that produced the NUMBERS has moved, so the numbers on the row
+--       are the old bundle's and may disagree with what the client now computes
+--
+-- Keying on policy_version alone left the second class stranded: a re-vendored
+-- bundle would flag honest runs as metric_mismatch and `make revalidate` would
+-- refuse to look at them, because their policy_version was already current.
+--
+-- IS DISTINCT FROM, not <>, so a row judged before bundle_sha was recorded
+-- (NULL) is claimed rather than skipped by three-valued logic.
+--
+-- Same locking discipline as the queue, so a revalidation pass and the worker
+-- can run at the same time without either seeing the other's rows. Uses
+-- runs_stale_policy_idx.
 SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
        log, attempts
 FROM runs
 WHERE status <> 'pending'
-  AND (policy_version IS NULL OR policy_version < @policy_version)
+  AND (policy_version IS NULL
+       OR policy_version < @policy_version
+       OR bundle_sha IS DISTINCT FROM @bundle_sha::text)
 ORDER BY created_at
 FOR UPDATE SKIP LOCKED
 LIMIT @row_limit;

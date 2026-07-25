@@ -123,14 +123,17 @@ SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
        log, attempts
 FROM runs
 WHERE status <> 'pending'
-  AND (policy_version IS NULL OR policy_version < $1)
+  AND (policy_version IS NULL
+       OR policy_version < $1
+       OR bundle_sha IS DISTINCT FROM $2::text)
 ORDER BY created_at
 FOR UPDATE SKIP LOCKED
-LIMIT $2
+LIMIT $3
 `
 
 type ClaimStalePolicyRunsParams struct {
 	PolicyVersion *int16
+	BundleSha     string
 	RowLimit      int32
 }
 
@@ -146,12 +149,29 @@ type ClaimStalePolicyRunsRow struct {
 	Attempts      int16
 }
 
-// The revalidation scan: runs already judged, but under a policy older than the
-// current one (NULL = judged before the policy existed at all). Same locking
-// discipline as the queue, so a revalidation pass and the worker can run at the
-// same time without either seeing the other's rows. Uses runs_stale_policy_idx.
+// The revalidation scan: runs already judged, but by rules or by CODE that are
+// no longer current. Two independent reasons to re-judge, because bundle_sha and
+// policy_version answer different questions (docs/REPLAY.md, "Policy
+// versioning"):
+//
+//	policy_version behind (or NULL, i.e. judged before the policy existed)
+//	    the rules that turned the numbers into a status have moved
+//	bundle_sha not the current one
+//	    the code that produced the NUMBERS has moved, so the numbers on the row
+//	    are the old bundle's and may disagree with what the client now computes
+//
+// Keying on policy_version alone left the second class stranded: a re-vendored
+// bundle would flag honest runs as metric_mismatch and `make revalidate` would
+// refuse to look at them, because their policy_version was already current.
+//
+// IS DISTINCT FROM, not <>, so a row judged before bundle_sha was recorded
+// (NULL) is claimed rather than skipped by three-valued logic.
+//
+// Same locking discipline as the queue, so a revalidation pass and the worker
+// can run at the same time without either seeing the other's rows. Uses
+// runs_stale_policy_idx.
 func (q *Queries) ClaimStalePolicyRuns(ctx context.Context, arg ClaimStalePolicyRunsParams) ([]ClaimStalePolicyRunsRow, error) {
-	rows, err := q.db.Query(ctx, claimStalePolicyRuns, arg.PolicyVersion, arg.RowLimit)
+	rows, err := q.db.Query(ctx, claimStalePolicyRuns, arg.PolicyVersion, arg.BundleSha, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

@@ -72,13 +72,15 @@ func (q *Queue) ProcessBatch(ctx context.Context, limit int32, decide func(conte
 }
 
 // ProcessStalePolicyBatch re-judges runs whose policy_version is behind the
-// current one, with the same locking discipline as the queue. Idempotent by
-// construction: applying the decision sets policy_version, so the row stops
-// matching the claim and a second pass finds nothing.
-func (q *Queue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
+// current one, or whose bundle_sha is not the bundle now vendored, with the
+// same locking discipline as the queue. Idempotent by construction: applying
+// the decision writes both columns, so the row stops matching either arm of the
+// claim and a second pass finds nothing.
+func (q *Queue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, bundleSHA string, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
 	return q.inTx(ctx, decide, func(qtx *replaydb.Queries) ([]replay.PendingRun, error) {
 		rows, err := qtx.ClaimStalePolicyRuns(ctx, replaydb.ClaimStalePolicyRunsParams{
 			PolicyVersion: &policyVersion,
+			BundleSha:     bundleSHA,
 			RowLimit:      limit,
 		})
 		if err != nil {

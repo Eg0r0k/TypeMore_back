@@ -230,13 +230,38 @@ report cannot disagree with what revalidation would do.
 
 ### `make revalidate` — bounded, idempotent
 
-Re-judges runs whose `policy_version` is behind the current one, claiming them
-with the same `FOR UPDATE SKIP LOCKED` discipline as the queue, so it can run
-while the worker is live. Idempotent by construction: applying a decision sets
-`policy_version`, so the row stops matching and a second pass finds nothing.
+Re-judges runs that are no longer current on **either** axis, claiming them with
+the same `FOR UPDATE SKIP LOCKED` discipline as the queue so it can run while
+the worker is live:
 
-It re-runs the **full replay**, not just the scoring rules, so it also picks up a
-bundle change. Pending runs are never touched — those belong to the worker.
+```sql
+WHERE status <> 'pending'
+  AND (policy_version IS NULL          -- judged before the policy existed
+       OR policy_version < @policy_version   -- the RULES moved
+       OR bundle_sha IS DISTINCT FROM @bundle_sha)  -- the CODE moved
+```
+
+It re-runs the **full replay**, not just the scoring rules, so a claimed run is
+re-scored by the bundle that is vendored now.
+
+**The bundle arm is not optional, and it used to be missing.** Keying on
+`policy_version` alone stranded exactly the runs a re-vendored core creates: the
+client computes with new code, the stored numbers came from old code, the
+comparison says `metric_mismatch` — and a policy-only claim declines to look,
+because the rules never moved. Fourteen real runs sat in that state
+(`docs/PERFORMANCE.md`, "the vendored bundle is stale"). `IS DISTINCT FROM`
+rather than `<>` so a row predating the column (`bundle_sha IS NULL`) is claimed
+instead of being skipped by three-valued logic.
+
+The sha is the one `replay.BundleSHA()` returns — the same value the decision
+stamps onto the row — so the claim and the apply cannot drift into two digests
+and re-judge the same rows forever.
+
+Idempotent by construction: applying a decision writes **both** `policy_version`
+and `bundle_sha`, so a re-judged row stops matching both arms and a second pass
+finds nothing (`TestRevalidateIsBoundedAndIdempotent`,
+`TestRevalidateClaimsRunsJudgedByAnotherBundle`). Pending runs are never touched
+— those belong to the worker.
 
 Both read the same `TYPEMORE_` environment as the server, so they judge with the
 deployment's policy, overrides included.

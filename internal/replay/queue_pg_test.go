@@ -263,8 +263,8 @@ func (q countingQueue) ProcessBatch(ctx context.Context, limit int32, decide fun
 	})
 }
 
-func (q countingQueue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
-	return q.inner.ProcessStalePolicyBatch(ctx, policyVersion, limit, func(ctx context.Context, run replay.PendingRun) replay.Decision {
+func (q countingQueue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, bundleSHA string, limit int32, decide func(context.Context, replay.PendingRun) replay.Decision) (int, error) {
+	return q.inner.ProcessStalePolicyBatch(ctx, policyVersion, bundleSHA, limit, func(ctx context.Context, run replay.PendingRun) replay.Decision {
 		q.mu.Lock()
 		q.seen[run.ID]++
 		q.mu.Unlock()
@@ -430,6 +430,71 @@ func TestRevalidateIsBoundedAndIdempotent(t *testing.T) {
 		row := fetchRun(t, pool, id)
 		require.NotNil(t, row.PolicyVersion, "run %s has no policy_version", id)
 		assert.Equal(t, replay.CurrentPolicyVersion, *row.PolicyVersion)
+	}
+}
+
+// The other half of the claim: a run judged by a DIFFERENT BUNDLE is stale even
+// when its policy_version is already current.
+//
+// This is the case that used to be stranded. Re-vendoring the core changes the
+// numbers, the client's fresh numbers stop matching the stored ones, the run
+// comes back flagged metric_mismatch — and a policy-only claim would refuse to
+// look at it forever, because the rules had not moved. Fourteen real runs sat
+// in exactly that state (docs/PERFORMANCE.md, "the vendored bundle is stale").
+func TestRevalidateClaimsRunsJudgedByAnotherBundle(t *testing.T) {
+	pool := newPool(t)
+	user := seedUser(t, pool)
+	ctx := context.Background()
+
+	ids := []uuid.UUID{
+		insertPending(t, pool, user, loadVector(t, "words-clean")),
+		insertPending(t, pool, user, loadVector(t, "time-clean")),
+	}
+
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{BatchSize: 10})
+	core, err := replay.NewCore(replay.DefaultReplayTimeout)
+	require.NoError(t, err)
+
+	n, err := w.RunBatch(ctx, core, discardLogger())
+	require.NoError(t, err)
+	require.Equal(t, len(ids), n)
+
+	// Current policy, current bundle: nothing to do.
+	n, err = w.RevalidateBatch(ctx, core, discardLogger())
+	require.NoError(t, err)
+	require.Zero(t, n)
+
+	// One row judged by an older bundle, one by a bundle that was never
+	// recorded at all — three-valued logic would skip the NULL under `<>`,
+	// which is why the claim says IS DISTINCT FROM.
+	_, err = pool.Exec(ctx, `UPDATE runs SET bundle_sha = 'deadbeef' WHERE id = $1`, ids[0])
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `UPDATE runs SET bundle_sha = NULL WHERE id = $1`, ids[1])
+	require.NoError(t, err)
+
+	// policy_version is deliberately left current on both, so the ONLY thing
+	// that can claim them is the bundle arm.
+	for _, id := range ids {
+		row := fetchRun(t, pool, id)
+		require.NotNil(t, row.PolicyVersion)
+		require.Equal(t, replay.CurrentPolicyVersion, *row.PolicyVersion)
+	}
+
+	n, err = w.RevalidateBatch(ctx, core, discardLogger())
+	require.NoError(t, err)
+	assert.Equal(t, len(ids), n, "a run judged by another bundle is stale, policy or no policy")
+
+	// Applying the decision writes bundle_sha as well as policy_version, so the
+	// second pass is empty — the property that makes `make revalidate` safe to
+	// run twice, now that it has two reasons to claim.
+	n, err = w.RevalidateBatch(ctx, core, discardLogger())
+	require.NoError(t, err)
+	assert.Zero(t, n, "a re-judged run must stop matching BOTH arms of the claim")
+
+	for _, id := range ids {
+		row := fetchRun(t, pool, id)
+		require.NotNil(t, row.BundleSha, "run %s has no bundle_sha", id)
+		assert.Equal(t, replay.BundleSHA(), *row.BundleSha)
 	}
 }
 

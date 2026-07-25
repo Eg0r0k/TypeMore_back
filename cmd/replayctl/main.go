@@ -7,9 +7,11 @@
 //	    nothing. This is the command to run before touching a weight.
 //
 //	replayctl revalidate [-limit N] [-batch N]
-//	    Re-judges runs whose policy_version is behind the current one and writes
-//	    the result. Bounded by -limit, idempotent by construction: applying a
-//	    decision sets policy_version, so a second pass finds nothing.
+//	    Re-judges runs that are no longer current on EITHER axis — policy_version
+//	    behind the current one, or bundle_sha different from the vendored
+//	    bundle's — and writes the result. Bounded by -limit, idempotent by
+//	    construction: applying a decision writes both columns, so a second pass
+//	    finds nothing.
 //
 // Both read the same TYPEMORE_ environment as the server, so they judge with
 // exactly the deployment's policy — weight overrides included. See
@@ -318,8 +320,8 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 	}, logger)
 
 	printPolicy(policy)
-	fmt.Printf("\nre-judging runs with policy_version < %d (limit %d, batch %d)\n\n",
-		policy.Version, limit, batch)
+	fmt.Printf("\nre-judging runs with policy_version < %d OR bundle_sha <> %s (limit %d, batch %d)\n\n",
+		policy.Version, replay.BundleSHA()[:12], limit, batch)
 
 	started := time.Now()
 	total := 0
@@ -335,7 +337,7 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 	}
 	fmt.Printf("\nrevalidated %d run(s) in %s\n", total, time.Since(started).Round(time.Millisecond))
 	if total == 0 {
-		fmt.Println("nothing was stale: every judged run is already at the current policy")
+		fmt.Println("nothing was stale: every judged run is already at the current policy AND the current bundle")
 	}
 	return nil
 }

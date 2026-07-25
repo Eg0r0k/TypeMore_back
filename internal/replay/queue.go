@@ -70,10 +70,12 @@ type Queue interface {
 	ProcessBatch(ctx context.Context, limit int32, decide func(context.Context, PendingRun) Decision) (int, error)
 
 	// ProcessStalePolicyBatch is the same unit of work over runs that were
-	// already judged, but under a policy older than policyVersion. It is what
-	// `make revalidate` drives, and it is idempotent by construction: a run
-	// whose policy_version reaches the current one stops matching.
-	ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, limit int32, decide func(context.Context, PendingRun) Decision) (int, error)
+	// already judged, but by rules or by code that are no longer current:
+	// policy_version behind policyVersion, or bundle_sha not bundleSHA. It is
+	// what `make revalidate` drives, and it is idempotent by construction —
+	// applying a decision writes BOTH columns, so a re-judged run stops
+	// matching either arm of the claim.
+	ProcessStalePolicyBatch(ctx context.Context, policyVersion int16, bundleSHA string, limit int32, decide func(context.Context, PendingRun) Decision) (int, error)
 }
 
 // CalibrationRun is a judged run as the read-only calibration pass sees it: the
