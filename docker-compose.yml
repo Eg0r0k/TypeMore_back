@@ -39,6 +39,12 @@ services:
       TYPEMORE_GITHUB_CLIENT_SECRET: "${TYPEMORE_GITHUB_CLIENT_SECRET:-}"
       TYPEMORE_GOOGLE_CLIENT_ID: "${TYPEMORE_GOOGLE_CLIENT_ID:-}"
       TYPEMORE_GOOGLE_CLIENT_SECRET: "${TYPEMORE_GOOGLE_CLIENT_SECRET:-}"
+      # Turnstile: same rule as the OAuth secrets — never hard-coded, taken from
+      # your local (gitignored) .env or shell env. EMPTY (the default) disables
+      # the captcha entirely, which is what keeps the stack runnable with no
+      # Cloudflare account. Cloudflare's always-pass test secret for local work
+      # is 1x0000000000000000000000000000000AA; see docs/AUTH.md.
+      TYPEMORE_TURNSTILE_SECRET: "${TYPEMORE_TURNSTILE_SECRET:-}"
     depends_on:
       postgres:
         condition: service_healthy
