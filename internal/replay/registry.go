@@ -23,11 +23,16 @@ const dictsDir = "dicts"
 // CatalogueEntry is one row of GET /api/v1/dictionaries — the catalogue clients
 // use to pick a language and to learn the hash its body is addressed by.
 type CatalogueEntry struct {
-	// Lang is the dictionary's code, i.e. its file name without .json. This is
-	// the value that travels as `lang` in run and match payloads.
+	// Lang is the dictionary's canonical key, i.e. its file name without
+	// .json. This is the ONLY thing that travels: it is what a run submission,
+	// a match setting and a leaderboard bucket key all carry. Clients index on
+	// it and must never render it.
 	Lang string `json:"lang"`
-	// Name is the dictionary's own display name (a dictionary may be named
-	// "russian_1k" while its code is "russian").
+	// Name is the human display name of the language — presentation data owned
+	// by THIS catalogue, not by the dictionary file and not by the client. It
+	// comes from displayNames, an explicit table (see its comment for why it is
+	// a table and not a transformation of Lang), so the picker shows
+	// "CSS (code)" rather than the key it sends back.
 	Name string `json:"name"`
 	// DictHash is the core's FNV-1a fingerprint of the word list, and the path
 	// segment of the body: /static/dictionaries/{dictHash}.json.
@@ -62,11 +67,68 @@ type dictDoc struct {
 	Words []string `json:"words"`
 }
 
+// displayNames maps a canonical language key to the human name the catalogue
+// publishes. It is an explicit table on purpose, and the two halves of that
+// purpose are worth stating separately.
+//
+// It is explicit because a display name is NOT derivable. "code_css" is spoken
+// "CSS (code)", "arabian" is spoken "Arabic", "russian_empire" is spoken
+// "Russian (pre-reform)" and "chinese" is spoken "Chinese (simplified)".
+// Title-casing the key and swapping underscores for spaces produces "Code Css",
+// "Arabian" and "Russian Empire" — three wrong answers dressed as an algorithm.
+// Serving the key raw is the same bug with the disguise removed: it is how a
+// language picker came to offer the user "css_code".
+//
+// It lives HERE because the name is presentation data owned by the server, and
+// the catalogue is the server's one statement about a language. The dictionary
+// FILE also carries a `name`, but that is the bundle's `dictName` — an internal
+// corpus label ("russian_1k", "arabic") that is either the key verbatim or a
+// vendoring detail. Reading it as a display name is what put raw keys in the UI.
+//
+// The key naming rule this table encodes (plain languages plain, every code
+// dictionary in the code_<lang> family) is documented in docs/DICTIONARIES.md.
+// Rows exist for quote-only languages (code_javascript, code_python) and for
+// code_go, which is vendored ahead of its dictionary: an extra row costs
+// nothing, while a MISSING row is a startup error — see displayName.
+var displayNames = map[string]string{
+	"english":             "English",
+	"french":              "French",
+	"russian":             "Russian",
+	"russian_empire":      "Russian (pre-reform)",
+	"german":              "German",
+	"japanese":            "Japanese",
+	"arabian":             "Arabic",
+	"chinese":             "Chinese (simplified)",
+	"traditional_chinese": "Chinese (traditional)",
+	"code_css":            "CSS (code)",
+	"code_javascript":     "JavaScript (code)",
+	"code_python":         "Python (code)",
+	"code_go":             "Go (code)",
+}
+
+// displayName resolves a dictionary's catalogue name, or fails.
+//
+// There is deliberately no fallback. Falling back to the key is not a
+// degradation, it is the original bug: it puts "code_css" in front of a user
+// and looks like a working catalogue while doing it. Failing here instead means
+// vendoring a dictionary without naming it cannot start the server, which turns
+// a silent UI regression into a build-time omission the author sees at once.
+func displayName(lang string) (string, error) {
+	name, ok := displayNames[lang]
+	if !ok {
+		return "", fmt.Errorf(
+			"replay: dictionary %q has no display name: add a row to displayNames in registry.go "+
+				"(the catalogue owns the human name; it is never derived from the key)", lang)
+	}
+	return name, nil
+}
+
 // NewRegistry seeds the registry from the embedded dictionaries, computing every
 // fingerprint through the goja bundle. Any problem — unparseable file, empty
-// word list, or two dictionaries hashing to the same value — is a startup
-// error: a half-seeded catalogue would hand clients a language they cannot
-// fetch, or a hash that resolves to the wrong words.
+// word list, a language with no display name, or two dictionaries hashing to
+// the same value — is a startup error: a half-seeded catalogue would hand
+// clients a language they cannot fetch, a hash that resolves to the wrong
+// words, or a row the picker can only render as a raw key.
 func NewRegistry(core *Core) (*Registry, error) {
 	files, err := fs.ReadDir(dictFS, dictsDir)
 	if err != nil {
@@ -115,11 +177,19 @@ func loadDict(core *Core, fileName string) (entry, error) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return entry{}, fmt.Errorf("replay: parse dictionary %q: %w", lang, err)
 	}
+	// The file's own `name` is the bundle's dictName, not a display name — the
+	// catalogue's name comes from displayNames. It is still required to be
+	// present, because the body is served verbatim and the core reads it.
 	if doc.Name == "" {
 		return entry{}, fmt.Errorf("replay: dictionary %q has no name", lang)
 	}
 	if len(doc.Words) == 0 {
 		return entry{}, fmt.Errorf("replay: dictionary %q has no words", lang)
+	}
+
+	name, err := displayName(lang)
+	if err != nil {
+		return entry{}, err
 	}
 
 	hash, err := core.DictVersion(doc.Words)
@@ -135,7 +205,7 @@ func loadDict(core *Core, fileName string) (entry, error) {
 	return entry{
 		CatalogueEntry: CatalogueEntry{
 			Lang:      lang,
-			Name:      doc.Name,
+			Name:      name,
 			DictHash:  hash,
 			WordCount: len(doc.Words),
 			Bytes:     len(raw),

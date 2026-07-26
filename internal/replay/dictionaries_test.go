@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path"
 	"strconv"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -108,13 +109,62 @@ func TestCatalogueListsEverySeededDictionary(t *testing.T) {
 		var doc dictDoc
 		require.NoError(t, json.Unmarshal(raw, &doc))
 
-		assert.Equal(t, doc.Name, e.Name, "%s: name", lang)
+		// The name is the catalogue's, not the file's: displayNames owns it.
+		assert.Equal(t, displayNames[lang], e.Name, "%s: name", lang)
 		assert.Len(t, doc.Words, e.WordCount, "%s: wordCount", lang)
 		assert.Equal(t, len(raw), e.Bytes, "%s: bytes", lang)
 
 		hash, err := core.DictVersion(doc.Words)
 		require.NoError(t, err)
 		assert.Equal(t, hash, e.DictHash, "%s: dictHash must come from the core bundle", lang)
+	}
+}
+
+// The catalogue's `name` is a human display name owned by the server, and the
+// key is the only thing that travels. Two separate failures hide behind one
+// symptom here, so both are asserted: a picker that renders `lang` shows the
+// user "code_css", and a catalogue that derives the name from the key shows the
+// user "Code Css". Neither is a name, and both looked like working code.
+func TestCatalogueNamesAreDisplayNamesNotKeys(t *testing.T) {
+	_, reg, _ := newTestServer(t)
+
+	for _, e := range reg.Catalogue() {
+		assert.NotEqual(t, e.Lang, e.Name,
+			"%s: the catalogue is publishing the raw key as its display name", e.Lang)
+	}
+
+	byLang := make(map[string]string)
+	for _, e := range reg.Catalogue() {
+		byLang[e.Lang] = e.Name
+	}
+	// Spot the entries whose name no transformation of the key could produce.
+	assert.Equal(t, "CSS (code)", byLang["code_css"])
+	assert.Equal(t, "Arabic", byLang["arabian"])
+	assert.Equal(t, "Russian (pre-reform)", byLang["russian_empire"])
+	assert.Equal(t, "Chinese (simplified)", byLang["chinese"])
+}
+
+// A dictionary with no row in displayNames must fail loudly at construction.
+// The tempting alternative — fall back to the key — is not a lesser evil, it is
+// precisely the bug: it ships a catalogue that looks fine and puts a raw key in
+// front of a user. Vendoring a dictionary and forgetting to name it has to be
+// impossible to miss, so it is an error and not a default.
+func TestADictionaryWithNoDisplayNameIsAStartupError(t *testing.T) {
+	name, err := displayName("code_rust") // vendored in this test's imagination only
+	require.Error(t, err)
+	assert.Empty(t, name, "a failed lookup must not hand back something renderable")
+	assert.Contains(t, err.Error(), "code_rust")
+	assert.Contains(t, err.Error(), "displayNames")
+
+	// Every embedded dictionary does have one — that is the invariant the error
+	// above protects, checked against the real embedded set rather than assumed.
+	files, err := dictFS.ReadDir(dictsDir)
+	require.NoError(t, err)
+	for _, f := range files {
+		lang := strings.TrimSuffix(f.Name(), ".json")
+		got, err := displayName(lang)
+		require.NoError(t, err, "embedded dictionary %q has no display name", lang)
+		assert.NotEmpty(t, got)
 	}
 }
 
