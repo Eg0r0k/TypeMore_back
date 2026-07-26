@@ -747,7 +747,8 @@ var TypeMoreCore = (() => {
           message: `quote ${quote.quoteId} text hash mismatch: context=${context.dictVersion} actual=${actualHash}`
         });
       }
-      const words2 = quote.text.split(" ").filter((word) => word.length > 0);
+      const normalized = quote.text.replace(/ *(\r\n|\r|\n) */g, "\n ");
+      const words2 = normalized.split(" ").filter((word) => word.length > 0);
       if (words2.length === 0) {
         return err({ kind: "EmptyQuote", message: `quote ${quote.quoteId} has no typeable words` });
       }
