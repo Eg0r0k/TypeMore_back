@@ -33,6 +33,54 @@ language" below. There is no runtime loading path and deliberately so: a
 dictionary the server could pick up without a deploy is a dictionary whose hash
 nobody froze.
 
+## Naming contract
+
+**This is binding for every language added from here on.** A dictionary key is
+not a label you pick per file; it is an identifier that gets written into runs,
+match settings and leaderboard bucket keys, and once written it is expensive to
+change. So there is one rule and it has two clauses:
+
+- a **plain language** gets a **plain key**: `english`, `french`, `russian`,
+  `russian_empire`, `german`, `japanese`, `arabian`, `chinese`,
+  `traditional_chinese`;
+- a **code dictionary** gets a `code_<lang>` key — the family, never a variant
+  of it: `code_css`, `code_javascript`, `code_python`, `code_go`.
+
+`code_<lang>` and not `<lang>_code` because a common prefix sorts and filters:
+the catalogue is ordered by key, so every code dictionary lands together, and
+"is this a code language?" is a prefix test rather than a list somebody has to
+maintain. Upstream (monkeytype) uses the same shape, which is the second reason:
+a vendored corpus whose id already matches needs no mapping row.
+
+`css_code` was the one key that broke both clauses, and it broke them
+expensively — the vendored quote corpus is `code_css.json`, so the manifest
+carried a rename purely to disagree with itself. It is now `code_css`
+everywhere. Its `dict_hash` did not move (55ccd317): the hash is FNV-1a over the
+WORD LIST, so no key can reach it, and
+`TestRenamingADictionaryKeyDoesNotMoveItsHash` asserts exactly that — which is
+what made the rename safe for runs already recorded against it.
+
+### `lang` travels; `name` is shown
+
+These are two different things and conflating them is what put a raw key in
+front of a user.
+
+- **`lang` is the key.** It is the only identifier that moves: it is submitted
+  with a run, frozen into match settings, and formatted into the bucket key by
+  `leaderboard.Bucket.Key`. A client stores it, sends it back, and compares it.
+  A client must **never render it**.
+- **`name` is the display name**, and the **server owns it**. It comes from
+  `displayNames` in `internal/replay/registry.go`, an explicit table — `code_css`
+  → "CSS (code)", `arabian` → "Arabic", `russian_empire` →
+  "Russian (pre-reform)", `chinese` → "Chinese (simplified)". It is explicit
+  because a display name cannot be computed: title-casing the key yields
+  "Code Css" and "Russian Empire", which is the same wrong answer as showing the
+  key, only better disguised.
+
+A dictionary whose key has no row in that table is a **startup failure**, not a
+fallback to the key. Falling back is not a lesser failure mode — it is the
+original bug, a catalogue that looks healthy while offering the user an id.
+
 ## Endpoints
 
 Both are **public** — no session, no `Origin` check. Dictionaries are static
@@ -48,15 +96,16 @@ assets that guests need too. Both answer with the configured CORS origin
 
 ```json
 [
-  { "lang": "german",  "name": "german",     "dictHash": "804728e8", "wordCount": 197,  "bytes": 3003  },
-  { "lang": "russian", "name": "russian_1k", "dictHash": "f5aacfd2", "wordCount": 1003, "bytes": 20411 }
+  { "lang": "german",   "name": "German",     "dictHash": "804728e8", "wordCount": 197,  "bytes": 3003  },
+  { "lang": "russian",  "name": "Russian",    "dictHash": "f5aacfd2", "wordCount": 1003, "bytes": 20411 },
+  { "lang": "code_css", "name": "CSS (code)", "dictHash": "55ccd317", "wordCount": 57,   "bytes": 1279  }
 ]
 ```
 
 | Field | Meaning |
 |---|---|
-| `lang` | The language **code** — the file's basename, and the value that travels as `lang` in run/match payloads |
-| `name` | The dictionary's own display name; it may differ from the code (`russian` → `russian_1k`) |
+| `lang` | The canonical **key** — the file's basename. The only thing that travels: run submissions, match settings and leaderboard bucket keys all carry it. Clients index on it and **never render it** |
+| `name` | The **human display name**, owned by this server (`displayNames` in `internal/replay/registry.go`). Presentation data, never a key: it is what a picker shows, and it is not derivable from `lang` |
 | `dictHash` | FNV-1a fingerprint of the word list, and the address of the body |
 | `wordCount` | Number of words in the list |
 | `bytes` | Exact length of the uncompressed body |
@@ -118,29 +167,41 @@ Everything is built once, at startup, and a request only copies bytes:
   per-request compression.
 - The catalogue JSON is marshalled and gzipped once, the same way.
 
-Seeding is strict: an unparseable file, a nameless or wordless dictionary, or two
-dictionaries hashing to the same value is a **startup failure**. A half-seeded
-catalogue would advertise a language whose body 404s, or a hash that resolves to
-the wrong words.
+Seeding is strict: an unparseable file, a nameless or wordless dictionary, a
+language with **no row in `displayNames`**, or two dictionaries hashing to the
+same value is a **startup failure**. A half-seeded catalogue would advertise a
+language whose body 404s, a hash that resolves to the wrong words, or a row a
+picker can only render as a raw key.
 
 ## Adding a language
 
-1. Drop `internal/replay/dicts/<lang>.json` in place:
+1. Pick the key by the naming contract above — plain language, plain key; code
+   dictionary, `code_<lang>`. The key is the file's basename and it is what will
+   be written into runs and bucket keys, so it is the one decision here that is
+   expensive to revisit.
+
+2. Drop `internal/replay/dicts/<lang>.json` in place:
 
    ```json
    { "name": "esperanto", "bcp47": "eo", "words": ["saluton", "mondo", "..."] }
    ```
 
    `name` and `words` are required. `bcp47`, `rightToleft`, and anything else you
-   add ride along untouched — the body is served verbatim.
+   add ride along untouched — the body is served verbatim. Note that the file's
+   `name` is the core bundle's `dictName`, an internal corpus label — it is
+   **not** the catalogue's display name and is never shown to anyone.
 
-2. Restart the server. The registry picks the file up, computes its `dictHash`
+3. Add the display name to `displayNames` in `internal/replay/registry.go`. This
+   is not optional and there is no fallback: without it, the registry refuses to
+   build and the server does not start.
+
+4. Restart the server. The registry picks the file up, computes its `dictHash`
    through the goja bundle, pre-compresses it, and the catalogue lists it. There
-   is no hash to write down and no code to touch. (The dictionaries are embedded
-   in the binary, so "restart" means rebuild the binary/image — `make build` or
+   is no hash to write down. (The dictionaries are embedded in the binary, so
+   "restart" means rebuild the binary/image — `make build` or
    `docker compose build app`.)
 
-3. Add the new `lang → dictHash` pair to `publishedHashes` in
+5. Add the new `lang → dictHash` pair to `publishedHashes` in
    `internal/replay/dictionaries_test.go`. That map is what freezes it (below).
 
 Removing a language is the same breaking change as editing one — see below.
@@ -168,6 +229,23 @@ keeps resolving; old runs keep replaying.
 `TestPublishedHashesAreImmutable` is the tripwire: it pins every published
 `lang → dictHash` pair and fails if one moves or disappears. When it fails,
 **revert the dictionary edit — never update the golden value.**
+
+### A key rename is a different animal
+
+Renaming a language's **key** does not touch its hash, because the hash never
+saw the key: `dictVersion` is FNV-1a over the word list and nothing else. So
+`css_code` → `code_css` left 55ccd317 exactly where it was, every run recorded
+against it still resolves to the same bytes, and
+`TestRenamingADictionaryKeyDoesNotMoveItsHash` asserts that from the words alone
+rather than leaving it as an argument.
+
+What a rename *does* touch is every place the key was **stored**: `runs.lang`,
+`quotes.lang`, `matches.lang` and the frozen `matches.settings`, and the third
+component of `leaderboard_entries.bucket_key`. `db/migrations/00010` rewrites
+all five in one transaction — and it is a one-time destructive rewrite with no
+dual-read window, which is legal only because there is no production data yet.
+Once there is, a key rename is a new key plus a migration path, and the naming
+contract above exists so it never has to be either.
 
 ## Related
 
