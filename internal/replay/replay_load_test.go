@@ -45,10 +45,19 @@ const (
 
 // keystrokeMeanMs is the base gap between synthesised keystrokes; the jitter
 // below multiplies it by 0.55..1.85. At 55 ms no interval lands under the core's
-// 15 ms rollover threshold and the 50 000-event fixture spans under an hour of
-// game time — a plausible log rather than merely a parseable one, so the flags
-// being measured are the run's and not the generator's.
+// 15 ms rollover threshold and even the max-event fixture spans a plausible
+// stretch of game time — a plausible log rather than merely a parseable one, so
+// the flags being measured are the run's and not the generator's.
 const keystrokeMeanMs = 55.0
+
+// loadQuotes is the quote registry these fixtures run against: empty, because
+// every fixture here is a SEEDED run. Judge needs a resolver; it never reaches
+// this one.
+type loadQuotes struct{}
+
+func (loadQuotes) ResolveQuote(context.Context, uuid.UUID) (string, string, bool, error) {
+	return "", "", false, nil
+}
 
 // realisticMeanMs paces the 60 s baseline so its ~500 keystrokes fill the run
 // instead of finishing in half of it and tripping trailing-afk.
@@ -128,12 +137,13 @@ func coreGeneratedWords(t *testing.T, core *Core, dictHash string, body []byte, 
 // one insert per grapheme, one commit per word, stopping at maxEvents.
 //
 // It stops mid-run on purpose for the large fixtures. The two ingestion caps
-// cannot both be saturated by a FINISHED run — 10 000 German words are ~70 000
-// keystrokes, well past the 50 000-event cap — so the run that maximises both is
-// a 10 000-word generation abandoned partway through. That is a legal run
-// (nothing requires a player to finish), and it is the expensive one: the fold
-// cost is a function of event count and the generation cost of word count,
-// regardless of whether the last word was committed.
+// cannot both be saturated by a FINISHED run — 10 000 German words are ~79 000
+// keystrokes, short of the 120 000-event cap but well past what a finished run
+// needs — so the run that maximises both is a 10 000-word generation abandoned
+// partway through. That is a legal run (nothing requires a player to finish),
+// and it is the expensive one: the fold cost is a function of event count and
+// the generation cost of word count, regardless of whether the last word was
+// committed.
 func typedLog(words []string, maxEvents int, meanMs float64, seed uint64) perf.EventLog {
 	rng := rand.New(rand.NewPCG(seed, 0x5eed))
 	events := make([]perf.Event, 0, maxEvents)
@@ -242,7 +252,7 @@ func buildFixture(t *testing.T, core *Core, reg *Registry, dictHash, lang string
 	}
 
 	// The POST body this run would have arrived in, so the measurement can be
-	// read against the 2 MiB ingestion cap.
+	// read against the ingestion body cap.
 	payload := map[string]any{
 		"mode": spec.mode, "lang": lang, "seed": fixtureSeed, "dictHash": dictHash,
 		"scoreVersion": 2, "setup": setup,
@@ -284,14 +294,14 @@ func judgeSamples(t *testing.T, core *Core, reg *Registry, f fixture, n int) (sa
 
 	var warm Decision
 	allocBytes, allocs = perf.Delta(func() {
-		warm = Judge(context.Background(), core, reg, DefaultPolicy(), f.run)
+		warm = Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), f.run)
 	})
 	requireReplayed(t, f, warm)
 
 	samples = make([]time.Duration, 0, n)
 	for range n {
 		started := time.Now()
-		d := Judge(context.Background(), core, reg, DefaultPolicy(), f.run)
+		d := Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), f.run)
 		samples = append(samples, time.Since(started))
 		requireReplayed(t, f, d)
 	}
@@ -424,25 +434,26 @@ func testCore(t *testing.T, timeout time.Duration) (*Core, *Registry, string, st
 // be asked to replay, against the 5 s interrupt budget that bounds one core
 // call.
 //
-// Two fixtures, because the two documented ceilings do not meet. Ingestion caps
-// the body at 2 MiB and the log at 50 000 events, but 50 000 events marshal to
-// more than 2 MiB, so the body cap binds first: the worker can be HANDED at most
-// ~40 000 events, while the validator's own limit is 50 000. Both are measured —
-// the smaller one is the real worst case, the larger one is what the documented
-// caps promise.
+// Two fixtures, because the two documented ceilings still do not meet — but the
+// ordering has flipped, deliberately (docs/RUNS.md, "Caps"). The EVENT cap is
+// now the operative one: 120 000 events marshal to ~6.1 MiB, inside the 6.5 MiB
+// body cap, so the worker can be handed the full documented log. The two specs
+// therefore converge, and both are kept: if a future encoding change makes the
+// body cap bind again, the first fixture shrinks below the second and the gap
+// is visible in the report instead of silent.
 func TestLoadReplayMaxRun(t *testing.T) {
 	core, reg, dictHash, lang := testCore(t, measureTimeout)
 
 	submittable := perf.SubmittableEvents(uint64(fixtureSeed))
 	specs := []runSpec{{
-		name:       fmt.Sprintf("max-submittable (%d events, 2 MiB body ceiling)", submittable),
+		name:       fmt.Sprintf("max-submittable (%d events, body ceiling)", submittable),
 		mode:       "words",
 		wordCount:  perf.MaxWordCount,
 		durationMs: perf.MaxDurationMs,
 		maxEvents:  submittable,
 		meanMs:     keystrokeMeanMs,
 	}, {
-		name:       "max-events (50k, validator ceiling, over the body cap)",
+		name:       fmt.Sprintf("max-events (%d, validator ceiling)", perf.MaxEvents),
 		mode:       "words",
 		wordCount:  perf.MaxWordCount,
 		durationMs: perf.MaxDurationMs,
@@ -506,7 +517,7 @@ func TestLoadReplayMaxRunUnderProductionTimeout(t *testing.T) {
 	prod, prodReg, _, _ := testCore(t, DefaultReplayTimeout)
 
 	started := time.Now()
-	d := Judge(context.Background(), prod, prodReg, DefaultPolicy(), f.run)
+	d := Judge(context.Background(), prod, prodReg, loadQuotes{}, DefaultPolicy(), f.run)
 	elapsed := time.Since(started)
 
 	var doc validationDoc
@@ -541,7 +552,7 @@ func TestLoadReplayEventScaling(t *testing.T) {
 		})
 
 		started := time.Now()
-		d := Judge(context.Background(), core, reg, DefaultPolicy(), f.run)
+		d := Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), f.run)
 		elapsed := time.Since(started)
 		requireReplayed(t, f, d)
 
@@ -584,7 +595,7 @@ func TestLoadReplayCostShape(t *testing.T) {
 		})
 
 		started := time.Now()
-		d := Judge(context.Background(), core, reg, DefaultPolicy(), f.run)
+		d := Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), f.run)
 		elapsed := time.Since(started)
 		requireReplayed(t, f, d)
 
@@ -666,11 +677,11 @@ func TestLoadReplayRealisticRun(t *testing.T) {
 	// per-event cost cannot be blamed on the generator.
 	v := firstVector(t, "words-clean")
 	golden := v.pendingRun(t)
-	Judge(context.Background(), core, reg, DefaultPolicy(), golden)
+	Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), golden)
 	var log perf.EventLog
 	require.NoError(t, json.Unmarshal(v.Payload.Log, &log))
 	started := time.Now()
-	Judge(context.Background(), core, reg, DefaultPolicy(), golden)
+	Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), golden)
 	goldenElapsed := time.Since(started)
 	perf.Report(t, replayZone, "golden vector words-clean (cross-check)", fmt.Sprintf(
 		"%v for %d events, %.3fms/event", goldenElapsed.Round(time.Microsecond), len(log.Events),
@@ -714,11 +725,11 @@ func TestLoadReplayThroughput(t *testing.T) {
 		batch[i].ID = uuid.New()
 	}
 
-	Judge(context.Background(), core, reg, DefaultPolicy(), f.run) // warm
+	Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), f.run) // warm
 
 	started := time.Now()
 	for i := range batch {
-		requireReplayed(t, f, Judge(context.Background(), core, reg, DefaultPolicy(), batch[i]))
+		requireReplayed(t, f, Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), batch[i]))
 	}
 	elapsed := time.Since(started)
 	rate := float64(runs) / elapsed.Seconds()
@@ -767,7 +778,7 @@ func TestLoadReplayStructuralWorstCase(t *testing.T) {
 		Log:           perf.Gzip(raw),
 	}
 
-	d := Judge(context.Background(), core, reg, DefaultPolicy(), run) // warm
+	d := Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), run) // warm
 	var doc validationDoc
 	require.NoError(t, json.Unmarshal(d.Validation, &doc))
 	require.Empty(t, d.LastError, "the structural fixture must be judged, not fail to replay")
@@ -775,7 +786,7 @@ func TestLoadReplayStructuralWorstCase(t *testing.T) {
 	const reps = 5
 	started := time.Now()
 	for range reps {
-		Judge(context.Background(), core, reg, DefaultPolicy(), run)
+		Judge(context.Background(), core, reg, loadQuotes{}, DefaultPolicy(), run)
 	}
 	each := time.Since(started) / reps
 

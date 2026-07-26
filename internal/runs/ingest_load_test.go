@@ -59,14 +59,16 @@ var (
 func TestLoadIngestAtTheCap(t *testing.T) {
 	body, events := capBody(t)
 
-	// The fixture itself is a finding. The documented event cap (50 000) and the
-	// documented body cap (2 MiB) contradict each other, and this records by how
-	// much before measuring anything.
-	overCap := perf.MustJSON(perf.MaxEventsPayload(loadSeed))
-	perf.Report(t, zone5, "documented event cap (50000 events) marshals to",
-		fmt.Sprintf("%s — %.2f× the %s body cap, so it is UNSUBMITTABLE",
-			perf.MiB(uint64(len(overCap))),
-			float64(len(overCap))/float64(perf.MaxBodyBytes),
+	// The fixture itself is a finding. It used to be that the documented event
+	// cap and the documented body cap contradicted each other — 50 000 events
+	// marshalled past 2 MiB, so the event cap was unreachable. They are now
+	// ordered: the event cap is what a well-formed log runs into, and the body
+	// cap sits above it. This records the remaining gap before measuring.
+	atEventCap := perf.MustJSON(perf.MaxEventsPayload(loadSeed))
+	perf.Report(t, zone5, fmt.Sprintf("documented event cap (%d events) marshals to", perf.MaxEvents),
+		fmt.Sprintf("%s — %.2f× the %s body cap, so it IS submittable",
+			perf.MiB(uint64(len(atEventCap))),
+			float64(len(atEventCap))/float64(perf.MaxBodyBytes),
 			perf.MiB(perf.MaxBodyBytes)))
 	perf.Report(t, zone5, "largest submittable body",
 		fmt.Sprintf("%d bytes (%s, %.1f%% of cap) carrying %d events",

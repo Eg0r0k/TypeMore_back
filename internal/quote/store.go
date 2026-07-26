@@ -121,6 +121,38 @@ type Store interface {
 	ByID(ctx context.Context, id uuid.UUID) (Quote, error)
 }
 
+// --- the replay side of the domain ---
+
+// ReplayResolver adapts this read model to the narrow resolver the replay
+// worker declares at its own consumer end (`replay.QuoteResolver`).
+//
+// It exists so the dependency runs ONE way. `internal/replay` owns the goja
+// bundle that this package hashes text with; if it also imported this package
+// to read a quote back, the two would be mutually dependent for no reason. So
+// the seam speaks primitives only — id in, bytes and digest out — exactly as
+// DictVersioner below speaks primitives in the other direction.
+//
+// The (value, ok, err) shape mirrors `replay.Registry.Body`, and the split
+// matters: a quote that does not exist is a run the server cannot judge yet
+// (ok=false, flagged), while a database that will not answer is a transient
+// failure to retry (err). Collapsing them would turn an outage into a wave of
+// permanent verdicts.
+type ReplayResolver struct{ Store Store }
+
+// ResolveQuote returns the stored text and text_hash of one quote, superseded
+// revisions included — a run played on a since-retired revision must replay
+// forever, which is the whole reason ByID serves them.
+func (r ReplayResolver) ResolveQuote(ctx context.Context, id uuid.UUID) (text, textHash string, ok bool, err error) {
+	q, err := r.Store.ByID(ctx, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return "", "", false, nil
+	case err != nil:
+		return "", "", false, err
+	}
+	return q.Text, q.TextHash, true, nil
+}
+
 // --- the import side of the domain ---
 
 // DictVersioner is the corpus-digest hasher: satisfied by *replay.Core, which

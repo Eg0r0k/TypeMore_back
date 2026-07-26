@@ -77,21 +77,44 @@ func TestGeneratedLogIsStructurallyValid(t *testing.T) {
 // If that claim drifts — a cap changes, the generator shrinks — the zones stop
 // measuring the worst case without anyone noticing.
 //
-// It also pins a discrepancy found while building them: the documented event cap
-// (50 000) and the documented body cap (2 MiB) do not meet. A client that obeys
-// the first is rejected by the second.
+// It also pins the RELATIONSHIP between the two caps, which is the thing that
+// was wrong before. The old pair (50 000 events / 2 MiB) could not both be
+// obeyed: 50 000 events marshal past 2 MiB, so the body cap silently bounded
+// every submission at 39 915 and the documented event cap was a phantom. The
+// new pair is ordered on purpose:
+//
+//	the EVENT cap is operative — it is what a real log runs into, and it is
+//	sized above the largest run the game permits on any published dictionary;
+//	the BODY cap sits ABOVE it — it no longer bounds a well-formed log at all,
+//	and exists to catch a payload that is fat for another reason (a paste, an
+//	IME commit: one insert carrying many graphemes).
+//
+// A body cap that bounds a well-formed log is doing the event cap's job badly.
+// These assertions are what keep it out of that job.
 func TestMaxLegalPayloadSitsAtTheCaps(t *testing.T) {
 	submittable := perf.SubmittableEvents(1)
-	perf.Report(t, "fixture", "events that fit under the 2 MiB body cap", submittable)
+	perf.Report(t, "fixture", "events that fit under the body cap", submittable)
 
-	// The finding, asserted so a future cap change surfaces it rather than
-	// silently reconciling it.
-	overCap := perf.MustJSON(perf.MaxEventsPayload(1))
-	perf.Report(t, "fixture", "body at the documented 50k-event cap", perf.MiB(uint64(len(overCap))))
-	assert.Greater(t, len(overCap), perf.MaxBodyBytes,
-		"if this ever passes, the two ingestion caps have been reconciled — update docs/PERFORMANCE.md zone 5")
-	assert.Less(t, submittable, perf.MaxEvents,
-		"the body cap, not the event cap, is what actually bounds a submission")
+	// The phantom is retired: a client that obeys the documented event cap is
+	// no longer refused by the size cap.
+	atEventCap := perf.MustJSON(perf.MaxEventsPayload(1))
+	perf.Report(t, "fixture", "body at the documented event cap", perf.MiB(uint64(len(atEventCap))))
+	assert.LessOrEqual(t, len(atEventCap), perf.MaxBodyBytes,
+		"the documented event cap is un-submittable again: the body cap has become a second, hidden event cap")
+	assert.Equal(t, perf.MaxEvents, submittable,
+		"the event cap must be the operative one; the body cap is bounding a well-formed log")
+
+	// And the body cap is not dead weight: it still has to be REACHABLE, or it
+	// is a constant nothing can trip. A paste — one insert carrying many
+	// graphemes — gets there on half the events.
+	fat := perf.MustJSON(perf.BuildPayload(perf.PayloadSpec{
+		Setup: perf.SetupSpec{Mode: "words", WordCount: perf.MaxWordCount, DurationMs: perf.MaxDurationMs},
+		Log:   perf.LogSpec{Events: perf.MaxEvents / 2, Seed: 1, TextLen: 128},
+	}))
+	perf.Report(t, "fixture", "body at half the events, 128-grapheme inserts",
+		perf.MiB(uint64(len(fat))))
+	assert.Greater(t, len(fat), perf.MaxBodyBytes,
+		"the body cap can no longer be tripped by anything: it has stopped guarding the ingest envelope")
 
 	p := perf.MaxLegalPayload(1)
 	var log perf.EventLog
@@ -105,8 +128,9 @@ func TestMaxLegalPayloadSitsAtTheCaps(t *testing.T) {
 	perf.Report(t, "fixture", "max ACCEPTED payload body", perf.MiB(uint64(len(body))))
 	assert.LessOrEqual(t, len(body), perf.MaxBodyBytes,
 		"the fixture must be ACCEPTED at the cap, not rejected by it")
-	assert.Greater(t, len(body), perf.MaxBodyBytes*98/100,
-		"and it must sit AT the cap, not comfortably below it")
+	assert.Greater(t, len(body), perf.MaxBodyBytes*85/100,
+		"and it must still sit NEAR the cap: the two caps have drifted far enough apart that the "+
+			"worst accepted payload no longer measures the worst case")
 
 	// Gzip is what actually gets stored; the ratio matters for the zone 6 budget.
 	gz := perf.Gzip(body)

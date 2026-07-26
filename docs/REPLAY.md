@@ -15,9 +15,13 @@ formula, or a Go "close enough" comparison would defeat the entire design.
 
 ```mermaid
 flowchart TD
-  A["claim batch<br/>FOR UPDATE SKIP LOCKED"] --> B{"dict_hash in registry?"}
+  A["claim batch<br/>FOR UPDATE SKIP LOCKED"] --> Q{"textSource.kind?"}
+  Q -- quote --> QR{"quote id resolves,<br/>text_hash == quoteHash?"}
+  QR -- no --> F0["flagged: unknown_quote"]
+  QR -- yes --> C["gunzip log"]
+  Q -- "seeded (or absent)" --> B{"dict_hash in registry?"}
   B -- no --> F1["flagged: unknown_dict"]
-  B -- yes --> C["gunzip log"]
+  B -- yes --> C
   C --> D["validateLog(seed, dictionary, dictVersion, configSnapshot, log)"]
   D -- "core threw / timed out" --> F2["flagged: replay_error | replay_timeout<br/>attempts + 1"]
   D -- "verdict invalid" --> R["rejected: reason from the core"]
@@ -36,13 +40,34 @@ flowchart TD
 
 Per run, in order:
 
-1. **Resolve the dictionary** by `dict_hash` from the registry
-   (`docs/DICTIONARIES.md`). An unknown hash is flagged, never rejected — the run
-   may simply predate a dictionary rotation, which is the server's problem, not
-   the player's.
+1. **Resolve the text source.** A run whose `setup.generation.textSource.kind`
+   is `quote` gets its words from the **quote registry**, by id, superseded
+   revisions included — a run played on a since-retired revision must replay
+   forever. The registry's `text_hash` is checked against the run's `quoteHash`,
+   and the resolved bytes are injected into the generation config handed to
+   goja. The client's copy of the text is never involved: it is refused at
+   ingestion, and it would be overwritten here regardless. An unknown id or a
+   hash disagreement is flagged `unknown_quote`, never rejected.
+
+   Everything else is a **seeded** run — including the legacy shape, where
+   `textSource` is absent entirely. It resolves its **dictionary** by `dict_hash`
+   from the registry (`docs/DICTIONARIES.md`); an unknown hash is flagged, never
+   rejected, because the run may simply predate a dictionary rotation, which is
+   the server's problem, not the player's.
+
+   The two paths are exclusive, and that is load-bearing: a quote run's
+   `dict_hash` is `dictVersion([text])` and resolves to **no** dictionary, so a
+   shared lookup would flag every quote run `unknown_dict` before it reached the
+   quote resolver. `internal/replay` does not import `internal/quote` — it
+   declares a narrow `QuoteResolver` at the consumer, exactly as it declares
+   `Projector`, and the composition root wires
+   `quote.ReplayResolver{Store: …}` into it.
 2. **Regenerate the words** from `(seed, dictVersion, setup.generation)` with
    `generateWords`. Same seed + same dictionary ⇒ the exact text the client
-   played.
+   played. For a quote run the same call takes a different branch: it splits the
+   injected text on `' '`, drops the empties, consumes no PRNG, and checks
+   `dictVersion([text])` against the context — which the server has already made
+   true, so the check is the core's belt to the server's braces.
 3. **Validate** with `validateLog({ seed, dictionary, dictVersion,
    configSnapshot: setup.config, log })`. This is the core's own server-side
    entry point: structural rules (log version, contiguous `seq`, monotonic `t`),
@@ -60,11 +85,18 @@ the score context. That is deliberate: the alternative is a core entry point tha
 returns its internal words, i.e. editing the client's core to suit the server.
 Generation is linear and cheap next to folding the log.
 
+A quote's text, by contrast, is resolved **once per run**, before the core is
+entered, and injected onto the single parsed object both `generateWords` calls
+read their generation config from. Resolving per call would mean two registry
+reads that a concurrent re-import could answer differently — one run judged
+against two texts.
+
 ## Decision table
 
 | Condition | Status | `validation.reason` | `attempts` |
 |---|---|---|---|
 | `dict_hash` not in the registry | `flagged` | `unknown_dict` | unchanged |
+| quote id unknown, or its `text_hash` ≠ the run's `quoteHash` | `flagged` | `unknown_quote` | unchanged |
 | core call exceeded the interrupt budget | `flagged` | `replay_timeout` | +1 |
 | core threw, or returned something undecodable | `flagged` | `replay_error` | +1 |
 | `validateLog` verdict `invalid` | `rejected` | the core's own reason | unchanged |
@@ -278,6 +310,35 @@ If the dictionary comes back, `make revalidate` re-evaluates the run and it gets
 a real verdict. That is the other half of the immutability rule in
 `docs/DICTIONARIES.md`: a published `dict_hash` must stay published precisely so
 these runs stay judgeable.
+
+### Unresolvable quotes
+
+The same rule, one level down. A run whose `quoteId` the registry does not know,
+or whose stored `text_hash` disagrees with the run's `quoteHash`, is **flagged
+`unknown_quote`, never rejected**.
+
+The mismatch case is the interesting one, because it looks like tampering and
+almost never is. A quote is a published artefact: the importer never issues
+`UPDATE … SET text`, it inserts a new revision **beside** the old one and marks
+the old one superseded ([`QUOTES.md`](QUOTES.md)). So a `quoteId` whose bytes
+have changed under it means something happened to the *corpus* — a hand-edited
+row, a restore from a stale dump, a node the re-import has not reached. The run
+may be perfectly honest and simply unjudgeable right now.
+
+That asymmetry is the whole argument. A wrong `flagged` costs a human one look
+at a review queue and is undone by `make revalidate`. A wrong `rejected` is the
+one verdict that says "we proved this was bad", and it is not walked back by
+anything. When the evidence points at our own corpus, we do not spend it.
+
+Note also what does **not** produce this reason: a registry that fails to
+*answer*. A database that is down is not a missing quote, so a resolver error
+falls through to `replay_error` with `attempts + 1` — retryable — instead of
+permanently flagging every quote run submitted during an outage.
+
+A superseded revision resolves normally and always will. `/quotes/{id}` serves
+retired rows precisely so that every run recorded against one stays judgeable
+and watchable forever — the quote-level restatement of the frozen `dict_hash`
+rule above.
 
 ## Storage
 

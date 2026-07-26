@@ -31,6 +31,17 @@ const (
 	// predate a dictionary rotation, which is the server's fault, not the
 	// player's. `make revalidate` re-evaluates it if the dictionary returns.
 	ReasonUnknownDict = "unknown_dict"
+	// ReasonUnknownQuote — the run was played on a fixed text the quote
+	// registry cannot currently produce: no quote with that id, or a quote
+	// whose stored text_hash is not the quoteHash the run claims.
+	//
+	// Flagged, never rejected, and the distinction is the point. Rejection is
+	// for a run we can PROVE is bad. This is a run we cannot judge at all: the
+	// thing that moved may well be the corpus, not the player — a re-import
+	// that superseded a revision, a restore from a stale dump, a quote id that
+	// has not landed on this node yet. `make revalidate` re-judges it once the
+	// registry can answer, and a wrong rejection is not recoverable that way.
+	ReasonUnknownQuote = "unknown_quote"
 	// ReasonReplayTimeout — the core exceeded its interrupt budget.
 	ReasonReplayTimeout = "replay_timeout"
 	// ReasonReplayError — the core threw, or returned something undecodable.
@@ -58,6 +69,11 @@ const metricTolerance = 1e-9
 
 // ErrUnknownDict marks a run whose dictionary the registry does not know.
 var ErrUnknownDict = errors.New("replay: unknown dict_hash")
+
+// ErrUnknownQuote marks a run whose fixed text the quote registry cannot
+// produce — unknown id, or a text_hash that disagrees with the run's claim.
+// Wrapped by Judge with which of the two it was.
+var ErrUnknownQuote = errors.New("replay: unresolvable quote")
 
 // validationDoc is the `validation` jsonb column: the core's report, the policy
 // arithmetic that judged it, and — when numbers disagreed — which one and by
@@ -135,6 +151,7 @@ type serverMetricsDoc struct {
 // poisonous run from wedging the loop. The table, in precedence order:
 //
 //	unknown dictionary          → flagged  unknown_dict         (attempts unchanged)
+//	unresolvable quote          → flagged  unknown_quote        (attempts unchanged)
 //	replay timed out            → flagged  replay_timeout       (attempts + 1)
 //	core threw / undecodable    → flagged  replay_error         (attempts + 1)
 //	verdict invalid             → rejected reason from the core
@@ -162,6 +179,17 @@ func (p Policy) Decide(run PendingRun, res Result, replayErr error) Decision {
 			Reason:  ReasonUnknownDict,
 			Flags:   []Flag{},
 		}, "dict_hash "+run.DictHash+" is not in the registry")
+
+	case errors.Is(replayErr, ErrUnknownQuote):
+		// Same shape as an unknown dictionary, same reasoning: the corpus is a
+		// server-side artefact, so a text we cannot reproduce right now is our
+		// gap, not the player's cheating. Attempts stay put so `make revalidate`
+		// picks the run up again once the registry can answer.
+		return withValidation(base, StatusFlagged, validationDoc{
+			Verdict: verdictError,
+			Reason:  ReasonUnknownQuote,
+			Flags:   []Flag{},
+		}, replayErr.Error())
 
 	case errors.Is(replayErr, ErrReplayTimeout):
 		base.Attempts = run.Attempts + 1

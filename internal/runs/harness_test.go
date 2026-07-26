@@ -123,7 +123,10 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, `TRUNCATE leaderboard_entries, bans, runs, users, sessions, email_tokens, auth_identities, user_credentials RESTART IDENTITY CASCADE`)
+	// `quotes` is in the list because the quote-run tests publish rows into it;
+	// a leftover revision would make a later test resolve a text it did not
+	// plant.
+	_, err = pool.Exec(ctx, `TRUNCATE quotes, leaderboard_entries, bans, runs, users, sessions, email_tokens, auth_identities, user_credentials RESTART IDENTITY CASCADE`)
 	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

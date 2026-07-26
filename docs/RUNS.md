@@ -58,8 +58,86 @@ The bucket fields are lifted top-level to populate indexed columns; `setup`,
 }
 ```
 
-Exactly one of `durationMs` / `wordCount` is set (time vs. word modes). The
+Exactly one of `durationMs` / `wordCount` is set (time vs. word modes) — unless
+the run is a **quote run**, which carries neither; see *Text source* below. The
 response is `202 { "id": "<uuid>", "status": "pending" }`.
+
+### Text source: seeded vs. quote
+
+A run's text either comes from its **seed** — regenerated from
+`seed` + dictionary, effectively infinite — or from a **published quote**, a
+fixed text everyone types the same bytes of ([`QUOTES.md`](QUOTES.md)). The
+snapshot says which, at `setup.generation.textSource`:
+
+```json
+"textSource": {
+  "kind": "quote",
+  "quoteId": "3f2a1b0c-9d8e-4c7b-8a6f-5e4d3c2b1a09",
+  "quoteHash": "e42437c7"
+}
+```
+
+| Field | Rule |
+|---|---|
+| `kind` | `"seeded"` or `"quote"`. **Absent means `seeded`.** Anything else is `422 invalid_text_source`. |
+| `quoteId` | Required for `quote`, and must parse as a UUID. It is the *only* handle that resolves the text. `422 invalid_text_source` otherwise. |
+| `quoteHash` | Required for `quote`, ≤ 64 chars. It is `dictVersion([text])` — the same value the registry stores as `quotes.text_hash`. |
+| `text` | **Must be absent.** A payload that carries one is `422 quote_text_submitted`. |
+
+**The text is never submitted.** The client sends the reference; the server
+re-reads the bytes from the registry by id and replays against those. This is
+not a size optimisation — it is what makes a quote score mean anything. If the
+client's copy of the text were what the run was judged against, "type this
+quote" would be "type whatever you say the quote was", and two scores on the
+same `quoteId` would not be comparable.
+
+Which is also why a submitted `text` is **refused** rather than ignored.
+Ignoring it would leave two plausible readings of the contract, and the wrong
+one is the one that makes the whole feature meaningless. A client that sends it
+is either confused or trying something; both deserve an answer, not silence.
+`buildRunPayload` on the frontend drops the field at the wire boundary by
+construction, so this rule only ever fires on a hand-rolled payload.
+
+An **absent** `textSource` is `seeded`, and that is load-bearing: it is what let
+quotes land without bumping `EVENT_LOG_VERSION`, and it is what every row
+written before quotes existed carries. `{"kind":"seeded"}` and no `textSource`
+at all mean exactly the same thing everywhere — validator, `run_text_source_kind()`
+in SQL, and the replay worker.
+
+#### Dimensions are conditional on the text source
+
+| Text source | Rule |
+|---|---|
+| `seeded` | **Exactly one** of `durationMs` (1…3 600 000) / `wordCount` (1…10 000) |
+| `quote` | **Neither** |
+
+A quote run has no dimension because neither number would mean anything. Its
+length is a property of the **text**, not of the session: the player did not
+choose 25 words or 30 seconds, they chose a quote, and the same quote is the
+same length for everyone who types it. A `wordCount` here would be a second,
+unverified copy of something `quotes.length` already knows; a `durationMs` would
+describe a deadline the run does not have.
+
+The seeded rule is **unchanged** — still a strict XOR, both-or-neither still
+`422 invalid_dimensions`. Relaxing the constraint for one shape is not a reason
+to stop enforcing it for the others, and seeded runs are the overwhelming
+majority. Both halves are enforced twice: in the validator, and by the
+`runs_one_dimension` CHECK (migration `00008`), which switches on
+`run_text_source_kind(setup)`.
+
+#### `dictHash` on a quote run
+
+It is `dictVersion([text])` — i.e. the same 8-hex value as `quoteHash`, because
+the core derives a quote run's `SeedContext.dictVersion` from the text rather
+than from a word list. Two consequences worth stating:
+
+- **It resolves to no published dictionary,** and must not be looked up in one.
+  The replay worker branches on the text source *before* it reaches the
+  dictionary registry; a shared lookup would flag every quote run `unknown_dict`
+  before it ever reached the quote resolver.
+- **The server does not trust it.** Everything a quote run is judged against is
+  re-derived from `quoteId`. A client that got `dictHash` wrong cannot break a
+  run whose text the server already resolved.
 
 ### List response
 
@@ -87,13 +165,15 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 
 | Check | Limit / rule | Failure |
 |---|---|---|
-| Raw body size | ≤ 2 MB | `413 payload_too_large` |
+| Raw body size | ≤ 6.5 MiB | `413 payload_too_large` |
 | `scoreVersion` | one of `KnownScoreVersions` = `{1, 2}` | `422 unsupported_score_version` |
 | `log.version` | must equal `1` | `422 unsupported_log_version` |
-| Event count | 1 … 50 000 | `422 empty_log` / `422 too_many_events` |
+| Event count | 1 … 120 000 | `422 empty_log` / `422 too_many_events` |
 | `seq` | strictly increasing, non-negative start (cheap linear scan) | `422 non_monotonic_seq` |
 | `seed` | integer in `[0, 2³²−1]` (mulberry32) | `422 seed_out_of_range` |
-| Dimensions | exactly one of `durationMs` (1…3 600 000) / `wordCount` (1…10 000) | `422 invalid_dimensions` |
+| `textSource` | `kind` ∈ {`seeded`, `quote`}; a `quote` needs a UUID `quoteId` and a `quoteHash` | `422 invalid_text_source` |
+| `textSource.text` | must be absent | `422 quote_text_submitted` |
+| Dimensions | seeded: exactly one of `durationMs` (1…3 600 000) / `wordCount` (1…10 000). quote: neither | `422 invalid_dimensions` |
 | `mode` / `lang` / `dictHash` | present, ≤ 32/32/64 chars | `400 bad_request` |
 | `setup` / `clientMetrics` / `clientScore` / `log` | present | `400 bad_request` |
 
@@ -102,9 +182,70 @@ in `internal/runs`, currently `{1, 2}`) — the single source of truth shared by
 this rule and the validator, so widening it is a one-line change. The current
 client ships score formula **v2**; **v1** stays accepted for older builds.
 
+`textSource` is the **only** part of the opaque `setup` snapshot this layer
+parses, and it parses no further than it must: the kind decides which dimension
+rule applies, and the dimension columns are indexed columns this layer owns.
+Whether the quote *exists* is not asked here — ingestion never consults a
+registry, exactly as it never consults the dictionary one. The worker resolves
+the id and flags `unknown_quote` if it cannot.
+
 The gzip log round-trips **byte-for-byte**: `log` is captured as raw bytes,
 gzip-compressed (stdlib, best-speed), and stored; `log_bytes` records the
 uncompressed size. `GET …?log=1` returns exactly the bytes that were sent.
+
+### Caps: why 6.5 MiB and 120 000, and what they cost
+
+The pair used to be **2 MiB / 50 000 events**, and the two could not both be
+obeyed. 50 000 events marshal to ~2.5 MiB, so `MaxBytesReader` bounded every
+submission at **39 915** events and the documented event cap was a phantom
+nothing could ever reach. Worse, the documented game was not playable at all:
+
+| Full `MaxWordCount` (10 000-word) run | Events | Body |
+|---|---|---|
+| german, plain | 79 116 | 3.87 MiB |
+| german, punctuation | 81 430 | 3.99 MiB |
+| russian_empire, punctuation | 80 852 | 4.02 MiB |
+| **css_code, punctuation** (worst of the nine) | **108 274** | **5.35 MiB** |
+
+Measured against the re-vendored bundle, real `generateWords` output, one insert
+per grapheme plus one commit per word. Every one of those exceeded both old
+caps. `MaxWordCount = 10 000` was a contract ingestion refused.
+
+So the caps were **raised, not lowered**. Lowering the event cap to ~40 000 to
+match reality would have been the cheaper edit, but it would silently delete a
+mode the docs promise — "the server shrank the game to fit its own interpreter"
+is precisely the failure [`PERFORMANCE.md`](PERFORMANCE.md) zone 2 already calls
+out about the replay timeout. The old numbers were sized around an interpreter
+cost that no longer exists: pre-fix, 79 394 events would have cost roughly three
+minutes in goja and been indefensible; post-fix (zone 2's 21.6× re-measure) the
+same fixture is seconds.
+
+Two rules to keep in mind before tuning either number again:
+
+- **The two caps are coupled, so headroom must be given to both.** A text mod
+  lengthens *tokens*, which raises the event count as well as the byte count —
+  punctuation alone adds 2 314 events to a german run. An earlier draft of this
+  change gave +16 % to the body cap and +0.8 % to the event cap, which is not
+  headroom; it is one cap moving. (`numbers` is not the risk: a digit run
+  *replaces* a word and shortens the text.)
+- **The caps are ordered on purpose.** The **event cap is operative** — it is
+  what a well-formed log runs into, and it bounds the replay worker's cost,
+  which scales with event count. The **body cap sits above it** and no longer
+  bounds a well-formed log at all; it exists to catch a payload that is fat for
+  another reason (a paste, an IME commit: one insert carrying many graphemes).
+  A body cap that bounds a well-formed log is doing the event cap's job badly.
+  `TestMaxLegalPayloadSitsAtTheCaps` pins that ordering, and
+  `TestEveryPublishedDictionaryCanPlayAFullLengthRun` pins that a 10 000-word
+  run fits on **every** published dictionary — the check whose absence let the
+  caps be sized against german and quietly exclude css_code.
+
+**The cost, unburied.** 6.5 MiB is 3.25× the old ingest envelope, and zone 5
+measured the body being JSON-parsed **twice** on this path. With
+`REPLAY_CONCURRENCY` at 4 that is a worst case around 4 × 2 × 6.5 MiB ≈ **52 MiB
+of request bodies alone**, competing for the same budget as the argon2id gate,
+which is itself sized as a memory ceiling (zone 1). This is now by a wide margin
+the largest single allocation on the ingest path, and it is the next thing to
+measure — not a raise that came for free.
 
 ### Note on `seq`: structural vs. deep
 
@@ -131,8 +272,8 @@ runs
   id            uuid pk
   user_id       uuid fk→users ON DELETE CASCADE
   mode          text
-  duration_ms   int  NULL │ exactly one non-null (runs_one_dimension CHECK)
-  word_count    int  NULL │
+  duration_ms   int  NULL │ seeded: exactly one non-null; quote: both null
+  word_count    int  NULL │ (runs_one_dimension CHECK, conditional since 00008)
   lang          text
   seed          bigint         CHECK 0 … 2³²−1
   dict_hash     text
@@ -204,6 +345,17 @@ transaction that wrote the verdict ([`LEADERBOARDS.md`](LEADERBOARDS.md)).
 Nothing about that is visible on the run summary: the board is a projection, and
 `runs` stays the source of truth.
 
+A **quote run** is judged the same way, with one extra step in front of it: the
+worker resolves `textSource.quoteId` against the quote registry (superseded
+revisions included), checks the stored `text_hash` against the run's
+`quoteHash`, and hands the resolved bytes to the core. The client's copy of the
+text is never involved — it was refused at ingestion, and the resolution happens
+once per run rather than once per `generateWords` call. An unknown id, or a hash
+that disagrees, is `flagged` with reason `unknown_quote` — **never** `rejected`,
+for the same reason `unknown_dict` is not: rejection is for a run we can prove
+is bad, and this is a run we cannot currently judge. The corpus is the likelier
+thing to have moved.
+
 ## Deliberately deferred
 
 Still out of scope for both ingestion and the worker:
@@ -216,6 +368,9 @@ Still out of scope for both ingestion and the worker:
 - **Rejecting an unknown `dictHash` at ingestion.** Ingestion still treats it as
   an opaque string; the worker resolves it against the registry
   ([`DICTIONARIES.md`](DICTIONARIES.md)) and flags `unknown_dict`.
+- **Rejecting an unknown `quoteId` at ingestion**, for exactly the same reason:
+  ingestion checks that the reference is *usable*, never that it *resolves*. The
+  worker flags `unknown_quote` ([`QUOTES.md`](QUOTES.md)).
 
 The `(status, created_at) WHERE status='pending'` index is the worker's queue
 scan; the stored `setup` snapshot is what goja replays against.

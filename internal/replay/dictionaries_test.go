@@ -3,17 +3,23 @@ package replay
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path"
 	"strconv"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/dop251/goja"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/typemore/typemore-server/internal/perf"
 )
 
 // newTestServer builds the real registry (seeded through the real goja bundle)
@@ -269,4 +275,78 @@ func TestGzipNegotiation(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.StatusCode)
 	assert.Empty(t, res.Header.Get("Content-Encoding"))
 	assert.Equal(t, stored, readBody(t, res))
+}
+
+// The documented game has to be PLAYABLE — on every language the server
+// publishes, not just on the one the benchmarks happen to use.
+//
+// MaxWordCount is 10 000 words, and a run that long costs one insert per
+// grapheme plus one commit per word. Whether that fits under the ingestion caps
+// is a property of the DICTIONARY, not of the caps: css_code averages ~10.7
+// characters a token where german averages ~6.9, so a full css_code run is 37%
+// more events than a full german run. Sizing the caps against the fixture
+// language is exactly the mistake this test exists to catch — it is how the
+// caps came to refuse a mode the docs promise.
+//
+// Punctuation is in the matrix for the non-obvious reason: it LENGTHENS TOKENS,
+// so it moves the event count as well as the byte count. The two are coupled,
+// and headroom given to one without the other is not headroom.
+func TestEveryPublishedDictionaryCanPlayAFullLengthRun(t *testing.T) {
+	core, err := NewCore(0)
+	require.NoError(t, err)
+	reg, err := NewRegistry(core)
+	require.NoError(t, err)
+
+	worstEvents, worstLang := 0, ""
+	for _, entry := range reg.Catalogue() {
+		body, ok := reg.Body(entry.DictHash)
+		require.True(t, ok, entry.Lang)
+		for _, punctuation := range []bool{false, true} {
+			events := fullLengthRunEvents(t, core, body, entry.DictHash, punctuation)
+			assert.LessOrEqualf(t, events, perf.MaxEvents,
+				"a full %d-word %s run (punctuation=%v) is %d events, over the %d cap: "+
+					"MaxWordCount is unreachable on this dictionary",
+				perf.MaxWordCount, entry.Lang, punctuation, events, perf.MaxEvents)
+			if events > worstEvents {
+				worstEvents, worstLang = events, entry.Lang
+			}
+		}
+	}
+	t.Logf("worst full-length run: %s at %d events (cap %d, %.0f%% used)",
+		worstLang, worstEvents, perf.MaxEvents,
+		float64(worstEvents)/float64(perf.MaxEvents)*100)
+}
+
+// fullLengthRunEvents counts the events a flawless MaxWordCount run on this
+// dictionary would emit: one insert per grapheme, one commit per word. The word
+// list comes from the real generator in goja, because the decoration rules
+// (which is what punctuation changes) live there and nowhere else.
+func fullLengthRunEvents(t *testing.T, core *Core, dictBody []byte, dictHash string, punctuation bool) int {
+	t.Helper()
+	ctx := context.Background()
+
+	dict, err := core.parseJSON(ctx, string(dictBody))
+	require.NoError(t, err)
+
+	seedCtx, err := core.parseJSON(ctx, fmt.Sprintf(
+		`{"seed":12345,"dictVersion":%q,"generation":{"mode":"words","length":%d,`+
+			`"punctuation":%v,"numbers":false,"randomCase":false,"reverse":false}}`,
+		dictHash, perf.MaxWordCount, punctuation))
+	require.NoError(t, err)
+
+	generated, err := core.call(ctx, core.generateWords, dict, seedCtx)
+	require.NoError(t, err)
+	value, err := core.unwrapResult(ctx, generated)
+	require.NoError(t, err)
+
+	raw, err := core.stringifyJSON(ctx, value.(*goja.Object).Get("words"))
+	require.NoError(t, err)
+	var words []string
+	require.NoError(t, json.Unmarshal(raw, &words))
+
+	events := len(words) // one commit per word
+	for _, w := range words {
+		events += utf8.RuneCountInString(w) // one insert per grapheme
+	}
+	return events
 }

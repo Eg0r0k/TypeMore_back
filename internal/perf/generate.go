@@ -14,8 +14,8 @@ import (
 // thing a client may legally send" is the only interesting size: anything the
 // server accepts, it must be able to process.
 const (
-	MaxBodyBytes  = 2 << 20 // 2 MiB
-	MaxEvents     = 50_000
+	MaxBodyBytes  = 13 << 19 // 6.5 MiB
+	MaxEvents     = 120_000
 	MaxWordCount  = 10_000
 	MaxDurationMs = 3_600_000
 )
@@ -110,13 +110,18 @@ func MaxLegalLog(seed uint64) EventLog {
 }
 
 // SubmittableEvents is the largest event count whose full POST body fits under
-// MaxBodyBytes — the REAL ingestion ceiling.
+// MaxBodyBytes.
 //
-// The two documented caps do not meet: 50 000 events marshal to roughly 2.5 MiB
-// of JSON, so http.MaxBytesReader rejects the body long before the event limit
-// is reached. A client that obeys the documented event cap and is refused by the
-// size cap has been told something untrue, so the generators here bound by BOTH
-// and the discrepancy is reported (docs/PERFORMANCE.md, zone 5).
+// The two caps do not MEET, and are not meant to. The EVENT cap is the
+// operative one: it is sized above the largest run the game permits on ANY
+// published dictionary — a full MaxWordCount css_code run with punctuation
+// measures 108 274 events — and the body cap sits above what that many
+// single-character events encode to, so it only ever catches a payload that is
+// fat for some other reason (a paste: one insert carrying many graphemes).
+//
+// Both are now reachable by real play, which is the property the old pair
+// lacked: 50 000 events could never be submitted at all, because 2 MiB ran out
+// first at 39 915.
 //
 // Computed rather than hardcoded: the number moves if the event encoding does,
 // and a stale constant would silently stop measuring the boundary.
@@ -260,8 +265,8 @@ func BuildPayload(p PayloadSpec) IngestPayload {
 
 // MaxLegalPayload is the largest body ingestion actually ACCEPTS: a
 // MaxWordCount word run over the longest legal duration, carrying as many
-// events as fit under the 2 MiB body cap (SubmittableEvents — fewer than
-// MaxEvents, because the two caps do not meet).
+// events as fit under the body cap (SubmittableEvents — still fewer than
+// MaxEvents, because the body cap is deliberately the binding one).
 //
 // "Largest accepted" rather than "largest documented" is the right fixture: a
 // payload the server rejects measures the rejection path, and zone 5 needs the
@@ -270,10 +275,11 @@ func MaxLegalPayload(seed uint64) IngestPayload {
 	return payloadWithEvents(SubmittableEvents(seed), seed)
 }
 
-// MaxEventsPayload is the payload the DOCUMENTED event cap allows, over the body
-// cap and therefore un-submittable. Zone 2 uses it because the replay worker's
-// cost scales with event count and 50 000 is the number the validator promises
-// to accept.
+// MaxEventsPayload is the payload the DOCUMENTED event cap allows: over the
+// body cap and therefore un-submittable as one request. Zone 2 uses it because
+// the replay worker's cost scales with event count, and MaxEvents is the number
+// the validator promises to accept — the worker must survive a log that large
+// however it arrived (a revalidation of an older row, a raised body cap).
 func MaxEventsPayload(seed uint64) IngestPayload {
 	return payloadWithEvents(MaxEvents, seed)
 }

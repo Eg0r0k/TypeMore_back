@@ -37,6 +37,8 @@ import (
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
+	"github.com/typemore/typemore-server/internal/quote"
+	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
 )
@@ -137,6 +139,7 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 	}
 	// nil projector: calibration judges runs to report what WOULD change and
 	// must not touch a read model while doing it.
+	quotes := quote.ReplayResolver{Store: quotepg.New(pool)}
 	rows, err := replaypg.New(pool, nil).ListForCalibration(ctx, limit)
 	if err != nil {
 		return err
@@ -159,7 +162,7 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 	for i := range rows {
 		// The exact path the worker takes — a report from a different code path
 		// would be a fiction.
-		d := replay.Judge(ctx, core, reg, policy, rows[i].PendingRun)
+		d := replay.Judge(ctx, core, reg, quotes, policy, rows[i].PendingRun)
 
 		var doc auditDoc
 		_ = json.Unmarshal(d.Validation, &doc)
@@ -318,11 +321,17 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 	// projector the server does: a run demoted here leaves its board in the same
 	// transaction (docs/LEADERBOARDS.md, "Maintenance").
 	board := leaderboardpg.New(pool, cfg.LeaderboardRequireVerifiedEmail)
-	worker := replay.NewWorker(replaypg.New(pool, board), reg, replay.WorkerConfig{
-		BatchSize:     batch,
-		ReplayTimeout: cfg.ReplayTimeout,
-		Policy:        policy,
-	}, logger)
+	worker := replay.NewWorker(
+		replaypg.New(pool, board),
+		reg,
+		quote.ReplayResolver{Store: quotepg.New(pool)},
+		replay.WorkerConfig{
+			BatchSize:     batch,
+			ReplayTimeout: cfg.ReplayTimeout,
+			Policy:        policy,
+		},
+		logger,
+	)
 
 	printPolicy(policy)
 	fmt.Printf("\nre-judging runs with policy_version < %d OR bundle_sha <> %s (limit %d, batch %d)\n\n",

@@ -15,9 +15,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// maxBodyBytes caps the raw POST /runs body at 2 MB; a larger body is rejected
-// 413 before it is fully read (BACKEND.md §3, structural size check).
-const maxBodyBytes = 2 << 20 // 2 MiB
+// maxBodyBytes caps the raw POST /runs body; a larger body is rejected 413
+// before it is fully read (BACKEND.md §3, structural size check).
+//
+// 6.5 MiB, not 2 MiB. The old cap refused a mode the docs promise: a full
+// MaxWordCount (10 000) run measures 3.87 MiB on german and 5.26 MiB on
+// css_code, so no 10 000-word run was submittable at all. The cost is real and
+// stated plainly in docs/RUNS.md — this is now the largest single allocation on
+// the ingest path, and zone 5 measured the body being JSON-parsed TWICE here.
+const maxBodyBytes = 13 << 19 // 6.5 MiB
 
 // Pagination bounds for GET /runs.
 const (
@@ -58,7 +64,7 @@ type ingestResponse struct {
 	Status string    `json:"status"`
 }
 
-// handleIngest accepts a finished run: rate-limit → 2 MB cap → structural
+// handleIngest accepts a finished run: rate-limit → body cap → structural
 // validation → gzip + store 'pending' → 202 { id, status }.
 func (s *Service) handleIngest(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.currentUser(w, r)

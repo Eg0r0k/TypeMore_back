@@ -16,11 +16,15 @@ const (
 	// (frontend core: EVENT_LOG_VERSION). Bumped in lockstep with the client.
 	supportedLogVersion = 1
 
-	// Event-count bounds: a real run has at least one event, and 50k is far
-	// above any legitimate session (10k words × a few keystrokes) while still
-	// bounding the linear scan and the stored blob.
+	// Event-count bounds: a real run has at least one event, and 120k is above
+	// the largest run the documented game permits on ANY published dictionary
+	// — a full MaxWordCount (10 000) css_code run with punctuation measures
+	// 108 274 events; german measures 79 116, 81 430 with punctuation. The old
+	// 50 000 was sized around an interpreter cost that no longer exists and
+	// refused a mode the docs promise. See the caps table in docs/RUNS.md for
+	// the measurements and the tradeoff.
 	minEvents = 1
-	maxEvents = 50_000
+	maxEvents = 120_000
 
 	// seedMax is 2³²−1: mulberry32 is a 32-bit PRNG (PROTOCOL.md §4).
 	seedMax = int64(math.MaxUint32)
@@ -65,6 +69,8 @@ const (
 	codeMalformedLog            = "malformed_log"
 	codeInvalidDimensions       = "invalid_dimensions"
 	codeSeedOutOfRange          = "seed_out_of_range"
+	codeInvalidTextSource       = "invalid_text_source"
+	codeQuoteTextSubmitted      = "quote_text_submitted"
 )
 
 // ingestRequest is the POST /runs body. The opaque snapshots and the log are
@@ -83,6 +89,40 @@ type ingestRequest struct {
 	ClientMetrics json.RawMessage `json:"clientMetrics"`
 	ClientScore   json.RawMessage `json:"clientScore"`
 	ScoreVersion  *int            `json:"scoreVersion"`
+}
+
+// Text-source kinds. A run's text either comes from its seed (the seeded,
+// effectively-infinite case) or from a published quote (a fixed, shared text).
+//
+// An ABSENT textSource means seeded. That is load-bearing: it is what let
+// quotes land without bumping EVENT_LOG_VERSION, and every row written before
+// quotes existed has no such key. `{"kind":"seeded"}` and no textSource at all
+// must therefore be treated identically.
+const (
+	textSourceSeeded = "seeded"
+	textSourceQuote  = "quote"
+)
+
+// setupEnvelope is the ONLY part of the opaque setup snapshot ingestion reads.
+//
+// Parsing any of the setup at all is a change of posture, so it is worth being
+// explicit about why: the text source decides which DIMENSION RULE applies, and
+// the dimension columns are indexed columns this layer owns. Everything else in
+// the snapshot stays opaque and is still stored verbatim.
+type setupEnvelope struct {
+	Generation *struct {
+		TextSource *struct {
+			Kind      string `json:"kind"`
+			QuoteID   string `json:"quoteId"`
+			QuoteHash string `json:"quoteHash"`
+			// Text is here ONLY to be refused. The client never sends it — the
+			// server re-reads the bytes from the registry by id — so a payload
+			// that carries one is hand-rolled or tampered with, and accepting
+			// it while ignoring it would leave the contract ambiguous about
+			// whose copy of the text counts.
+			Text json.RawMessage `json:"text"`
+		} `json:"textSource"`
+	} `json:"generation"`
 }
 
 // logEnvelope is the minimum of the EventLog we parse: the version and each
@@ -141,8 +181,16 @@ func validateIngest(userID uuid.UUID, req *ingestRequest) (CreateRunParams, *api
 			"seed must be an integer in [0, 2^32-1]")
 	}
 
-	// Dimensions: exactly one of durationMs / wordCount, each in range.
-	if verr := validateDimensions(req); verr != nil {
+	// Text source: which of the two dimension rules applies, and the quote
+	// reference's own shape. Must run BEFORE the dimension check, which reads
+	// its answer.
+	kind, verr := validateTextSource(req.Setup)
+	if verr != nil {
+		return CreateRunParams{}, verr
+	}
+
+	// Dimensions: conditional on the text source (see validateDimensions).
+	if verr := validateDimensions(req, kind); verr != nil {
 		return CreateRunParams{}, verr
 	}
 
@@ -184,9 +232,81 @@ func validateOpaqueField(name, value string, maxLen int) *apiError {
 	return nil
 }
 
-// validateDimensions enforces the "exactly one of durationMs / wordCount, in
-// range" rule (mirrors the runs_one_dimension schema CHECK).
-func validateDimensions(req *ingestRequest) *apiError {
+// validateTextSource checks `setup.generation.textSource` and reports the run's
+// text-source kind. An absent textSource is `seeded` — the legacy shape, and
+// what every row written before quotes existed carries.
+//
+// This is the one place ingestion looks inside the setup snapshot, and it looks
+// no further than it must: the kind, and — for a quote — that the reference is
+// usable as a reference. Whether the quote EXISTS is not asked here. Ingestion
+// is game-agnostic and never consults a registry; the worker resolves the id
+// and flags `unknown_quote` if it cannot, exactly as it already does for an
+// unknown dictionary.
+func validateTextSource(setup json.RawMessage) (string, *apiError) {
+	var env setupEnvelope
+	if err := json.Unmarshal(setup, &env); err != nil {
+		return "", apiErrUnprocessable(codeInvalidTextSource,
+			"setup.generation is not an object")
+	}
+	if env.Generation == nil || env.Generation.TextSource == nil {
+		return textSourceSeeded, nil
+	}
+
+	src := env.Generation.TextSource
+	switch src.Kind {
+	case textSourceSeeded:
+		return textSourceSeeded, nil
+	case textSourceQuote:
+	default:
+		return "", apiErrUnprocessable(codeInvalidTextSource,
+			`setup.generation.textSource.kind must be "seeded" or "quote"`)
+	}
+
+	// A submitted text is refused outright rather than dropped. The server
+	// re-reads the bytes from the registry by id and would ignore this field
+	// anyway — but ignoring it silently would leave two plausible readings of
+	// the contract, and the one where the client's copy matters is the one that
+	// makes a quote score meaningless.
+	if len(src.Text) > 0 {
+		return "", apiErrUnprocessable(codeQuoteTextSubmitted,
+			"setup.generation.textSource must not carry text; the server resolves it from quoteId")
+	}
+	if _, err := uuid.Parse(src.QuoteID); err != nil {
+		return "", apiErrUnprocessable(codeInvalidTextSource,
+			"setup.generation.textSource.quoteId must be a uuid")
+	}
+	if src.QuoteHash == "" || len(src.QuoteHash) > maxDictHashLen {
+		return "", apiErrUnprocessable(codeInvalidTextSource,
+			"setup.generation.textSource.quoteHash is required and must be short")
+	}
+	return textSourceQuote, nil
+}
+
+// validateDimensions enforces the dimension rule, which is CONDITIONAL on the
+// text source (and mirrors the runs_one_dimension schema CHECK, migration
+// 00008):
+//
+//	seeded → exactly one of durationMs / wordCount, in range
+//	quote  → neither
+//
+// A quote run has no dimension because neither number would mean anything. Its
+// length is a property of the text, not of the session: the player did not
+// choose 25 words or 30 seconds, they chose a quote, and the same quote is the
+// same length for everyone. A wordCount here would be a second, unverified copy
+// of something the registry already knows, and a durationMs would describe a
+// deadline the run does not have.
+//
+// The seeded rule stays a strict XOR. Relaxing it for quotes is not a reason to
+// weaken it everywhere: a seeded run with both, or with neither, is still a
+// client that does not know what it played.
+func validateDimensions(req *ingestRequest, textSource string) *apiError {
+	if textSource == textSourceQuote {
+		if req.DurationMs != nil || req.WordCount != nil {
+			return apiErrUnprocessable(codeInvalidDimensions,
+				"a quote run carries neither durationMs nor wordCount")
+		}
+		return nil
+	}
 	switch {
 	case req.DurationMs != nil && req.WordCount != nil:
 		return apiErrUnprocessable(codeInvalidDimensions,
@@ -228,7 +348,7 @@ func validateLog(raw json.RawMessage) *apiError {
 	}
 	if n > maxEvents {
 		return apiErrUnprocessable(codeTooManyEvents,
-			"log exceeds the maximum of 50000 events")
+			fmt.Sprintf("log exceeds the maximum of %d events", maxEvents))
 	}
 	// Strictly increasing, non-negative seq. prev starts below zero so the first
 	// event must be >= 0; each subsequent event must exceed its predecessor.

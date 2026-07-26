@@ -199,13 +199,23 @@ func fetchRun(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) runRow {
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// pgQuotes is the quote registry the queue tests run against. Every fixture
+// here is a SEEDED run, so the resolver is never reached — an empty map is the
+// honest wiring, and a quote run appearing in this suite would be flagged
+// unknown_quote rather than silently judged against nothing.
+type pgQuotes struct{}
+
+func (pgQuotes) ResolveQuote(context.Context, uuid.UUID) (string, string, bool, error) {
+	return "", "", false, nil
+}
+
 func newTestWorker(t *testing.T, q replay.Queue, cfg replay.WorkerConfig) *replay.Worker {
 	t.Helper()
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 	reg, err := replay.NewRegistry(core)
 	require.NoError(t, err)
-	return replay.NewWorker(q, reg, cfg, discardLogger())
+	return replay.NewWorker(q, reg, pgQuotes{}, cfg, discardLogger())
 }
 
 // --- the queue --------------------------------------------------------------

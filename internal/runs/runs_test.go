@@ -110,14 +110,15 @@ func TestIngestAuthRequired(t *testing.T) {
 	requireStatus(t, h.get("/api/v1/runs"), http.StatusUnauthorized)
 }
 
-// --- 2 MB cap ---
+// --- body cap ---
 
 func TestIngestBodyTooLarge(t *testing.T) {
 	h := newHarness(t)
 	h.login("big@example.com", "password-123", "Big")
 
-	// A ~3 MB body trips MaxBytesReader before validation runs.
-	oversized := []byte(`{"setup":"` + strings.Repeat("a", 3<<20) + `"}`)
+	// Comfortably past the 6.5 MiB cap, so MaxBytesReader trips before
+	// validation runs.
+	oversized := []byte(`{"setup":"` + strings.Repeat("a", 8<<20) + `"}`)
 	resp := h.postRaw("/api/v1/runs", oversized)
 	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
 	assert.Equal(t, "payload_too_large", decodeInto[errResp](t, resp).Error)
@@ -151,9 +152,12 @@ func TestIngestTooManyEvents(t *testing.T) {
 	h := newHarness(t)
 	h.login("overflow@example.com", "password-123", "Overflow")
 
+	// One past the event cap. The events are minimal so this stays under the
+	// body cap: the point is which rule fires, and the caps are ordered so the
+	// event one is reachable (docs/RUNS.md, "Caps").
 	var sb strings.Builder
 	sb.WriteString(`{"version":1,"events":[`)
-	const n = 50_001
+	const n = 120_001
 	for i := range n {
 		if i > 0 {
 			sb.WriteByte(',')
@@ -206,6 +210,107 @@ func TestIngestInvalidDimensions(t *testing.T) {
 	resp = h.post("/api/v1/runs", neither)
 	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 	assert.Equal(t, "invalid_dimensions", decodeInto[errResp](t, resp).Error)
+
+	// The seeded rule is unchanged by the quote relaxation, and it stays
+	// unchanged when the seeded kind is stated EXPLICITLY rather than by
+	// omission — the two spellings mean the same thing.
+	explicit := validRun()
+	delete(explicit, "durationMs")
+	explicit["setup"] = json.RawMessage(`{"generation":{"textSource":{"kind":"seeded"}}}`)
+	resp = h.post("/api/v1/runs", explicit)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "invalid_dimensions", decodeInto[errResp](t, resp).Error)
+}
+
+// --- quote runs ---
+
+const quoteRunID = "3f2a1b0c-9d8e-4c7b-8a6f-5e4d3c2b1a09"
+
+// quoteRun builds a structurally-valid quote submission: a textSource by
+// reference, and NEITHER dimension.
+func quoteRun() map[string]any {
+	body := validRun()
+	delete(body, "durationMs")
+	body["mode"] = "quote"
+	body["dictHash"] = "e42437c7"
+	body["setup"] = json.RawMessage(`{"config":{"mode":"quote"},"generation":{"mode":"quote",` +
+		`"textSource":{"kind":"quote","quoteId":"` + quoteRunID + `","quoteHash":"e42437c7"}}}`)
+	return body
+}
+
+func TestIngestQuoteRunCarriesNoDimension(t *testing.T) {
+	h := newHarness(t)
+	h.login("quote-dims@example.com", "password-123", "QuoteDims")
+
+	requireStatus(t, h.post("/api/v1/runs", quoteRun()), http.StatusAccepted)
+
+	// A quote's length is a property of the text, so neither number means
+	// anything and both are refused.
+	withWords := quoteRun()
+	withWords["wordCount"] = 16
+	resp := h.post("/api/v1/runs", withWords)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "invalid_dimensions", decodeInto[errResp](t, resp).Error)
+
+	withDuration := quoteRun()
+	withDuration["durationMs"] = 15000
+	resp = h.post("/api/v1/runs", withDuration)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "invalid_dimensions", decodeInto[errResp](t, resp).Error)
+}
+
+// The text is never submitted. A payload that carries one is refused outright
+// rather than accepted-and-ignored: silently dropping it would leave two
+// readings of the contract, and the one where the client's copy matters is the
+// one that makes a quote score meaningless.
+func TestIngestQuoteRunRefusesASubmittedText(t *testing.T) {
+	h := newHarness(t)
+	h.login("quote-text@example.com", "password-123", "QuoteText")
+
+	body := quoteRun()
+	body["setup"] = json.RawMessage(`{"config":{"mode":"quote"},"generation":{"mode":"quote",` +
+		`"textSource":{"kind":"quote","quoteId":"` + quoteRunID + `","quoteHash":"e42437c7",` +
+		`"text":"Es irrt der Mensch"}}}`)
+	resp := h.post("/api/v1/runs", body)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "quote_text_submitted", decodeInto[errResp](t, resp).Error)
+
+	// Even an empty string is a submitted text: the field must be absent.
+	body["setup"] = json.RawMessage(`{"config":{"mode":"quote"},"generation":{"mode":"quote",` +
+		`"textSource":{"kind":"quote","quoteId":"` + quoteRunID + `","quoteHash":"e42437c7","text":""}}}`)
+	resp = h.post("/api/v1/runs", body)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "quote_text_submitted", decodeInto[errResp](t, resp).Error)
+}
+
+// The reference itself has to be usable as a reference. Whether the quote
+// EXISTS is not asked here — ingestion never consults a registry, and the
+// worker flags unknown_quote — but an id nothing could ever resolve is a
+// structural problem, not a corpus one.
+func TestIngestQuoteRunRefusesAnUnusableReference(t *testing.T) {
+	h := newHarness(t)
+	h.login("quote-ref@example.com", "password-123", "QuoteRef")
+
+	for name, textSource := range map[string]string{
+		"quoteId is not a uuid": `{"kind":"quote","quoteId":"7","quoteHash":"e42437c7"}`,
+		"quoteId is absent":     `{"kind":"quote","quoteHash":"e42437c7"}`,
+		"quoteHash is absent":   `{"kind":"quote","quoteId":"` + quoteRunID + `"}`,
+		"kind is unknown":       `{"kind":"beatmap","quoteId":"` + quoteRunID + `"}`,
+	} {
+		body := quoteRun()
+		body["setup"] = json.RawMessage(
+			`{"config":{},"generation":{"textSource":` + textSource + `}}`)
+		resp := h.post("/api/v1/runs", body)
+		require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, name)
+		assert.Equal(t, "invalid_text_source", decodeInto[errResp](t, resp).Error, name)
+	}
+
+	// A quote id that is well-formed but unknown is NOT an ingestion problem:
+	// it lands, and the worker is what decides it cannot be judged.
+	unknown := quoteRun()
+	unknown["setup"] = json.RawMessage(`{"config":{},"generation":{"textSource":` +
+		`{"kind":"quote","quoteId":"00000000-0000-4000-8000-000000000000","quoteHash":"deadbeef"}}}`)
+	requireStatus(t, h.post("/api/v1/runs", unknown), http.StatusAccepted)
 }
 
 func TestIngestSeedOutOfRange(t *testing.T) {

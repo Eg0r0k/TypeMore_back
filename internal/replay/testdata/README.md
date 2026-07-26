@@ -23,13 +23,26 @@ The expectations therefore come out of **V8**, and the Go test reproduces them i
 engines agree on the one bundle, which is the whole premise of server-side
 replay. Nothing is compared with an epsilon.
 
-Every vector but one plays against the published `german` dictionary
+Every vector but two plays against the published `german` dictionary
 (`../dicts/german.json`, `dict_hash` `804728e8`), so the registry resolves it
-with no test-only seeding. The exception is `code-newline-separator`: no code
-language is published yet, so that vector carries its dictionary INLINE
-(`dictionary` field) and `TestInlineDictionaryVectorsReplayBitExact` replays it
-straight through the core instead of the registry-backed worker. Same bundle,
-same goja, same bit-exact comparison — only the dictionary lookup differs.
+with no test-only seeding.
+
+The two exceptions differ in how their words are resolved, not in how they are
+judged:
+
+- **`code-newline-separator`** — no code language is published yet, so it
+  carries its dictionary INLINE (`dictionary` field) and
+  `TestInlineDictionaryVectorsReplayBitExact` replays it straight through the
+  core instead of the registry-backed worker.
+- **`quote-fixed-text`** — a quote run has **no dictionary at all**: its words
+  are the registry's bytes, split on `' '`. The payload carries the quote by
+  `{quoteId, quoteHash}` only, so the text travels in the vector's own `quote`
+  field, which the Go harness loads into a fake registry (and the runs suite
+  plants in real Postgres). That split *is* the contract — the bytes the server
+  judges against never arrive with the submission.
+
+Same bundle, same goja, same bit-exact comparison in every case; only the word
+resolution differs.
 
 ## What each vector covers
 
@@ -44,6 +57,7 @@ same goja, same bit-exact comparison — only the dictionary lookup differs.
 | `words-bot-cadence` | Every keystroke exactly 80 ms apart, zero variance. No single flag is severe enough alone, but `uniform-intervals` + `zero-variance` is a shape no hand makes — **must be flagged** by the `bot_cadence` rule. |
 | `words-nospace-space-presses` | A nospace run whose player kept tapping space. Every commit is **refused** by the reducer (`NospaceCommit`), so the submitted log is commit-free and the run is accepted — the guard against `validateLog` throwing out an honest nospace run. |
 | `code-newline-separator` | Raw-token (code) dictionary: `\t` indentation, `\n` on every line-closing word. The word that ends a line typed its own separator, so it is credited no space (`separatorsOf`). Carries its dictionary inline. |
+| `quote-fixed-text` | A quote run. Text comes from the registry, not the seed: **neither** `durationMs` **nor** `wordCount`, `dictHash` = `dictVersion([text])` (which resolves to no dictionary), the **double space** in the text collapses so 17 fragments become 16 words, and `Mensch,` / `strebt.` / `bemüht,` / `erlösen!` are punctuation and non-ASCII the player types verbatim. Carries its registry row in `quote`, never in the payload. |
 
 `words-one-fast-interval` and `words-bot-cadence` are synthetic in their *timing*
 only: the log, the metrics and the score are still produced by driving the real

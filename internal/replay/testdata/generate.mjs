@@ -215,6 +215,45 @@ function typeWord(s, word) {
   for (const ch of word) s.type(ch)
 }
 
+/**
+ * The quote a fixed-text run is played on: the registry row, restated here so
+ * the generator is self-contained.
+ *
+ * It is chosen to exercise things a "hello world" text cannot. `strebt.` and
+ * `erlösen!` are punctuation the player has to type VERBATIM — nothing
+ * generated it, so nothing can regenerate it either. The DOUBLE SPACE after
+ * the first sentence is the real trap: `generateWords` splits the text on ' '
+ * and drops the empties, so the two spaces collapse into one separator and the
+ * word count is 16, not 17. And `bemüht` / `können` / `erlösen` put non-ASCII
+ * through `dictVersion`, which folds over UTF-16 code units — the one place V8
+ * and goja could plausibly disagree about a hash.
+ */
+const QUOTE_ID = '3f2a1b0c-9d8e-4c7b-8a6f-5e4d3c2b1a09'
+const QUOTE_TEXT =
+  'Es irrt der Mensch, solang er strebt.  Wer immer strebend sich bemüht, den können wir erlösen!'
+const QUOTE_HASH = dictVersion([QUOTE_TEXT])
+
+/**
+ * The stand-in dictionary a quote run is replayed with, mirroring the Go side's
+ * `Core.quoteDict`. A quote run has no dictionary: `generateWords` reads only
+ * `dict.name` on the quote branch, and the empty word list is deliberate — if
+ * the quote branch ever stopped firing, the seeded path would fail loudly on
+ * an empty dictionary instead of producing plausible nonsense.
+ */
+const quoteDictionary = { name: 'quote', bcp47: 'de', words: [] }
+
+/** The generation config of a quote run, text included (the CLIENT's copy). */
+const quoteGeneration = (over = {}) => ({
+  mode: 'quote',
+  length: QUOTE_TEXT.split(' ').filter((w) => w.length > 0).length,
+  punctuation: false,
+  numbers: false,
+  randomCase: false,
+  reverse: false,
+  textSource: { kind: 'quote', quoteId: QUOTE_ID, quoteHash: QUOTE_HASH, text: QUOTE_TEXT },
+  ...over
+})
+
 /** Build the exact RUNS.md POST body (features/run-submit/model/build-payload.ts). */
 function payloadOf({
   config,
@@ -227,18 +266,32 @@ function payloadOf({
   dictHash = DICT_HASH
 }) {
   const score = scoreVersion === 1 ? finished.scoreV1 : finished.scoreV2
+  const quote = generation.textSource?.kind === 'quote'
   return {
     mode: config.mode,
-    ...(config.mode === 'time' ? { durationMs: config.durationMs } : { wordCount: generation.length }),
+    // A quote run carries NEITHER dimension: its length is a property of the
+    // text, not a number the player chose. A seeded run carries exactly one.
+    ...(quote ? {} : config.mode === 'time' ? { durationMs: config.durationMs } : { wordCount: generation.length }),
     lang: dict.bcp47,
     seed,
     dictHash,
     scoreVersion,
-    setup: { config, generation, declaration },
+    // buildRunPayload spreads the in-memory generation and OVERWRITES
+    // textSource with the bare reference: the text is dropped at the wire
+    // boundary by construction, and the server reads it back from the registry
+    // by id. Reproduced here rather than asserted, so the vector is the shape
+    // the client actually sends.
+    setup: { config, generation: quote ? withoutQuoteText(generation) : generation, declaration },
     clientMetrics: { wpm: finished.metrics.wpm, raw: finished.metrics.raw, acc: finished.metrics.accuracy },
     clientScore: score,
     log: finished.log
   }
+}
+
+/** The submitted textSource: {kind, quoteId, quoteHash}, and nothing else. */
+function withoutQuoteText(generation) {
+  const { text: _dropped, ...reference } = generation.textSource
+  return { ...generation, textSource: reference }
 }
 
 const vectors = []
@@ -517,6 +570,75 @@ function emit(name, description, expect, payload, extra = {}) {
     {
       dictionary: { name: codeDictionary.name, bcp47: codeDictionary.bcp47, words: codeDictionary.words },
       lineEnders,
+      spaces: finished.metrics.spaces
+    }
+  )
+}
+
+// ── 10. a quote run: fixed text, no dimension, no dictionary ─────────────────
+// The words are not generated, they ARE the registry's bytes — split on ' ',
+// empties dropped, no PRNG consumed. Three things this pins that no seeded
+// vector can:
+//
+//   * the DOUBLE SPACE after the first sentence collapses, so 17 space-
+//     separated fragments become 16 typeable words;
+//   * `Mensch,` / `strebt.` / `bemüht,` / `erlösen!` are punctuation the player
+//     must type verbatim — no `decorate()` produced them, so nothing regenerates
+//     them either, and a reducer that treated them as extra characters would
+//     show up immediately in accuracy;
+//   * `dictVersion` folds over UTF-16 code units, and the text has three
+//     non-ASCII graphemes, so the run's whole identity depends on V8 and goja
+//     agreeing about them.
+//
+// The payload carries the quote by REFERENCE only. The text below travels in
+// the vector's own `quote` field, which the Go harness loads into a fake
+// registry — mirroring the server, which resolves it out of Postgres by id.
+{
+  const config = coreConfig({ mode: 'quote', maxExtraChars: 40 })
+  const generation = quoteGeneration()
+  const seed = 20260726
+  const s = session({
+    config,
+    generation,
+    declaration: noMods,
+    seed,
+    jitterSeed: 31,
+    dict: quoteDictionary,
+    dictHash: QUOTE_HASH
+  })
+  if (s.words.length !== 16) {
+    throw new Error(`vector 10: expected 16 words from the quote, got ${s.words.length}`)
+  }
+  if (s.words.join(' ') === QUOTE_TEXT) {
+    throw new Error('vector 10: the double space did not collapse — the vector pins nothing')
+  }
+  for (let i = 0; i < s.words.length; i++) {
+    typeWord(s, s.words[i])
+    s.commit()
+  }
+  const finished = s.finish()
+  if (finished.metrics.accuracy !== 1) {
+    throw new Error(`vector 10: the run was meant to be flawless, got acc=${finished.metrics.accuracy}`)
+  }
+  emit(
+    'quote-fixed-text',
+    'A quote run: the text comes from the registry, not the seed. Neither durationMs nor wordCount; ' +
+      'dictHash is dictVersion([text]) and resolves to no dictionary; the double space collapses to one ' +
+      'separator; punctuation and non-ASCII are typed verbatim. The payload carries the quote by id and ' +
+      'hash only — the server reads the bytes back itself.',
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({
+      config,
+      generation,
+      declaration: noMods,
+      seed,
+      finished,
+      scoreVersion: 2,
+      dict: quoteDictionary,
+      dictHash: QUOTE_HASH
+    }),
+    {
+      quote: { id: QUOTE_ID, hash: QUOTE_HASH, text: QUOTE_TEXT },
       spaces: finished.metrics.spaces
     }
   )

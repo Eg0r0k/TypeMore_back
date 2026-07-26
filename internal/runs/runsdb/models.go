@@ -52,6 +52,7 @@ type LeaderboardEligibleRun struct {
 	WordCount      *int32
 	Lang           string
 	TextSourceKind string
+	QuoteID        *uuid.UUID
 	Score          int64
 	Wpm            pgtype.Numeric
 	Raw            pgtype.Numeric
@@ -61,16 +62,17 @@ type LeaderboardEligibleRun struct {
 }
 
 type LeaderboardEntry struct {
-	BucketKey  string
-	UserID     uuid.UUID
-	RunID      uuid.UUID
-	Score      int64
-	Wpm        pgtype.Numeric
-	Raw        pgtype.Numeric
-	Acc        pgtype.Numeric
-	Grade      string
-	Mods       json.RawMessage
-	AchievedAt time.Time
+	BucketKey   string
+	UserID      uuid.UUID
+	RunID       uuid.UUID
+	Score       int64
+	Wpm         pgtype.Numeric
+	Raw         pgtype.Numeric
+	Acc         pgtype.Numeric
+	Grade       string
+	Mods        json.RawMessage
+	AchievedAt  time.Time
+	QuoteSource *string
 }
 
 type LeaderboardRow struct {
@@ -85,6 +87,7 @@ type LeaderboardRow struct {
 	Grade       string
 	Mods        json.RawMessage
 	AchievedAt  time.Time
+	QuoteSource *string
 }
 
 type Match struct {

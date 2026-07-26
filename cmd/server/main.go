@@ -128,7 +128,8 @@ func run() error {
 	// only, and unauthenticated like the boards and the dictionaries — a guest
 	// picking a text to type has no account yet. The corpus itself is published
 	// out of band by `make import-quotes`; nothing on this path can write.
-	quoteSvc := quote.NewService(quotepg.New(pool), logger)
+	quoteStore := quotepg.New(pool)
+	quoteSvc := quote.NewService(quoteStore, logger)
 
 	// Dictionaries: the server is the single source of the word lists the client
 	// generates text from. The registry is seeded once here — every fingerprint
@@ -165,14 +166,24 @@ func run() error {
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	if cfg.ReplayEnabled {
-		worker := replay.NewWorker(replaypg.New(pool, boardStore), dictReg, replay.WorkerConfig{
-			PollInterval:  cfg.ReplayPollInterval,
-			BatchSize:     cfg.ReplayBatchSize,
-			Concurrency:   cfg.ReplayConcurrency,
-			ReplayTimeout: cfg.ReplayTimeout,
-			ShutdownGrace: cfg.ReplayShutdownGrace,
-			Policy:        policy,
-		}, logger)
+		// Two text sources, two registries: dictionary bodies by hash for seeded
+		// runs, quote bytes by id for quote runs. The worker declares both as
+		// narrow interfaces; this is the only place that knows they are the
+		// dictionary registry and Postgres.
+		worker := replay.NewWorker(
+			replaypg.New(pool, boardStore),
+			dictReg,
+			quote.ReplayResolver{Store: quoteStore},
+			replay.WorkerConfig{
+				PollInterval:  cfg.ReplayPollInterval,
+				BatchSize:     cfg.ReplayBatchSize,
+				Concurrency:   cfg.ReplayConcurrency,
+				ReplayTimeout: cfg.ReplayTimeout,
+				ShutdownGrace: cfg.ReplayShutdownGrace,
+				Policy:        policy,
+			},
+			logger,
+		)
 		workers.Add(1)
 		go func() {
 			defer workers.Done()

@@ -34,7 +34,7 @@ var (
 	apiErrRateLimited = newAPIError(http.StatusTooManyRequests, "rate_limited",
 		"too many runs submitted; slow down and try again shortly")
 	apiErrPayloadTooLarge = newAPIError(http.StatusRequestEntityTooLarge, "payload_too_large",
-		"run payload exceeds the 2 MB limit")
+		"run payload exceeds the 6.5 MiB limit")
 	apiErrNotFound = newAPIError(http.StatusNotFound, "not_found",
 		"run not found")
 	apiErrInternal = newAPIError(http.StatusInternalServerError, "internal",

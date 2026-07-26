@@ -28,10 +28,24 @@ const (
 	bundleName = "core.bundle.js"
 	// coreGlobal is the esbuild --global-name the bundle assigns its exports to.
 	coreGlobal = "TypeMoreCore"
-	// DefaultReplayTimeout bounds one core call. Generous for a real log (a 10k
-	// word run folds in milliseconds) and short enough that a pathological
-	// submission cannot occupy a worker.
-	DefaultReplayTimeout = 5 * time.Second
+	// DefaultReplayTimeout bounds one core call when no explicit budget is
+	// given. It is the FALLBACK, not the shipped value — production passes
+	// cfg.ReplayTimeout — but it had silently diverged: it stayed at 5 s while
+	// the config default went to 300 s and then to 45 s, and its comment still
+	// claimed a 10k-word run "folds in milliseconds", which the measurements
+	// contradicted by four orders of magnitude. A fallback that cannot judge a
+	// legal run is a trap for every caller that constructs a Core directly, so
+	// it now tracks the config default. See docs/PERFORMANCE.md, zone 2.
+	DefaultReplayTimeout = 45 * time.Second
+	// TextSourceQuote is the `setup.generation.textSource.kind` that marks a
+	// run played on a fixed text from the quote registry. An ABSENT textSource
+	// means seeded — which is what keeps EVENT_LOG_VERSION at 1, so nothing
+	// here may require the key to exist.
+	TextSourceQuote = "quote"
+	// quoteDictName is the `name` of the stand-in dictionary object a quote run
+	// is replayed with. The bundle reports it back as `dictName` and nothing
+	// downstream reads it, so the only requirement is that it is honest.
+	quoteDictName = "quote"
 )
 
 // bundleSHA is the SHA-256 of the vendored bundle, computed once. Every replay
@@ -85,6 +99,18 @@ type Core struct {
 	// immutable and shared by every run of a language, so parsing a 20 KB word
 	// list once per runtime instead of once per run is free correctness-wise.
 	dicts map[string]goja.Value
+
+	// quoteDict is the stand-in `dictionary` argument a QUOTE run is replayed
+	// with. A quote run has no dictionary at all — its words are the quote's
+	// own bytes — but generateWords and validateLog still take one, and the
+	// bundle's quote branch reads exactly one field off it: `dict.name`.
+	//
+	// Its word list is deliberately EMPTY rather than plausible. If the quote
+	// branch ever stopped firing (a bundle regression, a textSource the core
+	// no longer recognises), the seeded path would hit `EmptyDictionary` and
+	// the run would be flagged — instead of quietly replaying a quote run
+	// against ten random German nouns and rejecting an honest log.
+	quoteDict goja.Value
 }
 
 // NewCore evaluates the vendored bundle and binds the exports the pipeline
@@ -139,6 +165,17 @@ func NewCore(timeout time.Duration) (*Core, error) {
 	if c.jsonStringify, ok = goja.AssertFunction(jsonObj.Get("stringify")); !ok {
 		return nil, errors.New("replay: JSON.stringify is not callable")
 	}
+
+	// Built once per runtime: it is two constant fields, and a quote run must
+	// not pay a JSON.parse for them.
+	quoteDict := rt.NewObject()
+	if err := errors.Join(
+		quoteDict.Set("name", quoteDictName),
+		quoteDict.Set("words", rt.NewArray()),
+	); err != nil {
+		return nil, fmt.Errorf("replay: build the quote stand-in dictionary: %w", err)
+	}
+	c.quoteDict = quoteDict
 	return c, nil
 }
 
@@ -288,17 +325,44 @@ func (c *Core) dictionaryValue(ctx context.Context, dictHash string, body []byte
 // Input is one run as the pipeline needs it. Every jsonb field arrives
 // exactly as the client submitted it and is handed to the core untouched — the
 // server models none of these shapes.
+//
+// The one exception is Quote, and it is an exception on purpose: the bytes a
+// quote run was typed against are read back from the registry by id, never
+// taken from the submission.
 type Input struct {
-	Seed     int64
+	Seed int64
+	// DictHash is the run's claimed dictionary fingerprint, and doubles as the
+	// `dictVersion` the core checks the regenerated words against. IGNORED for
+	// a quote run: there is no dictionary, and the digest that matters is the
+	// resolved text's (see Quote).
 	DictHash string
-	// DictBody is the dictionary file as the registry stores it.
+	// DictBody is the dictionary file as the registry stores it. Nil for a
+	// quote run.
 	DictBody []byte
+	// Quote is the SERVER-RESOLVED fixed text for a quote run, or nil for a
+	// seeded one. Resolved exactly once per run, by Judge, before the core is
+	// entered — note that Replay drives generateWords TWICE per judgement
+	// (validateLog does its own pass, then score does another), so anything
+	// resolved per generateWords call would be resolved twice and could resolve
+	// to two different answers under a concurrent re-import.
+	Quote *QuoteText
 	// Setup is the submitted {config, generation, declaration} snapshot.
 	Setup json.RawMessage
 	// Log is the submitted {version, events} EventLog.
 	Log json.RawMessage
 	// ScoreVersion routes the score recomputation (1 → scoreOfLog, 2 → scoreV2OfLog).
 	ScoreVersion int16
+}
+
+// QuoteText is one quote as the registry holds it: the bytes the run was
+// actually typed against, and the digest the registry stores for them.
+//
+// Hash is the registry's own `text_hash`, NOT the client's `quoteHash` — Judge
+// has already refused the run if the two disagree, so by the time a QuoteText
+// exists there is exactly one hash left in play.
+type QuoteText struct {
+	Text string
+	Hash string
 }
 
 // Flag is one scored plausibility flag from validateLog.
@@ -350,9 +414,20 @@ func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
 		return Result{}, errors.New("replay: setup is missing config or generation")
 	}
 
-	dictionary, err := c.dictionaryValue(ctx, in.DictHash, in.DictBody)
-	if err != nil {
-		return Result{}, err
+	// A quote run has no dictionary and no seeded regeneration: its words ARE
+	// the registry's bytes, and the digest the core checks them against is
+	// dictVersion([text]) — the registry's own text_hash. The submitted
+	// dict_hash is deliberately not consulted, so a client that got it wrong
+	// cannot break a run whose text the server already resolved by id.
+	dictionary, dictVersion := c.quoteDict, ""
+	if in.Quote != nil {
+		dictVersion = in.Quote.Hash
+	} else {
+		parsedDict, err := c.dictionaryValue(ctx, in.DictHash, in.DictBody)
+		if err != nil {
+			return Result{}, err
+		}
+		dictionary, dictVersion = parsedDict, in.DictHash
 	}
 
 	// One JSON.parse for everything that came from the client. The dictionary is
@@ -361,7 +436,7 @@ func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
 	doc.WriteString(`{"seed":`)
 	fmt.Fprintf(&doc, "%d", in.Seed)
 	doc.WriteString(`,"dictVersion":`)
-	writeJSONString(&doc, in.DictHash)
+	writeJSONString(&doc, dictVersion)
 	doc.WriteString(`,"configSnapshot":{"config":`)
 	doc.Write(setup.Config)
 	doc.WriteString(`,"generation":`)
@@ -386,6 +461,17 @@ func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
 	}
 	if err := input.Set("dictionary", dictionary); err != nil {
 		return Result{}, fmt.Errorf("replay: attach dictionary: %w", err)
+	}
+	if in.Quote != nil {
+		// The resolved text is injected into the PARSED input, not spliced into
+		// the JSON above, for the same reason the dictionary is: it lands once,
+		// on the single object both generateWords calls read their generation
+		// config out of. There is no second copy to keep in step, and the
+		// client's own `text` — refused at ingestion — could not reach here
+		// even if a stored row carried one, because this overwrites it.
+		if err := setQuoteText(input, in.Quote.Text); err != nil {
+			return Result{}, err
+		}
 	}
 
 	report, err := c.validate(ctx, input)
@@ -509,6 +595,32 @@ func (c *Core) score(ctx context.Context, input *goja.Object, scoreVersion int16
 		return nil, err
 	}
 	return c.stringifyJSON(ctx, result)
+}
+
+// setQuoteText plants the registry's bytes on the parsed input's
+// generation.textSource, which is where the bundle's quoteOf() looks for them.
+//
+// The path is ASSERTED, never created. A run only reaches here because Judge
+// found a quote textSource in the same setup bytes; a node missing now means
+// the two readings disagreed, and a run must not be judged on a shape the
+// server had to invent.
+func setQuoteText(input *goja.Object, text string) error {
+	snapshot, ok := input.Get("configSnapshot").(*goja.Object)
+	if !ok {
+		return errors.New("replay: configSnapshot is not an object")
+	}
+	generation, ok := snapshot.Get("generation").(*goja.Object)
+	if !ok {
+		return errors.New("replay: setup.generation is not an object")
+	}
+	source, ok := generation.Get("textSource").(*goja.Object)
+	if !ok {
+		return errors.New("replay: setup.generation.textSource is not an object")
+	}
+	if err := source.Set("text", text); err != nil {
+		return fmt.Errorf("replay: inject the resolved quote text: %w", err)
+	}
+	return nil
 }
 
 // writeJSONString appends a JSON string literal. json.Marshal of a string never

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,10 +48,24 @@ type vector struct {
 	// Spaces is the separator count the core credited (inline-dictionary
 	// vectors only): the '\n' rule in one number.
 	Spaces *int `json:"spaces"`
+	// Quote is the registry row a QUOTE vector was played against. The payload
+	// deliberately does not carry the text — the server resolves it by id — so
+	// the vector carries it here instead, and the harness seeds a fake registry
+	// from it. That split is the contract: the bytes the worker judges against
+	// never travel with the submission.
+	Quote *struct {
+		ID   uuid.UUID `json:"id"`
+		Hash string    `json:"hash"`
+		Text string    `json:"text"`
+	} `json:"quote"`
 }
 
 type vectorPayload struct {
-	Mode          string          `json:"mode"`
+	Mode string `json:"mode"`
+	// The two dimension fields, as pointers: a quote run carries NEITHER, and
+	// the contract-surface test asserts exactly that.
+	DurationMs    *int32          `json:"durationMs"`
+	WordCount     *int32          `json:"wordCount"`
 	Lang          string          `json:"lang"`
 	Seed          int64           `json:"seed"`
 	DictHash      string          `json:"dictHash"`
@@ -59,6 +74,30 @@ type vectorPayload struct {
 	ClientMetrics json.RawMessage `json:"clientMetrics"`
 	ClientScore   json.RawMessage `json:"clientScore"`
 	Log           json.RawMessage `json:"log"`
+}
+
+// fakeQuotes is an in-memory quote registry: exactly the narrow seam the worker
+// declares, with nothing behind it. Superseded revisions are indistinguishable
+// here, which is correct — resolution is by id and supersession never changes a
+// published row's bytes.
+type fakeQuotes map[uuid.UUID]QuoteText
+
+func (f fakeQuotes) ResolveQuote(_ context.Context, id uuid.UUID) (string, string, bool, error) {
+	q, ok := f[id]
+	return q.Text, q.Hash, ok, nil
+}
+
+// goldenQuotes is the registry every golden quote vector was played against.
+func goldenQuotes(t *testing.T) fakeQuotes {
+	t.Helper()
+	out := fakeQuotes{}
+	vectors := loadVectors(t)
+	for i := range vectors {
+		if q := vectors[i].Quote; q != nil {
+			out[q.ID] = QuoteText{Text: q.Text, Hash: q.Hash}
+		}
+	}
+	return out
 }
 
 func loadVectors(t *testing.T) []vector {
@@ -159,25 +198,44 @@ func testWorker(t *testing.T, q Queue) (*Worker, *Core) {
 
 func testWorkerWithPolicy(t *testing.T, q Queue, p Policy) (*Worker, *Core) {
 	t.Helper()
+	return testWorkerWith(t, q, p, goldenQuotes(t))
+}
+
+func testWorkerWith(t *testing.T, q Queue, p Policy, quotes QuoteResolver) (*Worker, *Core) {
+	t.Helper()
 	core, err := NewCore(DefaultReplayTimeout)
 	require.NoError(t, err)
 	reg, err := NewRegistry(core)
 	require.NoError(t, err)
-	w := NewWorker(q, reg, WorkerConfig{BatchSize: 50, Policy: p}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := NewWorker(q, reg, quotes, WorkerConfig{BatchSize: 50, Policy: p},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w, core
 }
 
 // judgeOne runs a single run through the worker's decision path under the
-// default (shipped) policy.
+// default (shipped) policy, against the registry the golden vectors were
+// played on.
 func judgeOne(t *testing.T, run PendingRun) Decision {
 	t.Helper()
-	return judgeOneWithPolicy(t, run, DefaultPolicy())
+	return judgeOneWith(t, run, DefaultPolicy(), goldenQuotes(t))
 }
 
 func judgeOneWithPolicy(t *testing.T, run PendingRun, p Policy) Decision {
 	t.Helper()
+	return judgeOneWith(t, run, p, goldenQuotes(t))
+}
+
+// judgeOneWithQuotes judges against a registry the test chose — the way a quote
+// that has gone missing, or come back with different bytes, is staged.
+func judgeOneWithQuotes(t *testing.T, run PendingRun, quotes QuoteResolver) Decision {
+	t.Helper()
+	return judgeOneWith(t, run, DefaultPolicy(), quotes)
+}
+
+func judgeOneWith(t *testing.T, run PendingRun, p Policy, quotes QuoteResolver) Decision {
+	t.Helper()
 	q := newFakeQueue(run)
-	w, _ := testWorkerWithPolicy(t, q, p)
+	w, _ := testWorkerWith(t, q, p, quotes)
 	n, err := w.RunBatch(context.Background(), mustCore(t, DefaultReplayTimeout), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
@@ -286,7 +344,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	require.GreaterOrEqual(t, len(vectors), 5)
 
 	var sawTime, sawWords, sawMods, sawRejectedBackspace, sawV1, sawV2, sawTypos bool
-	var sawWeakFlagAccepted, sawBotFlagged, sawNospace, sawNewlineDict bool
+	var sawWeakFlagAccepted, sawBotFlagged, sawNospace, sawNewlineDict, sawQuote bool
 	for _, v := range vectors {
 		switch v.Payload.Mode {
 		case "time":
@@ -309,6 +367,12 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 				Numbers     bool `json:"numbers"`
 				RandomCase  bool `json:"randomCase"`
 				RawTokens   bool `json:"rawTokens"`
+				TextSource  *struct {
+					Kind      string          `json:"kind"`
+					QuoteID   string          `json:"quoteId"`
+					QuoteHash string          `json:"quoteHash"`
+					Text      json.RawMessage `json:"text"`
+				} `json:"textSource"`
 			} `json:"generation"`
 		}
 		require.NoError(t, json.Unmarshal(v.Payload.Setup, &setup))
@@ -344,6 +408,30 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 		if v.Expect.Status == StatusFlagged {
 			sawBotFlagged = true
 		}
+
+		// The quote case, asserted rather than merely counted. Every clause here
+		// is a contract the ingestion path enforces, so a regenerated vector
+		// that broke one would be a payload the server refuses.
+		if src := setup.Generation.TextSource; src != nil && src.Kind == TextSourceQuote {
+			sawQuote = true
+			require.NotNil(t, v.Quote, "%s: a quote vector must carry the registry row it was played on", v.Name)
+			assert.Empty(t, src.Text,
+				"%s: the submitted textSource carries text — ingestion refuses that outright", v.Name)
+			assert.Equal(t, v.Quote.ID.String(), src.QuoteID, "%s: quoteId", v.Name)
+			assert.Equal(t, v.Quote.Hash, src.QuoteHash, "%s: quoteHash", v.Name)
+			assert.Equal(t, v.Quote.Hash, v.Payload.DictHash,
+				"%s: a quote run's dictHash IS dictVersion([text]) — the same value as quoteHash", v.Name)
+			assert.Nil(t, v.Payload.DurationMs, "%s: a quote run carries no durationMs", v.Name)
+			assert.Nil(t, v.Payload.WordCount, "%s: a quote run carries no wordCount", v.Name)
+			assert.NotContains(t, v.Quote.Text, "\n",
+				"%s: pick a quote whose separators are spaces; '\\n' is the code-dictionary vector's job", v.Name)
+			assert.Contains(t, v.Quote.Text, "  ",
+				"%s: the quote must contain a double space — collapsing it is what this vector pins", v.Name)
+		} else {
+			// The seeded side of the same rule: exactly one dimension, always.
+			assert.NotEqual(t, v.Payload.DurationMs == nil, v.Payload.WordCount == nil,
+				"%s: a seeded run carries exactly one of durationMs / wordCount", v.Name)
+		}
 	}
 	assert.True(t, sawTime, "no time-mode vector")
 	assert.True(t, sawWords, "no words-mode vector")
@@ -356,6 +444,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	assert.True(t, sawBotFlagged, "no bot-shaped vector: the review path is unguarded")
 	assert.True(t, sawNospace, "no nospace-with-space-presses vector: the NospaceCommit guard is unpinned")
 	assert.True(t, sawNewlineDict, "no '\\n'-dictionary vector: the separator rule is unpinned")
+	assert.True(t, sawQuote, "no quote vector: the fixed-text path is unpinned")
 }
 
 // A vector whose language is not published yet cannot travel the worker path —
@@ -548,6 +637,137 @@ func TestUnknownDictIsFlaggedNeverRejected(t *testing.T) {
 	assert.Equal(t, ReasonUnknownDict, doc.Reason)
 	assert.Contains(t, d.LastError, "deadbeef")
 	assert.Zero(t, d.Attempts, "an unpublished dictionary is not a retryable replay failure")
+}
+
+// --- quote runs -------------------------------------------------------------
+
+// A quote run's dict_hash is dictVersion([text]) and resolves to NO published
+// dictionary. That is not a defect to be papered over — it is why Judge must
+// branch on the text source before it reaches the registry at all. If it ever
+// stops branching, every quote run comes back unknown_dict.
+func TestQuoteRunNeverConsultsTheDictionaryRegistry(t *testing.T) {
+	v := firstVector(t, "quote-fixed-text")
+
+	core := mustCore(t, DefaultReplayTimeout)
+	reg, err := NewRegistry(core)
+	require.NoError(t, err)
+	_, ok := reg.Body(v.Payload.DictHash)
+	require.False(t, ok, "the premise is gone: this quote's hash IS a published dictionary")
+
+	d := judgeOne(t, v.pendingRun(t))
+	assert.Equal(t, StatusAccepted, d.Status, "validation: %s", d.Validation)
+}
+
+// The registry holds different bytes than the run claims. Something moved —
+// most likely the corpus, since a re-import supersedes rather than edits — and
+// the server cannot judge the run until it knows which. Flagged, never
+// rejected: rejection is the one verdict that says "we proved this was bad".
+func TestQuoteHashMismatchIsFlaggedNeverRejected(t *testing.T) {
+	v := firstVector(t, "quote-fixed-text")
+	require.NotNil(t, v.Quote)
+
+	// Same id, different bytes — exactly what an in-place edit of a published
+	// quote would look like from here.
+	quotes := fakeQuotes{v.Quote.ID: {Text: v.Quote.Text + " und weiter", Hash: "0badcafe"}}
+
+	d := judgeOneWithQuotes(t, v.pendingRun(t), quotes)
+	require.Equal(t, StatusFlagged, d.Status, "validation: %s", d.Validation)
+	require.NotEqual(t, StatusRejected, d.Status,
+		"a corpus that moved is not proof the player cheated")
+
+	doc := audit(t, d)
+	assert.Equal(t, verdictError, doc.Verdict)
+	assert.Equal(t, ReasonUnknownQuote, doc.Reason)
+	assert.Contains(t, d.LastError, v.Quote.Hash, "the claimed hash belongs in the audit trail")
+	assert.Contains(t, d.LastError, "0badcafe", "so does the hash the registry actually holds")
+	assert.Zero(t, d.Attempts, "a moved corpus is not a retryable replay failure")
+}
+
+// An id the registry has never heard of: the same verdict, for the same reason.
+// A node restored from a stale dump, or one the re-import has not reached yet,
+// must not start rejecting honest runs.
+func TestUnknownQuoteIDIsFlaggedNeverRejected(t *testing.T) {
+	v := firstVector(t, "quote-fixed-text")
+
+	d := judgeOneWithQuotes(t, v.pendingRun(t), fakeQuotes{})
+	require.Equal(t, StatusFlagged, d.Status, "validation: %s", d.Validation)
+	require.NotEqual(t, StatusRejected, d.Status)
+
+	doc := audit(t, d)
+	assert.Equal(t, ReasonUnknownQuote, doc.Reason)
+	assert.Contains(t, d.LastError, v.Quote.ID.String())
+	assert.Zero(t, d.Attempts, "an absent quote is not a retryable replay failure")
+}
+
+// A quoteId that is not a uuid never reaches the registry. Ingestion refuses
+// one, so this can only be a hand-written row — and it is still a decision, not
+// a wedged queue.
+func TestMalformedQuoteIDIsFlaggedAsUnknownQuote(t *testing.T) {
+	v := firstVector(t, "quote-fixed-text")
+	run := v.pendingRun(t)
+	run.Setup = patchTextSource(t, run.Setup, func(src map[string]any) {
+		src["quoteId"] = "not-a-uuid"
+	})
+
+	d := judgeOneWithQuotes(t, run, fakeQuotes{})
+	require.Equal(t, StatusFlagged, d.Status)
+	assert.Equal(t, ReasonUnknownQuote, audit(t, d).Reason)
+}
+
+// A registry that FAILS is not a registry that answered "no". A database blip
+// must leave the run retryable, or one outage permanently flags every quote run
+// submitted during it.
+func TestQuoteRegistryFailureIsRetriedNotFlaggedAsUnknown(t *testing.T) {
+	v := firstVector(t, "quote-fixed-text")
+
+	d := judgeOneWithQuotes(t, v.pendingRun(t), brokenQuotes{})
+	require.Equal(t, StatusFlagged, d.Status)
+
+	doc := audit(t, d)
+	assert.Equal(t, ReasonReplayError, doc.Reason,
+		"an unreachable registry must not be recorded as a missing quote")
+	assert.NotEqual(t, ReasonUnknownQuote, doc.Reason)
+	assert.EqualValues(t, 1, d.Attempts, "a transient failure has to be retryable")
+}
+
+// brokenQuotes is a registry that cannot answer at all.
+type brokenQuotes struct{}
+
+func (brokenQuotes) ResolveQuote(context.Context, uuid.UUID) (string, string, bool, error) {
+	return "", "", false, errors.New("connection refused")
+}
+
+// The client's own copy of the text is never what the server judges against.
+// Even if a row somehow carried one — ingestion refuses it, but a hand-written
+// row or an older schema could — the registry's bytes win, and a log typed
+// against the real text still validates.
+func TestASubmittedQuoteTextIsIgnoredInFavourOfTheRegistry(t *testing.T) {
+	v := firstVector(t, "quote-fixed-text")
+	run := v.pendingRun(t)
+	run.Setup = patchTextSource(t, run.Setup, func(src map[string]any) {
+		src["text"] = "etwas ganz anderes"
+	})
+
+	d := judgeOne(t, run)
+	assert.Equal(t, StatusAccepted, d.Status,
+		"the server judged against the client's text instead of the registry's: %s", d.Validation)
+}
+
+// patchTextSource rewrites setup.generation.textSource in place. Structural,
+// not textual: the stored snapshot is whatever the client sent, and a string
+// replacement would quietly no-op on a differently-formatted one.
+func patchTextSource(t *testing.T, setup json.RawMessage, mutate func(map[string]any)) json.RawMessage {
+	t.Helper()
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(setup, &doc))
+	generation, ok := doc["generation"].(map[string]any)
+	require.True(t, ok, "setup has no generation object")
+	source, ok := generation["textSource"].(map[string]any)
+	require.True(t, ok, "setup.generation has no textSource object")
+	mutate(source)
+	patched, err := json.Marshal(doc)
+	require.NoError(t, err)
+	return patched
 }
 
 // A run whose score_version the server cannot route is a replay error, not a
