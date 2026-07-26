@@ -138,43 +138,57 @@ type Config struct {
 	// ReplayBatchSize is how many runs one transaction claims. It also bounds
 	// how long that transaction holds its row locks: the claim, every verdict
 	// and the commit share ONE transaction, so the locks are held for up to
-	// batchSize × ReplayTimeout. With the 300 s timeout below, a batch of 20
-	// could hold them for 100 minutes — which is why the batch is 2 (10 minutes
-	// worst case) rather than the 20 that was fine against a 5 s budget.
+	// batchSize × ReplayTimeout, inside the same transaction the leaderboard
+	// projection runs in.
+	//
+	// Kept at 2, NOT restored to the pre-stop-gap 20. 20 was fine against a 5 s
+	// budget (100 s of locks); against the 45 s below it would be 15 minutes,
+	// which is worse than the stop-gap it would be replacing. 2 × 45 s = 90 s
+	// is roughly what 20 × 5 s always cost, so this is the old lock ceiling
+	// restored — the knob that moved is just not this one.
 	ReplayBatchSize int32 `env:"REPLAY_BATCH_SIZE" envDefault:"2"`
 	// ReplayConcurrency is the number of worker goroutines. Each owns a goja
 	// runtime (~a few MB), and they share the queue via FOR UPDATE SKIP LOCKED.
 	//
 	// 4, not 1: one goroutine does 5.8 realistic runs/s, which is 0.42× a
-	// plausible four-hour peak, and one maximum-size run parks a goroutine for
-	// over a minute (docs/PERFORMANCE.md, zone 2). At 4 a deliberate 2 MiB
-	// submission can park one worker while three keep draining.
+	// plausible four-hour peak (docs/PERFORMANCE.md, zone 2). A maximum-size
+	// submission now parks a goroutine for ~7 s rather than over a minute, but
+	// 4 still buys the headroom cheaply and three keep draining regardless.
 	ReplayConcurrency int `env:"REPLAY_CONCURRENCY" envDefault:"4"`
 	// ReplayTimeout bounds one core call. A run that exceeds it is flagged
 	// replay_timeout rather than allowed to occupy a worker.
 	//
-	// 300 s, not 5 s. A legal maximum run — 39 914 events — costs 76.5 s in the
-	// interpreter, so a 5 s budget flagged every run above ~8 100 events as
-	// replay_timeout: an honest player punished for the server's own slowness.
-	// 300 s is 3.9× that measured worst case. It is a stop-gap for the core's
-	// quadratic fold (docs/PERFORMANCE.md, zone 2), not a target.
-	ReplayTimeout time.Duration `env:"REPLAY_TIMEOUT" envDefault:"300s"`
+	// 45 s, down from the 300 s stop-gap. The core's quadratic fold is fixed
+	// (O(1) amortized reduce), so the same maximum run that cost 76.5 s now
+	// costs 3.4 s, and the ingestion caps have since risen to 120 000 events /
+	// 6.5 MiB so that a full 10 000-word run is actually submittable. Measured
+	// against THOSE caps, not the old ones:
+	//
+	//   german  10k words,  79 394 events — 7.18 s worst sample (measured)
+	//   css_code 10k words, 108 274 events — ~8.1 s (projected at the measured
+	//                                        17.5× V8→goja ratio; css_code is
+	//                                        the worst of the nine published
+	//                                        dictionaries, not german)
+	//
+	// 45 s is 5.6× that worst case, which is the ≥5× headroom this is sized
+	// for. 30 s would have been 3.7× — it only cleared 5× under the OLD caps,
+	// where the worst legal run was 4.3 s. The number that moved is the cap,
+	// so the timeout moved with it.
+	ReplayTimeout time.Duration `env:"REPLAY_TIMEOUT" envDefault:"45s"`
 	// ReplayShutdownGrace bounds how long an in-flight batch may take to finish
 	// after the shutdown signal, so verdicts commit instead of rolling back.
 	//
 	// It is also the deadline on EVERY batch context, and therefore an upper
 	// bound on the per-run interrupt budget: the core call runs under
-	// min(batch deadline, ReplayTimeout). At 30 s it would have quietly clamped
-	// the 300 s above back to something smaller than one maximum run, and the
-	// expired context would then fail the decision write and roll the batch
-	// back — a slow run retried forever instead of judged once. So it covers
-	// the worst case the two knobs above can produce: 2 × 300 s of interpreter
-	// plus the 30 s of database work this default always allowed.
+	// min(batch deadline, ReplayTimeout). Set it below batchSize × ReplayTimeout
+	// and it silently clamps the budget above, and the expired context then
+	// fails the decision write and rolls the batch back — a slow run retried
+	// forever instead of judged once. So it covers the worst case the two knobs
+	// above can produce: 2 × 45 s of interpreter plus the 30 s of database work
+	// this default has always allowed.
 	//
-	// The cost is a deploy that can wait ten minutes for a batch to land. That
-	// is the honest price of a 300 s timeout, and it is paid at most once per
-	// worker goroutine.
-	ReplayShutdownGrace time.Duration `env:"REPLAY_SHUTDOWN_GRACE" envDefault:"630s"`
+	// Cost: a deploy may wait two minutes for a batch to land, down from ten.
+	ReplayShutdownGrace time.Duration `env:"REPLAY_SHUTDOWN_GRACE" envDefault:"120s"`
 
 	// --- Replay review policy (docs/REPLAY.md, "Review policy") ---
 	//

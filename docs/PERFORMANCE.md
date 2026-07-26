@@ -32,16 +32,17 @@ timeout, cap or volume was widened to turn a test green.** Two budgets were
 
 ## `make load` exits non-zero today, and that is the point
 
-Eleven asserted budgets are missed. The brief for this phase was explicit that a
-missed budget is **reported**, not widened, so the suite is red until the
-underlying problems are fixed. It is red in exactly these places and nowhere
+Eleven asserted budgets were missed when this document was first written. The
+brief was explicit that a missed budget is **reported**, not widened, so the
+suite stays red until the underlying problem is fixed — and zone 2's three are
+now fixed rather than widened. It is red in exactly these places and nowhere
 else — anything beyond this list is a new regression:
 
 | test | why it is red |
 |---|---|
-| `TestLoadReplayMaxRun` | zone 2: 76.5 s against a 5 s timeout |
-| `TestLoadReplayMaxRunUnderProductionTimeout` | zone 2: a legal run is `replay_timeout` |
-| `TestLoadReplayRealisticRun` | zone 2: 170 ms p99 against a 50 ms budget |
+| ~~`TestLoadReplayMaxRun`~~ | zone 2 — **FIXED**: 1 m 13.5 s → 3.40 s on the same fixture. Still reports one miss, against the *2× median* line, because the caps were then raised to 120 000 events; the worst legal run is 7.18 s against a 45 s timeout, 5.6× |
+| ~~`TestLoadReplayMaxRunUnderProductionTimeout`~~ | zone 2 — **FIXED**: a legal run is judged, not `replay_timeout`. It now surfaces `score_mismatch` from the fixture's placeholder `clientScore`, which the old timeout hid |
+| `TestLoadReplayRealisticRun` | zone 2 — **still red, improved**: p99 170.5 ms → **76 ms** against a 50 ms budget, 1.5× over (was 3.4×). A realistic 483-event run never had much quadratic term to lose; the remaining gap is linear cost, so this one needs its own look rather than another core fix |
 | `TestLoadBoardPage` | zone 3: deep page 65 ms / 18× page 1 |
 | `TestLoadBoardRank` | zone 3: `/me` 176 ms p99 at rank 99 786 |
 | `TestLoadPlanBoardRankAbove` | zone 3: at depth the count seq-scans `leaderboard_entries` |
@@ -147,11 +148,15 @@ Everything else is reported.
 
 ### Fix now
 
-1. **Zone 2 — the replay timeout was 15× too small for a legal run.**
-   Any run above ~8 100 events was flagged `replay_timeout`. The server
-   punishing honest players for its own slowness is the worst failure mode this
-   pipeline has. **Mitigated in config** (see the zone's Recommendation); the
-   real fix is the core's quadratic fold, item 3 there.
+1. ~~**Zone 2 — the replay timeout was 15× too small for a legal run.**~~
+   **DONE.** Any run above ~8 100 events was flagged `replay_timeout` — the
+   server punishing honest players for its own slowness, the worst failure mode
+   this pipeline has. The core's quadratic fold is fixed (21.6× on the same
+   fixture, 72× less allocation churn), the config stop-gaps are retired, and
+   the ingestion caps were raised rather than lowered so a full 10 000-word run
+   is finally submittable. See the zone's Resolution. What remains in zone 2 is
+   the realistic-run p99 at 1.5× budget, which is linear cost and a separate
+   question.
 2. **Zone 4 — `rebuild-leaderboards` takes every board offline for its whole run.**
    7–11 minutes at 1 M runs, and `TRUNCATE` holds `ACCESS EXCLUSIVE` throughout,
    so the wall time *is* downtime. Fixable independently of the speed.
@@ -166,8 +171,15 @@ Everything else is reported.
    four cooperating IPs could exhaust a 512 MiB instance without tripping the
    limiter. **Fixed** — the log is a separate route serving the stored gzip
    bytes, at the documented cost of a second request per watch.
-6. **Zone 5 — the two ingestion caps contradict each other.** The documented
-   50 000-event limit is unreachable; the real one is 39 915.
+6. ~~**Zone 5 — the two ingestion caps contradict each other.**~~ **DONE.** The
+   documented 50 000-event limit was unreachable and the real one was 39 915 —
+   and neither allowed the documented `MaxWordCount = 10 000` to be played at
+   all. Now 120 000 events / 6.5 MiB, sized off css_code (the worst of the nine
+   published dictionaries at 108 274 events, not german at 79 394). The event
+   cap is the operative one for a well-formed log; the body cap sits above it
+   as the guard against fat inserts, which is what a body cap is for. Cost:
+   the ingest envelope is 3.25× larger and the body is still parsed twice —
+   that is now the largest allocation on the path and the next thing to measure.
 7. **Zone 4 — `EnumerateLeaderboardCells` evaluates the email gate per row** and
    spills to disk; a gated rebuild does not finish.
 
@@ -290,23 +302,43 @@ measurement first. It is the only lever that makes the memory figure
 
 ## Zone 2 — worker replay of a maximum legal run
 
-**This is the most serious finding in the phase.**
+**Fixed. This was the most serious finding in the phase, and the fix is in.**
 
-On a production-configured runtime the largest submittable run comes back after
-5.213 s as `status=flagged, verdict=error, reason="replay_timeout"`. Its actual
-cost is **76.5 s — 15.3× the timeout.** At the documented 50 000-event cap it is
-**121.9 s, 24.4×.**
+The quadratic in the core's reducer is gone (`reduce` is O(1) amortized), and
+the numbers below are the same fixture measured before and after on the same
+box, same goja, same workload.
 
-| workload | measured | budget | verdict |
+| workload | before | after | factor |
 |---|---|---|---|
-| 39 914 events / 10 000 words | **1 m 16.5 s** | 5 s | MISSED 15.3× |
-| 50 000 events / 10 000 words | **2 m 1.9 s** | 5 s | MISSED 24.4× |
-| the same run on a real 5 s core | `replay_timeout` | must not | MISSED |
-| realistic 60 s run, 483 events | 170.5 ms p99 | 50 ms | MISSED 3.4× |
-| 10 000-word generation, 200-event log | 134.0 ms | 2.5 s | PASS |
+| 39 914 events / 10 000 words — mean of 3 | **1 m 13.5 s** | **3.40 s** | **21.6× faster** |
+| …`validateLog` | 45.88 s | 2.03 s | 22.6× |
+| …`scoreV2OfLog` | 29.07 s | 1.24 s | 23.4× |
+| …allocations | **67.15 GiB / 1 355 729 150** | **954 MiB / 22 343 338** | **72× / 61×** |
+| 50 000 events / 10 000 words | 1 m 51.3 s | 4.27 s | 26.1× |
+| …allocations | 112.14 GiB | 1.17 GiB | 96× |
 
-Phase split at 39 914 events: gunzip 8 ms · JSON.parse 200 ms · `generateWords`
-34 ms · **`validateLog` 43.4 s** · **`scoreV2OfLog` 30.5 s**.
+The allocation column is the real story. 67 GiB of churn to judge one run was
+`input.slice()` copying the committed-word array on every keystroke, five folds
+deep; it is now flat in the event count rather than quadratic in it.
+
+**The caps then moved, so the worst legal run is no longer that fixture.**
+Ingestion now allows 120 000 events / 6.5 MiB (zone 5), because a full
+10 000-word run — the documented `MaxWordCount` — was never actually
+submittable under the old 2 MiB cap. Re-measured against the caps as they now
+stand:
+
+| workload | measured | note |
+|---|---|---|
+| german 10k words, 79 394 events | **7.18 s** worst sample, 1.85 GiB | the new bench fixture |
+| css_code 10k words, 108 274 events | **~8.1 s** | projected at the measured 17.5× V8→goja ratio; css_code is the worst of the nine published dictionaries, not german |
+
+Phase split at 79 394 events: gunzip 16 ms · JSON.parse 527 ms ·
+`generateWords` 44 ms · `validateLog` 4.05 s · `scoreV2OfLog` 2.53 s. Note that
+`JSON.parse` has become a visible fraction where it used to be rounding error.
+
+Phase split BEFORE, at 39 914 events, for the record: gunzip 8 ms ·
+JSON.parse 200 ms · `generateWords` 34 ms · **`validateLog` 43.4 s** ·
+**`scoreV2OfLog` 30.5 s**.
 
 ### The fixture is honest
 
@@ -322,7 +354,7 @@ insert per grapheme, one commit per word, jittered 30–102 ms intervals. The
 cross-check is the golden vector `words-clean` — a real Node-produced payload —
 at 0.370 ms/event, so the synthetic fixture is not anomalous.
 
-### Root cause, measured
+### Root cause, measured — and what was actually done
 
 Two 20 000-event logs, same generation, same event count, differing only in how
 far through the word list they walk: **20.08 s walking forward vs 4.69 s pinned
@@ -338,66 +370,67 @@ Compounding it: the log is folded **five times** per replay (`validateLog` three
 `scoreV2OfLog` two) and the words are generated **twice**. The measured 3:2 phase
 split matches exactly at both sizes.
 
-### Recommendation — item 1 is now APPLIED
+### Resolution — all four items settled
 
-The brief asks whether the margin is 2×. **It is 0.065×.** Neither knob fixes
-this alone at a sane value:
+1. **The core is fixed** (frontend `src/shared/core`, vendored here). `setInput`
+   no longer slices per keystroke: state now shares one backing buffer with a
+   write journal, so a write is O(1) and allocates nothing. Two of the five
+   folds were removed — `afkOf` was re-folding the whole log to recover two
+   scalars `validateLog` already had, and `scoreV2OfLog`'s `foldLog` duplicated
+   the trajectory `computeMetrics` already walks. The remaining pair is kept
+   deliberately: fold 1 must yield a typed error carrying the offending seq,
+   and moving that into the metrics module would put the anti-cheat verdict in
+   the wrong layer for a fold that is now linear and cheap.
 
-| target margin | event cap that fits 5 s |
-|---|---|
-| 1× | ~8 100 events |
-| 2× | ~5 100 events |
-| 3× | ~3 700 events |
+   Two more non-linear paths were found and fixed that this document never
+   measured, because the fixture cannot reach them: `settle` called
+   `minSpeedFailInstant` → `netCharsOf`/`separatorsOf` — a sweep over every
+   committed word — on EVERY event whenever `minWpm > 0`, and `wpmOverTime`
+   was O(seconds × keystrokes), ~8.7e7 iterations on the results screen. The
+   fixture runs `minWpm: 0`, so a `setInput`-only fix would have left the first
+   one live for every player using the MinSpeed mod. Worth remembering that a
+   green budget only covers the configuration the fixture happens to use.
 
-1. **APPLIED — the config stop-gap is now the default.** `REPLAY_TIMEOUT`
-   5 s → **300 s** and `REPLAY_CONCURRENCY` 1 → **4**, in
-   `internal/platform/config.go` and `.env.example`. 300 s is 3.9× the measured
-   worst case at the real ceiling; it is the only change that stops honest
-   players being flagged today. Cost: a deliberate 2 MiB submission can park one
-   worker for five minutes; at concurrency 4 three remain, and the durable queue
-   makes a slow verdict *latency*, not loss.
+   The constraint was byte-identical output, and it holds three ways: all nine
+   golden vectors replay bit-exact in goja against the new bundle; both cores
+   were driven over the same vectors in Node with zero divergences; and all 85
+   runs in the dev database were re-judged through the new bundle and came back
+   with identical verdicts, reasons and leaderboard entries — only `bundle_sha`
+   moved.
 
-   Two defaults had to move with it, because a longer timeout is not a free
-   parameter:
+2. **The stop-gaps are retired.** `REPLAY_TIMEOUT` 300 s → **45 s**,
+   `REPLAY_SHUTDOWN_GRACE` 630 s → **120 s**. `REPLAY_CONCURRENCY` stays at 4,
+   now as cheap headroom rather than a mitigation.
 
-   - **`REPLAY_BATCH_SIZE` 20 → 2.** The claim, every verdict and the commit
-     share ONE transaction (`FOR UPDATE SKIP LOCKED`, no `processing` status),
-     so the row locks are held for **batchSize × timeout**. At 20 × 5 s that was
-     100 s. At 20 × 300 s it would be **100 minutes** of held locks on judged
-     rows, inside the same transaction the leaderboard projection runs in.
-     2 × 300 s = **10 minutes**, which is the ceiling accepted here.
-   - **`REPLAY_SHUTDOWN_GRACE` 30 s → 630 s.** It is not only the shutdown
-     budget: `Worker.loop` gives *every* batch a context with that deadline, and
-     the core call runs under `min(batch deadline, ReplayTimeout)`. Left at 30 s
-     it would have clamped the new 300 s budget back below one maximum run —
-     and worse, the expired context then fails the decision write, so the batch
-     rolls back and the slow run is retried forever instead of judged once.
-     630 s = 2 × 300 s of interpreter + the 30 s of database work the old
-     default allowed. Cost: a deploy may wait ten minutes for an in-flight batch
-     to land (`cmd/server` waits on the worker group).
+   `REPLAY_BATCH_SIZE` stays at **2** and is deliberately NOT restored to the
+   pre-stop-gap 20. Locks are held for batchSize × timeout inside the same
+   transaction the leaderboard projection runs in; 20 × 45 s is 15 minutes,
+   which would be worse than the stop-gap it replaced. 2 × 45 s = 90 s is
+   almost exactly what 20 × 5 s always cost, so the old lock ceiling is
+   restored — the knob that moved is simply not this one.
 
-2. **Lower `maxEvents` 50 000 → 39 913.** Free — the body cap already makes
-   anything above it unsubmittable (zone 5) — and it removes 25% of the
-   validator's worst case. **Not done.**
-3. **Fix the core** (frontend `src/shared/core`, not this repo): make `setInput`
-   mutate a working copy instead of slicing per keystroke (removes the quadratic
-   term: 50 000 events 108 s → **11.7 s** [INFERENCE, from the fitted model]);
-   fold once and share the analysis (5 folds → 1); pass the generated words from
-   `validateLog` into the score phase. Together, 50 000 events lands at ~2.3 s
-   and a 5 s timeout works at the documented cap with a 2× margin. **This is
-   what retires item 1** — 300 s is a stop-gap, not a target, and the batch size
-   and shutdown grace go back up with it.
-4. **Do NOT lower the event cap to make 5 s work.** ~3 700 events is six minutes
-   of typing; the current cap is roughly "one hour", which is what
-   `maxDurationMs` already promises. Cutting it to suit the interpreter is the
-   same class of mistake as flagging the run.
+3. **The event cap went UP, not down.** The earlier recommendation here was to
+   lower `maxEvents` 50 000 → 39 913 to match the body cap. That was correct
+   arithmetic about the wrong target: it would have made the documented
+   `MaxWordCount = 10 000` permanently unreachable, which is the same
+   "server shrinks the game to fit its interpreter" mistake item 4 warns about,
+   just quieter. With the interpreter fixed the caps could instead be sized to
+   the game: 120 000 events / 6.5 MiB (zone 5).
 
-**Throughput:** one worker goroutine does 5.8 realistic runs/s — 2.5× a 2.3/s
-daily average (10 000 DAU × 20 runs), but **0.42×** a 13.9/s four-hour peak. 2.4
-goroutines are needed for the peak, which is what the new default of 4 buys.
+4. **Still true, and it is why item 3 went the way it did.** Do not lower a cap
+   to make a timeout work.
 
-**Allocation churn:** one 50 000-event replay churns **112 GiB across 2.1 billion
-allocations**; a realistic run, 58 MiB across 1.2 million.
+**Margin.** 45 s against the ~8.1 s worst legal run is **5.6×**, which is what
+this was sized for. 30 s would have been 3.7×: it cleared 5× only under the old
+caps, where the worst legal run was 4.3 s. The timeout moved because the cap
+moved.
+
+**One thing the fix exposed.** `TestLoadReplayMaxRunUnderProductionTimeout` now
+reports `score_mismatch` where it used to report `replay_timeout`. That is not a
+scoring regression — the load fixture hard-codes `clientScore: {"version": 2,
+"total": 1234}` (`internal/perf/generate.go`) while the real score is ~1.6
+million. The old 5 s timeout aborted before scoring ever compared them. The
+fixture was always lying; the server just got fast enough to notice.
 
 ### The two flaky tests — fixed
 
