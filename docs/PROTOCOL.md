@@ -570,7 +570,7 @@ and **identical for all players** — everyone types the same text. It is set vi
 | field | type | notes |
 |-------|------|-------|
 | `name` | string | 1–32 chars after sanitizing (control chars stripped, trimmed) |
-| `visibility` | `"open"` \| `"private"` | stored and broadcast; the public room list is a later phase |
+| `visibility` | `"open"` \| `"private"` | stored and broadcast; `open` also lists the room on the public lobby (below) |
 | `mode` | `"time"` \| `"words"` | selects which of the two below applies |
 | `durationMs` | int > 0 | present for `time` mode |
 | `wordCount` | int > 0 | present for `words` mode |
@@ -585,6 +585,51 @@ The quote phase will add `{ "kind": "quote", "quoteId": "…" }` **additively**
 `settings`: it is server-generated and appears only in `countdown`. A
 client-chosen seed is rejected by design — a pre-known seed is a pre-practiced
 map.
+
+### Discovery — `GET /api/v1/rooms` (**not** a protocol message)
+
+The public lobby list is an **HTTP endpoint, deliberately outside this
+protocol**. Discovery is a **stateless read** — "what is open right now" — while
+the protocol is a **session**. A client that has not picked a room yet has
+nothing to hold a session about, and making every browser tab on the lobby
+screen upgrade, `hello`, and hold a socket open just to see a list would spend a
+connection per idle viewer to answer a question a cacheable `GET` answers. So
+there is no `list_rooms` frame and there will not be one.
+
+**Public**: no session, no cookie, no `Origin` check. **Rate-limited per IP**
+(`TYPEMORE_LOBBY_RATE_EVERY` / `TYPEMORE_LOBBY_RATE_BURST`, the shared token
+bucket): the screen is expected to poll every **4 s** and the default bucket
+refills at twice that rate, so a correct client never sees the limit. Over
+budget ⇒ **429** `rate_limited`.
+
+```json
+{ "rooms": [
+  { "code": "ABC234", "name": "friday night", "playerCount": 2, "maxPlayers": 5,
+    "inMatch": false,
+    "settings": { "mode": "time", "durationMs": 30000, "lang": "english" } }
+] }
+```
+
+- The envelope is an **object** with a `rooms` array (never a bare array, never
+  `null`), matching `{ "buckets": … }` / `{ "quotes": … }` elsewhere in the API.
+- `settings` is the **match-shape subset** of the table above. `durationMs` and
+  `wordCount` are **mutually exclusive**: exactly the one the `mode` uses is
+  present, the other is **absent** (not zero). `lang` is the canonical
+  dictionary key.
+- **Only `visibility: "open"` rooms appear**, in any state — a private room is
+  reachable by code alone, including while it is in a match.
+- **Order**: `playerCount` **descending**, then **creation order ascending**
+  (oldest first), then **by `code`**. The last key is what makes the order
+  total: two rooms opened in the same clock tick would otherwise be ordered by
+  map iteration and visibly reshuffle between two polls of an idle lobby.
+- No player identities, host id, or `dictHash`: a public list is not a window
+  into a room's occupants.
+
+**Concurrency.** The list is projected from the in-memory registry without ever
+holding two locks: the registry lock is taken only to copy the room *pointers*,
+then released; each room is then snapshotted under its own lock, one at a time;
+the sort and the JSON encoding run with nothing held. A room torn down mid-walk
+is filtered out (it has no seats), never published half-built.
 
 ### Freemods (per-player, scored)
 

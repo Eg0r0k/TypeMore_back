@@ -26,6 +26,7 @@ caching contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
 | `/api/v1/leaderboards*` | Public bucketed score boards — see [`docs/LEADERBOARDS.md`](docs/LEADERBOARDS.md) |
 | `/api/v1/quotes*` | Public fixed-text corpus — see [`docs/QUOTES.md`](docs/QUOTES.md) |
 | `GET /api/v1/dictionaries` | Public dictionary catalogue — see [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md) |
+| `GET /api/v1/rooms` | Public lobby list — open rooms only, HTTP by design (see [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §5) |
 | `GET /static/dictionaries/{dictHash}.json` | Dictionary body, content-addressed and `immutable` |
 
 ## Prerequisites

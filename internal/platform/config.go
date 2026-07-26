@@ -224,6 +224,19 @@ type Config struct {
 	// it is limited far more tightly than the authenticated surface.
 	LeaderboardReplayRateEvery time.Duration `env:"LEADERBOARD_REPLAY_RATE_EVERY" envDefault:"2s"`
 	LeaderboardReplayRateBurst int           `env:"LEADERBOARD_REPLAY_RATE_BURST" envDefault:"30"`
+
+	// --- Lobby discovery (docs/PROTOCOL.md §5) ---
+
+	// LobbyRateEvery / LobbyRateBurst are the per-IP token bucket on the public
+	// GET /api/v1/rooms room list. The lobby screen POLLS this endpoint every
+	// 4 s, i.e. 0.25 req/s, while the bucket refills at 0.5 tokens/s — twice
+	// the poll rate, so a client parked on the lobby all evening can never
+	// deplete it and the limit is invisible to correct clients. The burst of 30
+	// then covers what a steady rate does not: a reload storm, a handful of
+	// tabs, or several players behind one NAT. The answer is a tiny in-memory
+	// projection, so this is abuse control, not load shedding.
+	LobbyRateEvery time.Duration `env:"LOBBY_RATE_EVERY" envDefault:"2s"`
+	LobbyRateBurst int           `env:"LOBBY_RATE_BURST" envDefault:"30"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

@@ -218,12 +218,13 @@ func run() error {
 	// identity so authed connections use their name (guests get a server-assigned
 	// per-room nick) and match runs are attributed to the account. A nil resolver
 	// would make everyone a guest. Finished matches are persisted via the pool.
-	router.Handle("/ws", ws.NewHandler(logger, cfg.AllowedOrigins, func(r *http.Request) (string, string, bool) {
+	wsHandler := ws.NewHandler(logger, cfg.AllowedOrigins, func(r *http.Request) (string, string, bool) {
 		if u, ok := authSvc.Identify(r); ok {
 			return u.DisplayName, u.ID.String(), true
 		}
 		return "", "", false
-	}, wspg.New(pool)))
+	}, wspg.New(pool))
+	router.Handle("/ws", wsHandler)
 
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())
@@ -245,6 +246,13 @@ func run() error {
 		// this subtree varies by who is asking, so it is mounted bare rather
 		// than behind OptionalAuth like the boards.
 		r.Mount("/quotes", quoteSvc.Routes())
+		// Room discovery, served by the WS handler's registry but mounted HERE,
+		// as a public HTTP read — deliberately outside the protocol
+		// (docs/PROTOCOL.md §5): browsing the lobby is a stateless question,
+		// not a session. It reuses the shared token-bucket machinery, keyed per
+		// IP, because the lobby screen polls it.
+		r.Method(http.MethodGet, "/rooms", wsHandler.LobbyHandler(
+			auth.NewInMemoryRateLimiter(cfg.LobbyRateEvery, cfg.LobbyRateBurst)))
 	})
 
 	srv := &http.Server{

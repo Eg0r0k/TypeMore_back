@@ -169,10 +169,14 @@ type matchState struct {
 // so a single stalled client cannot stall a broadcast held under mu; the
 // exception is reconnect backlog replay, which is blocking and off-lock.
 type Room struct {
-	code  string
-	reg   *Registry
-	log   *slog.Logger
-	store MatchStore // nil disables persistence
+	code string
+	// createdAt stamps construction and is immutable thereafter. It exists for
+	// the public lobby list, which orders rooms oldest-first so a newly opened
+	// room cannot displace an established one (see lobby.go).
+	createdAt time.Time
+	reg       *Registry
+	log       *slog.Logger
+	store     MatchStore // nil disables persistence
 
 	mu       sync.Mutex
 	settings protocol.Settings
@@ -186,11 +190,12 @@ type Room struct {
 // newRoom builds an empty room with default settings.
 func newRoom(code string, reg *Registry, log *slog.Logger, store MatchStore) *Room {
 	return &Room{
-		code:     code,
-		reg:      reg,
-		log:      log,
-		store:    store,
-		settings: protocol.DefaultSettings(""),
+		code:      code,
+		createdAt: time.Now(),
+		reg:       reg,
+		log:       log,
+		store:     store,
+		settings:  protocol.DefaultSettings(""),
 	}
 }
 
