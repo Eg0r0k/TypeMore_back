@@ -11,6 +11,8 @@ import (
 
 type resetRequestBody struct {
 	Email string `json:"email"`
+	// TurnstileToken: see registerRequest.
+	TurnstileToken string `json:"turnstileToken"`
 }
 
 // handleResetRequest sends a password-reset link if the email has an account.

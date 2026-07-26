@@ -137,6 +137,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 		// Effectively unlimited per-IP auth limiter so the test's own
 		// register/verify/login traffic never trips it.
 		auth.NewInMemoryRateLimiter(time.Millisecond, 1000),
+		nil, // captcha disabled: these tests drive the auth endpoints directly
 		auth.Config{
 			FrontendOrigin: frontendOrigin,
 			CookieName:     "tm_session",

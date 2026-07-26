@@ -20,6 +20,9 @@ type registerRequest struct {
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName"`
+	// TurnstileToken is read by the captcha gate before this struct is ever
+	// decoded; it is declared here only so the strict decoder accepts it.
+	TurnstileToken string `json:"turnstileToken"`
 }
 
 // handleRegister creates an unverified email account and sends a verification
@@ -136,6 +139,8 @@ func (s *Service) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 type resendRequest struct {
 	Email string `json:"email"`
+	// TurnstileToken: see registerRequest.
+	TurnstileToken string `json:"turnstileToken"`
 }
 
 // handleResend re-sends a verification link if the email exists and is not yet

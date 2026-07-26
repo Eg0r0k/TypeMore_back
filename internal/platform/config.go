@@ -95,6 +95,18 @@ type Config struct {
 	AuthRateEvery time.Duration `env:"AUTH_RATE_EVERY" envDefault:"1s"`
 	AuthRateBurst int           `env:"AUTH_RATE_BURST" envDefault:"10"`
 
+	// TurnstileSecret is the Cloudflare Turnstile secret key guarding the three
+	// auth endpoints that mail a stranger (register, verify/resend,
+	// password-reset/request). EMPTY DISABLES CAPTCHA ENTIRELY: those endpoints
+	// behave exactly as they did before it existed, and no token is required or
+	// inspected. Empty is the DEFAULT because a captcha is a dependency on a
+	// third party — `go run ./cmd/server` and the test suite must not need a
+	// Cloudflare account, an outbound network path, or a site key pasted into
+	// the frontend to register a user. Set it in staging and production; for
+	// local experiments Cloudflare publishes always-pass / always-fail test
+	// keys (docs/AUTH.md).
+	TurnstileSecret string `env:"TURNSTILE_SECRET"`
+
 	// RunsRateEvery / RunsRateBurst are the per-user token bucket on POST /runs.
 	// A typing session is many runs, so the default is generous: burst 120 with
 	// one token refilled every 30s ≈ 120 runs/hour sustained.

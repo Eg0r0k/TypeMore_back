@@ -33,6 +33,11 @@ Success/JSON bodies are shown; errors are `{"error":"<code>","message":"..."}`.
 `<frontend>/auth/callback?status=ok` (or `?error=<code>`, e.g.
 `account_exists_use_linking`), and linking to `?linked=<provider>`.
 
+`register`, `verify/resend` and `password-reset/request` additionally accept a
+`turnstileToken` string in their JSON body and are gated on it when a captcha
+secret is configured — see [Captcha](#captcha-cloudflare-turnstile). No other
+endpoint takes the field.
+
 ### Success bodies
 
 All success responses are `200 OK` with `Content-Type: application/json`
@@ -64,10 +69,11 @@ contract test (`TestMeJSONContract`), since the client parses them strictly.
 ### Error codes
 
 `bad_request`, `invalid_token`, `invalid_credentials`, `email_not_verified`,
-`name_taken`, `rate_limited`, `unauthorized`, `forbidden_origin`,
-`unknown_provider`, `internal`. `register` returns `name_taken` (409) when the
-display name is already in use (case-insensitively). `verify` and
-`password-reset/confirm` return `account_exists_use_linking` (409) when the
+`name_taken`, `rate_limited`, `captcha_required`, `captcha_failed`,
+`unauthorized`, `forbidden_origin`, `unknown_provider`, `internal`. `register`
+returns `name_taken` (409) when the display name is already in use
+(case-insensitively). `verify` and `password-reset/confirm` return
+`account_exists_use_linking` (409) when the
 email got verified by another account in the meantime. OAuth failures are
 delivered as `?error=` on the frontend redirect: `invalid_state`,
 `oauth_denied`, `oauth_exchange_failed`, `oauth_userinfo_failed`,
@@ -75,7 +81,9 @@ delivered as `?error=` on the frontend redirect: `invalid_state`,
 adds `email_already_set` (409, the account already has an email identity),
 `no_verified_email` (409, `password/set` before an email is added and verified),
 and `password_already_set` (409, `password/set` when a credential already
-exists — changing a password stays under the reset flow).
+exists — changing a password stays under the reset flow). `captcha_required`
+(400) and `captcha_failed` (400) are returned only by the three captcha-gated
+endpoints, and only when a captcha secret is configured.
 
 ### Display names
 
@@ -182,6 +190,11 @@ Everything cascades from `users`, so account deletion (BACKEND.md §8) is a sing
   return the *same* success as the happy path; the password hash is computed
   regardless (including a decoy hash on unknown-email login) to keep timing
   uniform.
+- **Captcha on the mailing endpoints.** `register`, `verify/resend` and
+  `password-reset/request` sit behind a Cloudflare Turnstile gate that runs
+  *before* the per-IP limiter, so an unproven caller is turned away with
+  `captcha_required` instead of quietly draining the bucket shared by everyone
+  behind that NAT. Disabled by default (empty secret). Details below.
 - **Password reset revokes all sessions** of the user.
 - Tokens, passwords, and hashes are never logged.
 - **Expiry janitor:** a background goroutine (started in `cmd/server`, stopped
@@ -210,6 +223,7 @@ Everything cascades from `users`, so account deletion (BACKEND.md §8) is a sing
 | `TYPEMORE_SMTP_FROM` | `no-reply@typemore.local` | Envelope/From |
 | `TYPEMORE_AUTH_RATE_EVERY` | `1s` | Token-bucket refill interval |
 | `TYPEMORE_AUTH_RATE_BURST` | `10` | Token-bucket size (per IP) |
+| `TYPEMORE_TURNSTILE_SECRET` | *(empty)* | Turnstile secret key; **empty disables captcha entirely** |
 | `TYPEMORE_AUTH_CLEANUP_INTERVAL` | `1h` | Janitor sweep interval (≤0 disables) |
 | `TYPEMORE_AUTH_HASH_CONCURRENCY` | *(derived)* | Max concurrent argon2id hashes; 0 derives from the memory budget |
 | `TYPEMORE_AUTH_HASH_MEMORY_BUDGET` | *(derived)* | Peak bytes hashing may hold; 0 derives from the detected memory ceiling (¼ of it), else 512 MiB |
@@ -225,6 +239,105 @@ Client ID/secret in `TYPEMORE_GITHUB_CLIENT_ID`/`_SECRET`.
 client ID (Web application). Authorized redirect URI:
 `<OAUTH_REDIRECT_BASE>/api/v1/auth/oauth/google/callback`. Put the Client
 ID/secret in `TYPEMORE_GOOGLE_CLIENT_ID`/`_SECRET`.
+
+## Captcha (Cloudflare Turnstile)
+
+Three endpoints send mail to an address supplied by an unauthenticated caller:
+`POST /auth/register`, `POST /auth/verify/resend` and
+`POST /auth/password-reset/request`. That is the whole abuse surface —
+everything else either needs a session or consumes a token we minted. Those
+three, and only those three, accept `turnstileToken` (a string) in their JSON
+body.
+
+**Empty `TYPEMORE_TURNSTILE_SECRET` disables the captcha entirely**, and that is
+the default. A captcha is a dependency on a third party; requiring one would
+mean `make run` and the test suite could not create an account without a
+Cloudflare account, a site key pasted into the frontend, and an outbound network
+path. With the secret unset the three endpoints behave exactly as they did
+before the captcha existed: no token is required, and one sent anyway is
+ignored rather than rejected. The frontend mirrors this — absent
+`VITE_TURNSTILE_SITE_KEY`, no widget is rendered and no token is sent.
+
+### Behaviour when enabled
+
+| Situation | Response |
+|---|---|
+| Token missing, empty, or whitespace | `400 captcha_required` |
+| Body unparseable (hence no token) | `400 captcha_required` |
+| siteverify answered `success: false` | `400 captcha_failed` |
+| siteverify unreachable, timed out, or answered non-200/garbage | `400 captcha_failed` |
+
+A provider outage is deliberately **not** a 500. The server is healthy; the
+request simply cannot be proven, and the client's remedy — solve a fresh
+challenge and retry — is the same as for a rejected token. Collapsing the two
+also keeps Cloudflare's `error-codes` (`invalid-input-response`,
+`timeout-or-duplicate`, `invalid-input-secret`, …) out of the response: they are
+logged for the operator and never returned, so a prober cannot use the gate to
+learn how it is configured.
+
+### Where the gate sits
+
+The gate is the first middleware on those three routes: **captcha → per-IP rate
+limiter → Origin/CSRF check → handler**. Two consequences worth stating
+explicitly:
+
+- A caller without a token never spends a rate-limit token, so a token-less
+  flood cannot exhaust the bucket of a legitimate user sharing its IP.
+- Once the gate passes, nothing downstream changes. The anti-enumeration
+  responses are byte-identical to the pre-captcha ones — a taken-email register
+  and an unknown-email reset still return the same generic
+  `{"status":"ok","message":"if that email can receive mail, …"}` as the happy
+  path. The gate may refuse a caller; it must never become an existence oracle.
+
+The client IP sent to siteverify as `remoteip` is derived exactly as the rate
+limiter derives its key (`clientIP`, the transport `RemoteAddr`), so there is
+one notion of "who is calling" to fix when a reverse proxy arrives. It is
+omitted when it does not parse as an IP address.
+
+### Layering
+
+`auth.CaptchaVerifier` is consumer-declared in `internal/auth` next to
+`auth.Mailer`; the implementation is `internal/platform/turnstile`, and
+`cmd/server` wires them (BACKEND.md §2: platform imports no domain). Unlike the
+mailer no adapter is needed — the platform signature carries no domain type.
+`turnstile.New` returns `nil` for an empty secret, so "is the captcha on?" is
+answered once, at construction. The composition root converts that typed nil
+into a nil *interface* (`newCaptchaVerifier`); handing back the typed nil
+directly would make the domain's "nil means disabled" test pass while the value
+is unusable, which is why that bridge has a test of its own.
+
+### Local development: Cloudflare's test keys
+
+Cloudflare publishes dummy keys that always produce a fixed verdict. They work
+from any domain including `localhost`, a test secret key accepts **only** the
+dummy token, and a production secret key rejects it — so the pair must be used
+together. Values below are from Cloudflare's own documentation
+(<https://developers.cloudflare.com/turnstile/troubleshooting/testing/>);
+re-check there if a key ever stops behaving as described.
+
+Site keys (frontend, `VITE_TURNSTILE_SITE_KEY`):
+
+| Site key | Behaviour |
+|---|---|
+| `1x00000000000000000000AA` | Always passes (visible) |
+| `2x00000000000000000000AB` | Always blocks (visible) |
+| `1x00000000000000000000BB` | Always passes (invisible) |
+| `2x00000000000000000000BB` | Always blocks (invisible) |
+| `3x00000000000000000000FF` | Forces an interactive challenge (visible) |
+
+Secret keys (backend, `TYPEMORE_TURNSTILE_SECRET`):
+
+| Secret key | Behaviour |
+|---|---|
+| `1x0000000000000000000000000000000AA` | Always passes |
+| `2x0000000000000000000000000000000AA` | Always fails |
+| `3x0000000000000000000000000000000AA` | Yields a "token already spent" error |
+
+To exercise the happy path end to end, pair site key
+`1x00000000000000000000AA` with secret `1x0000000000000000000000000000000AA`.
+To see `captcha_failed` without unplugging the network, keep the passing site
+key and switch the secret to `2x0000000000000000000000000000000AA`. Never set a
+dummy secret in production: it accepts any token as valid.
 
 ## Deliberate deviations from BACKEND.md
 

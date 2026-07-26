@@ -81,6 +81,15 @@ var (
 	// retrying shortly really will work. See hashgate.go.
 	apiErrOverloaded = newAPIError(http.StatusServiceUnavailable, "overloaded",
 		"the server is at hashing capacity; retry in a moment")
+	// Captcha outcomes. Both are 400: the request is malformed or unproven, and
+	// the client's remedy in each case is to solve a fresh challenge and retry.
+	// captcha_failed deliberately covers BOTH a provider rejection and a
+	// provider outage — the client cannot act on the difference, and telling a
+	// prober which one it hit would hand them a probe.
+	apiErrCaptchaRequired = newAPIError(http.StatusBadRequest, "captcha_required",
+		"a captcha token is required for this request")
+	apiErrCaptchaFailed = newAPIError(http.StatusBadRequest, "captcha_failed",
+		"captcha verification failed; solve the challenge again and retry")
 )
 
 // apiErrBadRequest is a helper for input-validation failures with a custom

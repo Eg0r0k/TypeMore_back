@@ -147,6 +147,7 @@ func newLoadHarness(t *testing.T, concurrency int, wait time.Duration) *loadHarn
 		// never trips it — and leaving it in the path would measure the token
 		// bucket instead of the gate.
 		auth.NewInMemoryRateLimiter(0, 0),
+		nil, // no captcha: the zone measures the hashing gate, not the front door
 		auth.Config{
 			FrontendOrigin:  frontendOrigin,
 			CookieName:      "tm_session",

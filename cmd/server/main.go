@@ -30,6 +30,7 @@ import (
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/mail"
+	"github.com/typemore/typemore-server/internal/platform/turnstile"
 	"github.com/typemore/typemore-server/internal/quote"
 	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
@@ -89,9 +90,11 @@ func run() error {
 		"memoryCeiling", ceiling, "ceilingSource", ceilingSource)
 
 	authStore := pgstore.New(pool)
+	captcha := newCaptchaVerifier(cfg)
+	logger.Info("captcha", "enabled", captcha != nil)
 	authSvc := auth.NewService(authStore, authStore, newMailer(cfg, logger),
 		auth.NewInMemoryRateLimiter(cfg.AuthRateEvery, cfg.AuthRateBurst),
-		authCfg, logger)
+		captcha, authCfg, logger)
 
 	// Expiry janitor: periodically deletes expired sessions and stale email
 	// tokens. Tied to ctx, so the shutdown signal stops it with the server.
@@ -292,6 +295,23 @@ func newMailer(cfg platform.Config, log *slog.Logger) auth.Mailer {
 		sender = mail.NewLogSender(log)
 	}
 	return mailerAdapter{sender: sender}
+}
+
+// newCaptchaVerifier builds the Turnstile verifier, or returns a nil interface
+// when no secret is configured (captcha disabled — the dev default).
+//
+// The explicit nil return is not ceremony: turnstile.New yields a typed
+// (*turnstile.Verifier)(nil), and returning that directly would produce a
+// NON-nil auth.CaptchaVerifier wrapping a nil pointer, so the domain's
+// "nil means disabled" check would pass and every gated request would
+// dereference it. This is the one place that knows both types, so it is the
+// one place that has to be careful.
+func newCaptchaVerifier(cfg platform.Config) auth.CaptchaVerifier {
+	v := turnstile.New(cfg.TurnstileSecret)
+	if v == nil {
+		return nil
+	}
+	return v
 }
 
 // authConfig translates platform.Config into the auth domain's own config,

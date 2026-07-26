@@ -13,28 +13,43 @@ import (
 // at /api/v1/auth. Every route is rate-limited per client IP and, for mutating
 // methods, Origin-checked. GET /api/v1/me is mounted separately by the caller
 // (it is not under /auth) using RequireAuth + HandleMe.
+//
+// The three endpoints that mail a stranger — register, resend, reset-request —
+// additionally sit behind the captcha gate, and the gate is chained BEFORE the
+// limiter (see requireCaptcha for why). Everything downstream of it, including
+// the order of rate-limiting and the Origin check, is unchanged.
 func (s *Service) AuthRoutes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(s.rateLimit)     // per-IP token bucket on all auth endpoints
-	r.Use(s.RequireOrigin) // CSRF: mutating methods must carry the frontend Origin
 
-	// Public endpoints (no session required).
-	r.Post("/register", s.handleRegister)
-	r.Post("/verify", s.handleVerify)
-	r.Post("/verify/resend", s.handleResend)
-	r.Post("/login", s.handleLogin)
-	r.Post("/password-reset/request", s.handleResetRequest)
-	r.Post("/password-reset/confirm", s.handleResetConfirm)
-	r.Get("/oauth/{provider}/start", s.handleOAuthStart)
-	r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
-
-	// Authenticated endpoints.
 	r.Group(func(r chi.Router) {
-		r.Use(s.RequireAuth)
-		r.Post("/logout", s.handleLogout)
-		r.Post("/link/{provider}/start", s.handleLinkStart)
-		r.Post("/email/add", s.handleAddEmail)
-		r.Post("/password/set", s.handleSetPassword)
+		r.Use(s.requireCaptcha) // no-op when no verifier is configured
+		r.Use(s.rateLimit)      // per-IP token bucket
+		r.Use(s.RequireOrigin)  // CSRF: mutating methods must carry the frontend Origin
+
+		r.Post("/register", s.handleRegister)
+		r.Post("/verify/resend", s.handleResend)
+		r.Post("/password-reset/request", s.handleResetRequest)
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(s.rateLimit)
+		r.Use(s.RequireOrigin)
+
+		// Public endpoints (no session required).
+		r.Post("/verify", s.handleVerify)
+		r.Post("/login", s.handleLogin)
+		r.Post("/password-reset/confirm", s.handleResetConfirm)
+		r.Get("/oauth/{provider}/start", s.handleOAuthStart)
+		r.Get("/oauth/{provider}/callback", s.handleOAuthCallback)
+
+		// Authenticated endpoints.
+		r.Group(func(r chi.Router) {
+			r.Use(s.RequireAuth)
+			r.Post("/logout", s.handleLogout)
+			r.Post("/link/{provider}/start", s.handleLinkStart)
+			r.Post("/email/add", s.handleAddEmail)
+			r.Post("/password/set", s.handleSetPassword)
+		})
 	})
 	return r
 }

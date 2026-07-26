@@ -95,15 +95,35 @@ type RateLimiter interface {
 	Allow(key string) bool
 }
 
+// CaptchaVerifier checks a captcha token minted by the client's challenge
+// widget. Like Mailer it is consumer-declared here: the real implementation
+// (Cloudflare Turnstile) lives in internal/platform/turnstile, and the
+// composition root wires the two together, so the domain owns the contract
+// without importing the infrastructure.
+//
+// A NIL CaptchaVerifier means captcha is disabled and every gate is a no-op —
+// the dev default, and the reason "is captcha on?" is asked exactly once, when
+// the verifier is constructed, rather than at each call site.
+type CaptchaVerifier interface {
+	// Verify returns nil when the token is valid. remoteIP is the client's
+	// address, forwarded to the provider when it is meaningful. Every failure
+	// mode is an error and callers treat them identically: the reason a token
+	// was refused is operator information, never client information.
+	Verify(ctx context.Context, token, remoteIP string) error
+}
+
 // Service holds the auth business logic. Handlers call it; it calls the store,
-// mailer, and limiter interfaces.
+// mailer, limiter, and captcha interfaces.
 type Service struct {
 	store    Store
 	sessions SessionStore
 	mailer   Mailer
 	limiter  RateLimiter
-	cfg      Config
-	log      *slog.Logger
+	// captcha gates the abuse-prone endpoints. Nil = disabled; see
+	// CaptchaVerifier and captcha.go.
+	captcha CaptchaVerifier
+	cfg     Config
+	log     *slog.Logger
 	// now is time.Now in production; tests may override it.
 	now func() time.Time
 	// oauth holds the per-provider OAuth configuration built from cfg.Providers.
@@ -121,7 +141,9 @@ type Service struct {
 // NewService wires the auth service. store and sessions may be the same
 // concrete value (the Postgres adapter) or different (e.g. Redis sessions
 // later).
-func NewService(store Store, sessions SessionStore, mailer Mailer, limiter RateLimiter, cfg Config, log *slog.Logger) *Service {
+func NewService(store Store, sessions SessionStore, mailer Mailer, limiter RateLimiter,
+	captcha CaptchaVerifier, cfg Config, log *slog.Logger,
+) *Service {
 	wait := cfg.HashWait
 	if wait <= 0 {
 		wait = DefaultHashWait
@@ -131,6 +153,7 @@ func NewService(store Store, sessions SessionStore, mailer Mailer, limiter RateL
 		sessions: sessions,
 		mailer:   mailer,
 		limiter:  limiter,
+		captcha:  captcha,
 		cfg:      cfg,
 		log:      log,
 		now:      time.Now,

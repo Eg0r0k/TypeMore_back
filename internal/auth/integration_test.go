@@ -93,6 +93,9 @@ type serverOpts struct {
 	providers map[string]auth.ProviderCredentials
 	rateEvery time.Duration
 	rateBurst int
+	// captcha is nil by default — the disabled mode every other test in this
+	// package exercises implicitly.
+	captcha auth.CaptchaVerifier
 }
 
 // newHarness truncates the database, builds the auth service exactly as main
@@ -121,6 +124,7 @@ func newHarness(t *testing.T, mutators ...func(*serverOpts)) *harness {
 
 	svc := auth.NewService(store, store, mailer,
 		auth.NewInMemoryRateLimiter(opts.rateEvery, opts.rateBurst),
+		opts.captcha,
 		auth.Config{
 			FrontendOrigin:    frontendOrigin,
 			CookieName:        "tm_session",
