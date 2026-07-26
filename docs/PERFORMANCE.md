@@ -174,7 +174,7 @@ Everything else is reported.
 6. ~~**Zone 5 — the two ingestion caps contradict each other.**~~ **DONE.** The
    documented 50 000-event limit was unreachable and the real one was 39 915 —
    and neither allowed the documented `MaxWordCount = 10 000` to be played at
-   all. Now 120 000 events / 6.5 MiB, sized off css_code (the worst of the nine
+   all. Now 120 000 events / 6.5 MiB, sized off code_css (the worst of the nine
    published dictionaries at 108 274 events, not german at 79 394). The event
    cap is the operative one for a well-formed log; the body cap sits above it
    as the guard against fat inserts, which is what a body cap is for. Cost:
@@ -330,7 +330,7 @@ stand:
 | workload | measured | note |
 |---|---|---|
 | german 10k words, 79 394 events | **7.18 s** worst sample, 1.85 GiB | the new bench fixture |
-| css_code 10k words, 108 274 events | **~8.1 s** | projected at the measured 17.5× V8→goja ratio; css_code is the worst of the nine published dictionaries, not german |
+| code_css 10k words, 108 274 events | **~8.1 s** | projected at the measured 17.5× V8→goja ratio; code_css is the worst of the nine published dictionaries, not german |
 
 Phase split at 79 394 events: gunzip 16 ms · JSON.parse 527 ms ·
 `generateWords` 44 ms · `validateLog` 4.05 s · `scoreV2OfLog` 2.53 s. Note that

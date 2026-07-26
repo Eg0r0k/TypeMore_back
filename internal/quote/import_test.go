@@ -169,7 +169,7 @@ func TestStoredLengthMatchesStoredText(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, lang := range manifest.Languages {
-		if lang.Lang != "css_code" && lang.Lang != "chinese" {
+		if lang.Lang != "code_css" && lang.Lang != "chinese" {
 			continue
 		}
 		incoming, err := corpus.Load(r.core, lang)

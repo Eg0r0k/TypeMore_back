@@ -3,11 +3,11 @@
 // keeps the megabytes of embedded JSON out of the server binary.
 //
 // MANIFEST.json is the source of truth, never a directory listing: it maps each
-// upstream file to OUR language id (upstream calls them arabic,
-// chinese_simplified and code_css where we serve arabian, chinese and css_code),
-// records the count and the length thresholds we expect that file to carry, and
-// documents which languages are deliberately absent. Adding a language is a
-// manifest row plus its file — a stray JSON in the directory imports nothing.
+// upstream file to OUR language id (upstream calls them arabic and
+// chinese_simplified where we serve arabian and chinese), records the count and
+// the length thresholds we expect that file to carry, and documents which
+// languages are deliberately absent. Adding a language is a manifest row plus
+// its file — a stray JSON in the directory imports nothing.
 package corpus
 
 import (

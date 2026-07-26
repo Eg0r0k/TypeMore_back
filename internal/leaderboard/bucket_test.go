@@ -29,7 +29,7 @@ func TestBucketKeyFormat(t *testing.T) {
 		{"time 60s", leaderboard.ModeTime, new(int32(60000)), nil, "ru", leaderboard.TextSourceSeeded, "time:60000:ru:seeded"},
 		{"words 25", leaderboard.ModeWords, nil, new(int32(25)), "en", leaderboard.TextSourceSeeded, "words:25:en:seeded"},
 		{"words 50", leaderboard.ModeWords, nil, new(int32(50)), "german", leaderboard.TextSourceSeeded, "words:50:german:seeded"},
-		{"words 100", leaderboard.ModeWords, nil, new(int32(100)), "css_code", leaderboard.TextSourceSeeded, "words:100:css_code:seeded"},
+		{"words 100", leaderboard.ModeWords, nil, new(int32(100)), "code_css", leaderboard.TextSourceSeeded, "words:100:code_css:seeded"},
 		// The dimension is whichever column the mode uses; a stray value in the
 		// other one is ignored rather than smuggled into the key.
 		{"both columns set", leaderboard.ModeTime, new(int32(15000)), new(int32(50)), "en", leaderboard.TextSourceSeeded, "time:15000:en:seeded"},

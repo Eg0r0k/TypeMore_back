@@ -140,7 +140,7 @@ var rankedShapes = []struct {
 }
 
 var seedLangs = []string{
-	"en", "ru-RU", "german", "css_code", "arabian", "chinese", "japanese",
+	"en", "ru-RU", "german", "code_css", "arabian", "chinese", "japanese",
 	"russian_empire", "traditional_chinese", "es", "fr", "it", "pt", "pl",
 	"nl", "sv", "no", "fi", "da", "cs", "tr", "uk", "el", "he", "hi", "ko",
 }

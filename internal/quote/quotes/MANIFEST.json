@@ -64,11 +64,11 @@
       "why": "served dictionary (chinese); upstream calls it chinese_simplified. NOTE the thresholds differ from every other corpus."
     },
     {
-      "lang": "css_code",
+      "lang": "code_css",
       "file": "code_css.json",
       "quotes": 21,
       "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
-      "why": "served dictionary (css_code); upstream calls it code_css"
+      "why": "served dictionary (code_css); the id and the upstream file name agree"
     },
     {
       "lang": "code_python",

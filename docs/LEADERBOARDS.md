@@ -33,7 +33,7 @@ There are **two shapes of board**, in one key space:
 bucket_key = "<mode>:<durationMs|wordCount>:<lang>:<textSource.kind>"   language board
            | "quote:<quoteId>"                                          quote board
 
-time:15000:en:seeded      words:50:ru-RU:seeded      time:60000:css_code:seeded
+time:15000:en:seeded      words:50:ru-RU:seeded      time:60000:code_css:seeded
 quote:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e
 ```
 

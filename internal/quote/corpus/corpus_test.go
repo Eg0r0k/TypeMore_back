@@ -167,7 +167,7 @@ func TestTextHashComesFromTheCoreBundle(t *testing.T) {
 	// repetitions of it.
 	var css corpus.Language
 	for _, lang := range m.Languages {
-		if lang.Lang == "css_code" {
+		if lang.Lang == "code_css" {
 			css = lang
 		}
 	}
@@ -180,7 +180,7 @@ func TestTextHashComesFromTheCoreBundle(t *testing.T) {
 	for i := range got {
 		want, err := core.DictVersion([]string{got[i].Text})
 		require.NoError(t, err)
-		require.Equal(t, want, got[i].TextHash, "css_code #%d", got[i].UpstreamID)
+		require.Equal(t, want, got[i].TextHash, "code_css #%d", got[i].UpstreamID)
 		require.Len(t, got[i].TextHash, 8, "the core's digest is 8 hex characters")
 	}
 }

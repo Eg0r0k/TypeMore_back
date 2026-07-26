@@ -234,7 +234,7 @@ Current distribution, for orientation:
 | arabian | 38 | 44 | 7 | — |
 | code_python | 7 | 35 | 20 | 14 |
 | code_javascript | 4 | 33 | 10 | — |
-| css_code | 4 | 11 | 5 | 1 |
+| code_css | 4 | 11 | 5 | 1 |
 
 ## `text_hash` comes from the vendored bundle
 
@@ -272,8 +272,8 @@ against upstream is a plain file diff.
 `MANIFEST.json` beside them is the import source of truth. It exists because a
 directory listing is not enough:
 
-- upstream's file names are not our language ids (`arabic` → `arabian`,
-  `chinese_simplified` → `chinese`, `code_css` → `css_code`);
+- upstream's file names are not always our language ids (`arabic` → `arabian`,
+  `chinese_simplified` → `chinese`; `code_css` is the same on both sides);
 - it records each corpus's expected quote count and thresholds, so the vendored
   copy can be *checked* rather than trusted; and
 - it documents what is deliberately absent.
@@ -288,7 +288,7 @@ directory listing is not enough:
 | `arabian` | `arabic.json` | 89 |
 | `code_python` | `code_python.json` | 76 |
 | `code_javascript` | `code_javascript.json` | 47 |
-| `css_code` | `code_css.json` | 21 |
+| `code_css` | `code_css.json` | 21 |
 
 **9 languages, 9 881 quotes.** Every one of them except `code_python` and
 `code_javascript` also has a served dictionary, so a player can do seeded and

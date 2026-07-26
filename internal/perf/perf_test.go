@@ -35,7 +35,7 @@ func TestSeedBucketKeysMatchTheDomain(t *testing.T) {
 		perf.HotBucket(),
 		{Mode: "time", DurationMs: new(int32(15_000)), Lang: "en"},
 		{Mode: "words", WordCount: new(int32(50)), Lang: "ru-RU"},
-		{Mode: "words", WordCount: new(int32(100)), Lang: "css_code"},
+		{Mode: "words", WordCount: new(int32(100)), Lang: "code_css"},
 	}
 	for _, b := range cases {
 		t.Run(b.Key(), func(t *testing.T) {

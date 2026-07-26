@@ -26,7 +26,7 @@ arrived carrying `noLazyMode` and `orderedByFrequency`, which mean nothing here
 and would have been served to every client forever. Only `name`, `words` and,
 where upstream supplies one, `bcp47` are kept. Nothing is invented: a language
 with no upstream `bcp47` does not get one, which is why its runs and board
-buckets are keyed by the language code (`german`, `css_code`) rather than a tag.
+buckets are keyed by the language code (`german`, `code_css`) rather than a tag.
 
 Adding one is a **vendored file plus a binary rebuild** — see "Adding a
 language" below. There is no runtime loading path and deliberately so: a

@@ -205,7 +205,7 @@ nothing could ever reach. Worse, the documented game was not playable at all:
 | german, plain | 79 116 | 3.87 MiB |
 | german, punctuation | 81 430 | 3.99 MiB |
 | russian_empire, punctuation | 80 852 | 4.02 MiB |
-| **css_code, punctuation** (worst of the nine) | **108 274** | **5.35 MiB** |
+| **code_css, punctuation** (worst of the nine) | **108 274** | **5.35 MiB** |
 
 Measured against the re-vendored bundle, real `generateWords` output, one insert
 per grapheme plus one commit per word. Every one of those exceeded both old
@@ -237,7 +237,7 @@ Two rules to keep in mind before tuning either number again:
   `TestMaxLegalPayloadSitsAtTheCaps` pins that ordering, and
   `TestEveryPublishedDictionaryCanPlayAFullLengthRun` pins that a 10 000-word
   run fits on **every** published dictionary — the check whose absence let the
-  caps be sized against german and quietly exclude css_code.
+  caps be sized against german and quietly exclude code_css.
 
 **The cost, unburied.** 6.5 MiB is 3.25× the old ingest envelope, and zone 5
 measured the body being JSON-parsed **twice** on this path. With

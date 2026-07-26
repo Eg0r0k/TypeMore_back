@@ -18,7 +18,7 @@ const (
 
 	// Event-count bounds: a real run has at least one event, and 120k is above
 	// the largest run the documented game permits on ANY published dictionary
-	// — a full MaxWordCount (10 000) css_code run with punctuation measures
+	// — a full MaxWordCount (10 000) code_css run with punctuation measures
 	// 108 274 events; german measures 79 116, 81 430 with punctuation. The old
 	// 50 000 was sized around an interpreter cost that no longer exists and
 	// refused a mode the docs promise. See the caps table in docs/RUNS.md for

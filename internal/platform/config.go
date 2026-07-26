@@ -165,8 +165,8 @@ type Config struct {
 	// against THOSE caps, not the old ones:
 	//
 	//   german  10k words,  79 394 events — 7.18 s worst sample (measured)
-	//   css_code 10k words, 108 274 events — ~8.1 s (projected at the measured
-	//                                        17.5× V8→goja ratio; css_code is
+	//   code_css 10k words, 108 274 events — ~8.1 s (projected at the measured
+	//                                        17.5× V8→goja ratio; code_css is
 	//                                        the worst of the nine published
 	//                                        dictionaries, not german)
 	//

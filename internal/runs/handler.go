@@ -20,7 +20,7 @@ import (
 //
 // 6.5 MiB, not 2 MiB. The old cap refused a mode the docs promise: a full
 // MaxWordCount (10 000) run measures 3.87 MiB on german and 5.26 MiB on
-// css_code, so no 10 000-word run was submittable at all. The cost is real and
+// code_css, so no 10 000-word run was submittable at all. The cost is real and
 // stated plainly in docs/RUNS.md — this is now the largest single allocation on
 // the ingest path, and zone 5 measured the body being JSON-parsed TWICE here.
 const maxBodyBytes = 13 << 19 // 6.5 MiB

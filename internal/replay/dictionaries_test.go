@@ -127,7 +127,7 @@ func TestCatalogueListsEverySeededDictionary(t *testing.T) {
 var publishedHashes = map[string]string{
 	"arabian":             "09fa6ceb",
 	"chinese":             "2557d6b5",
-	"css_code":            "55ccd317",
+	"code_css":            "55ccd317",
 	"english":             "be99aa1a",
 	"french":              "3a153572",
 	"german":              "804728e8",
@@ -159,6 +159,74 @@ func TestPublishedHashesAreImmutable(t *testing.T) {
 		_, ok := reg.Body(hash)
 		assert.True(t, ok, "published dictionary %q (%s) was removed; old runs still reference it", lang, hash)
 	}
+}
+
+// The dictionary formerly published as `css_code` is now published as
+// `code_css`, and its dict_hash did NOT move: it is still 55ccd317 in
+// publishedHashes above, which is the frozen table every other assertion in
+// this file is measured against.
+//
+// This test is the PROOF that the rename left every old run replayable. A run
+// stores the dict_hash it was generated from, and replay resolves the word list
+// by that hash alone — never by language key, never by file name. So the
+// question a key rename raises is exactly one question: does the digest depend
+// on anything but the words? It does not, and the two assertions below say so
+// directly rather than by implication:
+//
+//   - the digest of the word list computed in isolation, with no key and no
+//     file involved, equals the published 55ccd317; and
+//   - the file name and the document's own `name` field are now both
+//     `code_css` where they were both `css_code`, and the hash is unchanged.
+//
+// Every run recorded against 55ccd317 therefore still resolves to the same
+// bytes through Registry.Body, which is what "old runs stay replayable" means
+// operationally. If this ever fails, the word list was edited — revert it;
+// renaming the key can never be the cause.
+func TestRenamingADictionaryKeyDoesNotMoveItsHash(t *testing.T) {
+	const (
+		oldLang = "css_code"
+		newLang = "code_css"
+		frozen  = "55ccd317"
+	)
+
+	core, err := NewCore(0)
+	require.NoError(t, err)
+	reg, err := NewRegistry(core)
+	require.NoError(t, err)
+
+	require.Equal(t, frozen, publishedHashes[newLang],
+		"the rename moves the KEY of the frozen row; the VALUE is the published hash and must not move")
+	_, stillFrozenUnderTheOldKey := publishedHashes[oldLang]
+	require.False(t, stillFrozenUnderTheOldKey, "the old key must not survive alongside the new one")
+
+	var got CatalogueEntry
+	for _, e := range reg.Catalogue() {
+		require.NotEqual(t, oldLang, e.Lang, "the catalogue still publishes the pre-rename key")
+		if e.Lang == newLang {
+			got = e
+		}
+	}
+	require.Equal(t, newLang, got.Lang, "the renamed dictionary is missing from the catalogue")
+	assert.Equal(t, frozen, got.DictHash, "the catalogue's hash for the renamed dictionary moved")
+
+	// Content addressing, asserted directly: the digest is a function of the
+	// WORD LIST and of nothing else. This call passes no key, no file name and
+	// no document — just the words — and still lands on the frozen value.
+	raw, err := dictFS.ReadFile(path.Join(dictsDir, newLang+".json"))
+	require.NoError(t, err)
+	var doc dictDoc
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	fromWordsAlone, err := core.DictVersion(doc.Words)
+	require.NoError(t, err)
+	assert.Equal(t, frozen, fromWordsAlone,
+		"the dict_hash is FNV-1a over the word list; a key rename cannot reach it")
+
+	// The key and the file name both changed. The hash is the same object.
+	assert.Equal(t, newLang, doc.Name, "the document's own name field still carries the old key")
+	body, ok := reg.Body(frozen)
+	require.True(t, ok, "runs recorded against %s no longer resolve to a body", frozen)
+	assert.Equal(t, raw, body, "%s must still address the same bytes it always has", frozen)
 }
 
 // The contract of content addressing: whatever the body endpoint returns for a
@@ -282,8 +350,8 @@ func TestGzipNegotiation(t *testing.T) {
 //
 // MaxWordCount is 10 000 words, and a run that long costs one insert per
 // grapheme plus one commit per word. Whether that fits under the ingestion caps
-// is a property of the DICTIONARY, not of the caps: css_code averages ~10.7
-// characters a token where german averages ~6.9, so a full css_code run is 37%
+// is a property of the DICTIONARY, not of the caps: code_css averages ~10.7
+// characters a token where german averages ~6.9, so a full code_css run is 37%
 // more events than a full german run. Sizing the caps against the fixture
 // language is exactly the mistake this test exists to catch — it is how the
 // caps came to refuse a mode the docs promise.

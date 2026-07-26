@@ -114,7 +114,7 @@ func MaxLegalLog(seed uint64) EventLog {
 //
 // The two caps do not MEET, and are not meant to. The EVENT cap is the
 // operative one: it is sized above the largest run the game permits on ANY
-// published dictionary — a full MaxWordCount css_code run with punctuation
+// published dictionary — a full MaxWordCount code_css run with punctuation
 // measures 108 274 events — and the body cap sits above what that many
 // single-character events encode to, so it only ever catches a payload that is
 // fat for some other reason (a paste: one insert carrying many graphemes).
