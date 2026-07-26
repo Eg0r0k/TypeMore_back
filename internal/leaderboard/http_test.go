@@ -15,13 +15,14 @@ import (
 
 type bucketsBody struct {
 	Buckets []struct {
-		Bucket     string `json:"bucket"`
-		Mode       string `json:"mode"`
-		DurationMs *int32 `json:"durationMs"`
-		WordCount  *int32 `json:"wordCount"`
-		Lang       string `json:"lang"`
-		TextSource string `json:"textSource"`
-		Entries    int64  `json:"entries"`
+		Bucket     string     `json:"bucket"`
+		QuoteID    *uuid.UUID `json:"quoteId"`
+		Mode       string     `json:"mode"`
+		DurationMs *int32     `json:"durationMs"`
+		WordCount  *int32     `json:"wordCount"`
+		Lang       string     `json:"lang"`
+		TextSource string     `json:"textSource"`
+		Entries    int64      `json:"entries"`
 	} `json:"buckets"`
 }
 
@@ -37,6 +38,7 @@ type pageBody struct {
 		Acc         float64         `json:"acc"`
 		Grade       string          `json:"grade"`
 		Mods        json.RawMessage `json:"mods"`
+		Source      string          `json:"source"`
 		RunID       uuid.UUID       `json:"runId"`
 		AchievedAt  string          `json:"achievedAt"`
 	} `json:"entries"`

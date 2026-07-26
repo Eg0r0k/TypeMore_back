@@ -207,7 +207,10 @@ func recomputeOnce(t *testing.T, f *fixture, sql string, user uuid.UUID) {
 	require.NoError(t, err)
 	duration := int32(60_000)
 	var noWords *int32
-	_, err = tx.Exec(ctx, sql, f.hot.Key(), user, f.hot.Mode, duration, noWords,
+	// The hot bucket is a language board, so its quote coordinate is absent —
+	// which is also the coordinate that keeps quote runs out of it.
+	var noQuote *uuid.UUID
+	_, err = tx.Exec(ctx, sql, f.hot.Key(), user, noQuote, f.hot.Mode, duration, noWords,
 		f.hot.Lang, f.hot.TextSource, requireVerifiedEmail)
 	require.NoError(t, err)
 	require.NoError(t, tx.Rollback(ctx))
@@ -218,15 +221,29 @@ func recomputeOnce(t *testing.T, f *fixture, sql string, user uuid.UUID) {
 // Copied VERBATIM from the sqlc output in leaderboarddb/queries.sql.go.
 
 const sqlRecomputeCell = `WITH best AS (
-    SELECT e.run_id, e.user_id, e.mode, e.duration_ms, e.word_count, e.lang, e.text_source_kind, e.score, e.wpm, e.raw, e.acc, e.mods, e.achieved_at
+    SELECT e.run_id, e.user_id, e.mode, e.duration_ms, e.word_count, e.lang, e.text_source_kind, e.quote_id, e.score, e.wpm, e.raw, e.acc, e.mods, e.achieved_at
     FROM leaderboard_eligible_runs e
     WHERE e.user_id = $2
-      AND e.mode = $3
-      AND e.duration_ms IS NOT DISTINCT FROM $4::int
-      AND e.word_count IS NOT DISTINCT FROM $5::int
-      AND e.lang = $6
-      AND e.text_source_kind = $7
-      AND (NOT $8::boolean
+      AND e.quote_id IS NOT DISTINCT FROM $3::uuid
+      AND (e.quote_id IS NOT NULL
+           OR (e.mode = $4
+               AND e.duration_ms IS NOT DISTINCT FROM $5::int
+               AND e.word_count IS NOT DISTINCT FROM $6::int
+               AND e.lang = $7
+               AND e.text_source_kind = $8))
+      -- The economic barrier against throwaway accounts. Off by config, and
+      -- flipping it needs a rebuild to take effect on existing runs.
+      --
+      -- Note ` + "`" + `ai.user_id = @user_id` + "`" + `, NOT ` + "`" + `= e.user_id` + "`" + `. The two are the same
+      -- value — ` + "`" + `e.user_id = @user_id` + "`" + ` is asserted five lines above — but
+      -- correlating on the column makes this a SubPlan the executor runs once
+      -- per CANDIDATE RUN instead of an InitPlan it runs once per statement.
+      -- Measured (docs/PERFORMANCE.md, zone 4): a six-run cell 34.6 ms → 8.0 ms,
+      -- and a player with 100 000 runs in one bucket 1 m 30 s → 458 ms, which is
+      -- the gate costing nothing at all. This projection runs inside the replay
+      -- worker's verdict transaction, holding its row locks, so the difference
+      -- is not academic.
+      AND (NOT $9::boolean
            OR EXISTS (SELECT 1 FROM auth_identities ai
                       WHERE ai.user_id = $2 AND ai.email_verified))
     ORDER BY e.score DESC, e.achieved_at ASC, e.run_id ASC
@@ -239,10 +256,12 @@ cleared AS (
       AND NOT EXISTS (SELECT 1 FROM best)
 )
 INSERT INTO leaderboard_entries
-    (bucket_key, user_id, run_id, score, wpm, raw, acc, grade, mods, achieved_at)
+    (bucket_key, user_id, run_id, score, wpm, raw, acc, grade, mods, achieved_at,
+     quote_source)
 SELECT $1, b.user_id, b.run_id, b.score, b.wpm, b.raw, b.acc,
-       run_grade(b.acc), b.mods, b.achieved_at
+       run_grade(b.acc), b.mods, b.achieved_at, q.source
 FROM best b
+         LEFT JOIN quotes q ON q.id = b.quote_id
 ON CONFLICT (bucket_key, user_id) DO UPDATE
     SET run_id      = EXCLUDED.run_id,
         score       = EXCLUDED.score,
@@ -251,7 +270,9 @@ ON CONFLICT (bucket_key, user_id) DO UPDATE
         acc         = EXCLUDED.acc,
         grade       = EXCLUDED.grade,
         mods        = EXCLUDED.mods,
-        achieved_at = EXCLUDED.achieved_at
+        achieved_at = EXCLUDED.achieved_at,
+        quote_source = EXCLUDED.quote_source
+    -- An unchanged best is left physically alone.
     WHERE leaderboard_entries.run_id <> EXCLUDED.run_id`
 
 // sqlRecomputeCellCorrelated is the spelling this suite MEASURED AND REPLACED:
@@ -264,15 +285,29 @@ ON CONFLICT (bucket_key, user_id) DO UPDATE
 // TestLoadPlanProjectionEmailGate is what justified the change, and it is what
 // makes a revert show up as a number rather than as a slow week.
 const sqlRecomputeCellCorrelated = `WITH best AS (
-    SELECT e.run_id, e.user_id, e.mode, e.duration_ms, e.word_count, e.lang, e.text_source_kind, e.score, e.wpm, e.raw, e.acc, e.mods, e.achieved_at
+    SELECT e.run_id, e.user_id, e.mode, e.duration_ms, e.word_count, e.lang, e.text_source_kind, e.quote_id, e.score, e.wpm, e.raw, e.acc, e.mods, e.achieved_at
     FROM leaderboard_eligible_runs e
     WHERE e.user_id = $2
-      AND e.mode = $3
-      AND e.duration_ms IS NOT DISTINCT FROM $4::int
-      AND e.word_count IS NOT DISTINCT FROM $5::int
-      AND e.lang = $6
-      AND e.text_source_kind = $7
-      AND (NOT $8::boolean
+      AND e.quote_id IS NOT DISTINCT FROM $3::uuid
+      AND (e.quote_id IS NOT NULL
+           OR (e.mode = $4
+               AND e.duration_ms IS NOT DISTINCT FROM $5::int
+               AND e.word_count IS NOT DISTINCT FROM $6::int
+               AND e.lang = $7
+               AND e.text_source_kind = $8))
+      -- The economic barrier against throwaway accounts. Off by config, and
+      -- flipping it needs a rebuild to take effect on existing runs.
+      --
+      -- Note ` + "`" + `ai.user_id = @user_id` + "`" + `, NOT ` + "`" + `= e.user_id` + "`" + `. The two are the same
+      -- value — ` + "`" + `e.user_id = @user_id` + "`" + ` is asserted five lines above — but
+      -- correlating on the column makes this a SubPlan the executor runs once
+      -- per CANDIDATE RUN instead of an InitPlan it runs once per statement.
+      -- Measured (docs/PERFORMANCE.md, zone 4): a six-run cell 34.6 ms → 8.0 ms,
+      -- and a player with 100 000 runs in one bucket 1 m 30 s → 458 ms, which is
+      -- the gate costing nothing at all. This projection runs inside the replay
+      -- worker's verdict transaction, holding its row locks, so the difference
+      -- is not academic.
+      AND (NOT $9::boolean
            OR EXISTS (SELECT 1 FROM auth_identities ai
                       WHERE ai.user_id = e.user_id AND ai.email_verified))
     ORDER BY e.score DESC, e.achieved_at ASC, e.run_id ASC
@@ -285,10 +320,12 @@ cleared AS (
       AND NOT EXISTS (SELECT 1 FROM best)
 )
 INSERT INTO leaderboard_entries
-    (bucket_key, user_id, run_id, score, wpm, raw, acc, grade, mods, achieved_at)
+    (bucket_key, user_id, run_id, score, wpm, raw, acc, grade, mods, achieved_at,
+     quote_source)
 SELECT $1, b.user_id, b.run_id, b.score, b.wpm, b.raw, b.acc,
-       run_grade(b.acc), b.mods, b.achieved_at
+       run_grade(b.acc), b.mods, b.achieved_at, q.source
 FROM best b
+         LEFT JOIN quotes q ON q.id = b.quote_id
 ON CONFLICT (bucket_key, user_id) DO UPDATE
     SET run_id      = EXCLUDED.run_id,
         score       = EXCLUDED.score,
@@ -297,17 +334,19 @@ ON CONFLICT (bucket_key, user_id) DO UPDATE
         acc         = EXCLUDED.acc,
         grade       = EXCLUDED.grade,
         mods        = EXCLUDED.mods,
-        achieved_at = EXCLUDED.achieved_at
+        achieved_at = EXCLUDED.achieved_at,
+        quote_source = EXCLUDED.quote_source
+    -- An unchanged best is left physically alone.
     WHERE leaderboard_entries.run_id <> EXCLUDED.run_id`
 
 const sqlEnumerateCells = `SELECT DISTINCT e.user_id, e.mode, e.duration_ms, e.word_count, e.lang,
-                e.text_source_kind
+                e.text_source_kind, e.quote_id
 FROM leaderboard_eligible_runs e
 WHERE (NOT $1::boolean
        OR EXISTS (SELECT 1 FROM auth_identities ai
                   WHERE ai.user_id = e.user_id AND ai.email_verified))
 ORDER BY e.user_id, e.mode, e.duration_ms, e.word_count, e.lang,
-         e.text_source_kind`
+         e.text_source_kind, e.quote_id`
 
 // sqlEmailGate is the verified-email EXISTS on its own, exactly as it appears
 // inside both RecomputeLeaderboardCell and EnumerateLeaderboardCells.
@@ -341,8 +380,10 @@ func TestLoadPlanProjectionRecompute(t *testing.T) {
 
 	duration := int32(60_000)
 	var noWords *int32
+	var noQuote *uuid.UUID
 	plan, err := perf.ExplainOnly(ctx, tx, sqlRecomputeCell,
-		f.hot.Key(), user, f.hot.Mode, duration, noWords, f.hot.Lang, f.hot.TextSource, requireVerifiedEmail)
+		f.hot.Key(), user, noQuote, f.hot.Mode, duration, noWords, f.hot.Lang,
+		f.hot.TextSource, requireVerifiedEmail)
 	require.NoError(t, err)
 	perf.AssertPlan(t, plan, perf.PlanAssertion{
 		Zone:        zone4,

@@ -3,6 +3,7 @@ package leaderboard_test
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,10 +30,6 @@ func TestBucketKeyFormat(t *testing.T) {
 		{"words 25", leaderboard.ModeWords, nil, new(int32(25)), "en", leaderboard.TextSourceSeeded, "words:25:en:seeded"},
 		{"words 50", leaderboard.ModeWords, nil, new(int32(50)), "german", leaderboard.TextSourceSeeded, "words:50:german:seeded"},
 		{"words 100", leaderboard.ModeWords, nil, new(int32(100)), "css_code", leaderboard.TextSourceSeeded, "words:100:css_code:seeded"},
-		// A future text source is a different board, not the same one with a
-		// footnote — the kind is IN the key so quotes cannot land in the
-		// generated-text ranking (SCORING_CONCEPT §6).
-		{"another source", leaderboard.ModeWords, nil, new(int32(50)), "en", "quote", "words:50:en:quote"},
 		// The dimension is whichever column the mode uses; a stray value in the
 		// other one is ignored rather than smuggled into the key.
 		{"both columns set", leaderboard.ModeTime, new(int32(15000)), new(int32(50)), "en", leaderboard.TextSourceSeeded, "time:15000:en:seeded"},
@@ -105,6 +102,18 @@ func TestParseBucketKeyRejectsJunk(t *testing.T) {
 		{"lang with a space", "time:15000:en us:seeded"},
 		{"sql-ish lang", "time:15000:en';DROP:seeded"},
 		{"oversized lang", "time:15000:" + string(make([]byte, 0, 40)) + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:seeded"},
+		// The quote key space, from the other side. Every one of these is a
+		// link somebody could paste, and every one of them names no board.
+		{"quote prefix with nothing after it", "quote:"},
+		{"quote id that is not a uuid", "quote:not-a-uuid"},
+		{"quote id with the dashes stripped", "quote:1f5f1f2c6f0f4d5a9f0a3f2a1b0c9d8e"},
+		{"quote id in braces", "quote:{1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e}"},
+		{"quote id as a urn", "quote:urn:uuid:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e"},
+		{"quote id in upper case", "quote:1F5F1F2C-6F0F-4D5A-9F0A-3F2A1B0C9D8E"},
+		{"the nil uuid, which is how Go spells 'no quote'", "quote:00000000-0000-0000-0000-000000000000"},
+		{"a quote key wearing a language key's shape", "quote:15000:en:seeded"},
+		{"a language key claiming a quote text source", "words:50:en:quote"},
+		{"a language key claiming a quote mode", "quote:50:en:seeded"},
 	}
 
 	for _, tc := range cases {
@@ -113,4 +122,49 @@ func TestParseBucketKeyRejectsJunk(t *testing.T) {
 			require.ErrorIs(t, err, leaderboard.ErrInvalidBucket)
 		})
 	}
+}
+
+// The two key shapes share one space, and that only works if the discriminator
+// is one nobody can spell by accident. "quote" is not a mode and never will be
+// — `time` and `words` are the whole list — so the prefix decides, before
+// anything counts components.
+func TestQuoteBucketKeySpace(t *testing.T) {
+	id := uuid.MustParse("1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e")
+
+	b, err := leaderboard.NewQuoteBucket(id)
+	require.NoError(t, err)
+	assert.Equal(t, "quote:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e", b.Key())
+	assert.True(t, b.IsQuote())
+
+	parsed, err := leaderboard.ParseBucketKey(b.Key())
+	require.NoError(t, err)
+	assert.Equal(t, b, parsed, "the key must round-trip: the endpoints parse what the projection wrote")
+
+	t.Run("a quote board carries no other dimension", func(t *testing.T) {
+		assert.Empty(t, parsed.Mode)
+		assert.Zero(t, parsed.Dimension)
+		assert.Empty(t, parsed.Lang)
+		assert.Empty(t, parsed.TextSource,
+			"a quote board is not a text-source flavour of a language board")
+	})
+
+	t.Run("the nil uuid is not a board", func(t *testing.T) {
+		_, err := leaderboard.NewQuoteBucket(uuid.Nil)
+		require.ErrorIs(t, err, leaderboard.ErrInvalidBucket)
+	})
+
+	t.Run("no language board can name a quote text source", func(t *testing.T) {
+		_, err := leaderboard.NewBucket(leaderboard.ModeWords, nil, new(int32(50)), "en",
+			leaderboard.TextSourceQuote)
+		require.ErrorIs(t, err, leaderboard.ErrInvalidBucket,
+			"quotes rank per quote; there must be exactly one spelling of a quote board")
+	})
+
+	t.Run("a quote key cannot collide with a language key", func(t *testing.T) {
+		language, err := leaderboard.NewBucket(leaderboard.ModeTime, new(int32(15000)), nil, "en",
+			leaderboard.TextSourceSeeded)
+		require.NoError(t, err)
+		assert.NotEqual(t, language.Key(), b.Key())
+		assert.False(t, language.IsQuote())
+	})
 }

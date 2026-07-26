@@ -1,9 +1,14 @@
 # TypeMore Leaderboards
 
-Bucketed score boards over **accepted** runs (SCORING_CONCEPT §4, BACKEND.md §10).
-A board row is a *projection* of the `runs` table, maintained inside the replay
-worker's own transaction, and reproducible from Postgres alone with
-`make rebuild-leaderboards`.
+Bucketed score boards over **accepted** runs (SCORING_CONCEPT §4 and §6,
+BACKEND.md §10). A board row is a *projection* of the `runs` table, maintained
+inside the replay worker's own transaction, and reproducible from Postgres alone
+with `make rebuild-leaderboards`.
+
+There are two kinds: **language boards**, one per (mode, size, language) over
+seeded text, and **per-quote boards**, one per quote. A quote run is ranked
+inside its quote and nowhere else — the rule, and the three reasons for it, are
+under "Quotes rank per quote, and nowhere else".
 
 This phase became possible only once the review policy stopped flagging noise:
 under "any plausibility flag ⇒ flagged" 11 of the first 23 runs were in review
@@ -15,29 +20,59 @@ to trigger `min-interval`.
 flowchart LR
   R["runs (immutable log + verdict)"] -->|status write + projection<br/>ONE transaction| E[leaderboard_entries]
   R -.->|make rebuild-leaderboards| E
+  Q[(quotes)] -.->|source, on the winning row only| E
   E --> V[leaderboard_rows<br/>ban-filtered view]
   V --> API["GET /api/v1/leaderboards…"]
 ```
 
 ## Buckets
 
+There are **two shapes of board**, in one key space:
+
 ```
-bucket_key = "<mode>:<durationMs|wordCount>:<lang>:<textSource.kind>"
+bucket_key = "<mode>:<durationMs|wordCount>:<lang>:<textSource.kind>"   language board
+           | "quote:<quoteId>"                                          quote board
 
 time:15000:en:seeded      words:50:ru-RU:seeded      time:60000:css_code:seeded
+quote:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e
 ```
 
 The key has **exactly one producer**: `leaderboard.Bucket.Key` in
 `internal/leaderboard/bucket.go`. Nothing else — no SQL, no handler, no test
 fixture — concatenates one, because a second producer is a second board the day
 the format grows a component. SQL matches sibling runs on the bucket's
-*components* (`mode`, `duration_ms`, `word_count`, `lang`, `text_source_kind`)
-and only ever stores the string Go handed it. `ParseBucketKey` is the inverse and
-is what every `{bucket}` path parameter goes through.
+*components* (`quote_id`, `mode`, `duration_ms`, `word_count`, `lang`,
+`text_source_kind`) and only ever stores the string Go handed it.
+`ParseBucketKey` is the inverse and is what every `{bucket}` path parameter goes
+through.
 
-**Mods are not part of the key.** They multiply the score (SCORING_CONCEPT §2)
-rather than splitting the board, so a punctuation run and a plain one compete
-directly. The entry still records which mods were played, for display.
+**Mods are not part of either key.** They multiply the score (SCORING_CONCEPT
+§2) rather than splitting the board, so a punctuation run and a plain one
+compete directly. The entry still records which mods were played, for display.
+
+### How the two shapes share one key space
+
+They are told apart by the literal prefix `quote:`, checked **before** anything
+counts components. That works because the first component of a language key is a
+**mode**, and the modes are `time` and `words` — the whole list (SCORING_CONCEPT
+§4). "quote" is not one and cannot become one by accident: a third ranked mode
+is a deliberate change to that list, and this is the line it would have to walk
+past. So the prefix is a discriminator, not a convention, and no language key can
+grow into a quote key.
+
+The reverse door is shut too. `words:50:en:quote` is **not** a second spelling of
+a quote board — it is not a board at all, and `ParseBucketKey` rejects it with the
+same `404` an unparseable key gets. `leaderboard_eligible_runs` can never produce
+a row for a language cell whose text source is a quote, so a key naming one names
+something that cannot exist. One board, one spelling.
+
+A quote key carries **nothing but the id**. Mode, size and language are not
+dimensions of a quote board: the quote is a fixed artefact with fixed bytes in one
+language, so any second component could only repeat what the id already
+determines — and a component that can *disagree* with the id is a way to split one
+board into two. Non-canonical uuid spellings (braces, `urn:uuid:`, undashed,
+upper case) are rejected for the same reason: they name the same quote but not the
+same string, and the string is what the database stores and what people link to.
 
 ### Ranked shapes
 
@@ -45,11 +80,16 @@ directly. The entry still records which mods were played, for display.
 |---|---|
 | `time` | 15 000 / 30 000 / 60 000 ms |
 | `words` | 25 / 50 / 100 |
+| `quote` | *n/a* — every quote is its own board, at whatever length it is |
 
 Everything else — 10 min, 120 s, 10 words, a custom duration — is a perfectly
 good run that simply never reaches a board. 10 min is excluded deliberately:
 sitting out ten minutes is endurance, and the sample is too small to rank
 (SCORING_CONCEPT §4).
+
+Quotes have no size test at all, and could not have one: the corpus runs from 8
+to 100+ words, and a quote run carries neither `duration_ms` nor `word_count` to
+test ([`RUNS.md`](RUNS.md), "Dimensions"). Its length is a property of the text.
 
 The list lives in the `leaderboard_eligible_runs` view, in one place, read by
 both the incremental projection and the rebuild. Widening it is a migration plus
@@ -61,11 +101,78 @@ both the incremental projection and the rebuild. Widening it is a migration plus
 |---|---|---|
 | `status = 'accepted'` | `leaderboard_eligible_runs` | Pending has no server numbers; flagged is under review; rejected is an invalid log. |
 | **Flags do not disqualify** | — (deliberately absent) | An accepted run that raised a weak signal is accepted. That is the entire point of policy v1; re-excluding flags here would undo it. |
-| `textSource.kind = 'seeded'` | `leaderboard_eligible_runs` | Quotes are a finite, memorisable corpus: they rank per quote, never globally (SCORING_CONCEPT §6). |
-| Ranked mode + size | `leaderboard_eligible_runs` | See above. |
+| **A quote run ranks on its quote and nowhere else** | `leaderboard_eligible_runs.quote_id` + `RecomputeLeaderboardCell` | See below. It is the same one column in both directions. |
+| A seeded run needs `textSource.kind = 'seeded'` | `leaderboard_eligible_runs` | An absent `textSource` is the legacy shape and means seeded; a run that claims a quote it cannot name lands here and is not seeded, so it ranks nowhere. |
+| Ranked mode + size, for seeded runs only | `leaderboard_eligible_runs` | See above. Quotes have no size test and could not have one. |
 | Well-formed verdict JSON | `leaderboard_eligible_runs` (`jsonb_typeof` guards) | The view is evaluated inside the worker's transaction; a malformed document must not abort the batch that wrote it. |
+| Well-formed quote id | `run_quote_id` (regex guard) | Same reason, one level down: `'q1'::uuid` *raises*, and this view is evaluated inside that same transaction. A quote id that is not a uuid resolves to NULL, not to an aborted batch. |
 | Verified email identity | `RecomputeLeaderboardCell` / `EnumerateLeaderboardCells`, per query | Deployment policy, not schema. On by default: an address someone can receive mail at is the cheapest barrier against throwaway accounts that does not punish real players. |
 | **Player not banned** | `leaderboard_rows`, at READ time | See below. |
+
+The last two apply to quote boards exactly as they do to language boards — which
+is not a thing anyone had to remember, and is the point of them living outside
+the eligible view: a new board *shape* cannot escape a filter it never passed
+through in the first place (`TestQuoteBoardsHonourBansAndTheEmailGate`).
+
+### Quotes rank per quote, and nowhere else
+
+> **ranked within the quote, unranked globally**
+
+A quote is a fixed map — the direct osu!-beatmap analogue — and everyone who
+plays it types the same bytes ([`QUOTES.md`](QUOTES.md)). A score on it means
+something next to other scores on that text, and nothing at all next to a seeded
+one. SCORING_CONCEPT §6 gives three reasons, and none of them is stylistic:
+
+1. **Memorisation.** A finite corpus of short texts gets farmed by muscle memory;
+   the burst it produces is above the player's real speed. Text generated from a
+   seed cannot be learned — there is always more of it.
+2. **Length variance.** Quotes run 8 to 100+ words. They do not fit the ranked
+   sizes, and there is no size they could be filed under honestly.
+3. **Cherry-picking.** Let quotes into a global rating and the rating becomes a
+   search for easy maps rather than a measure of typing.
+
+#### How the rule is enforced
+
+In **one column**, `leaderboard_eligible_runs.quote_id`, which is non-NULL for
+exactly the runs played on a quote. `RecomputeLeaderboardCell` — the only
+statement that writes `leaderboard_entries` — matches on it first, and it decides
+whether the other coordinates are asked at all:
+
+| Recomputing | The statement asks for | So |
+|---|---|---|
+| a language cell | `quote_id IS NULL` **and** mode/size/lang/kind | a quote run is not a sibling and cannot enter |
+| a quote cell | `quote_id = <that quote>` **and nothing else** | a seeded run is not a sibling and cannot enter; and the mode, size and language the quote was played at are ignored, because they are not dimensions of its board |
+
+Both exclusions are therefore properties of the projection **SQL**, not of Go.
+That matters more than it looks: the projection, the rebuild and any future
+reader all go through that statement and that view, so neither direction is a
+check someone can forget to repeat in a new code path. Go picks *which* cell to
+recompute; what may occupy a cell is entirely SQL's answer, so the worst a Go bug
+can do is recompute a cell that finds nothing — never file a run into a board the
+view would not have put it in.
+
+`TestQuoteRunIsRankedNowhereButItsQuote` asserts the first row over the **whole
+entries table and the whole public catalogue**, not over the one language bucket
+the run would most plausibly have landed in; `TestSeededRunIsRankedInNoQuoteBoard`
+asserts the second.
+
+#### TP does not exist yet, and this is the hook it must use
+
+There is no TP (SCORING_CONCEPT §5) in this system today, and quotes are excluded
+from it for the same three reasons they are excluded from the global boards. The
+column is in the view, named, so that arriving TP has to *say something* about
+quotes: the runs it may count are exactly
+
+```sql
+SELECT … FROM leaderboard_eligible_runs WHERE quote_id IS NULL
+```
+
+A TP implementation that writes the `SELECT` without the `WHERE` is inheriting
+quote runs into a global rating, and the only defence against that is that the
+predicate is written down here and in the migration, beside the reason. There is
+deliberately **no** second "globally rankable runs" view: one more view whose
+only difference is a `WHERE` clause is one more thing that can drift from this
+one, and the whole design of this table is that eligibility has a single home.
 
 ### Why bans are filtered on read, not on write
 
@@ -141,6 +248,7 @@ wires them.
 make rebuild-leaderboards          # go run ./cmd/leaderboardctl rebuild
 make leaderboards                  # the board index
 make leaderboards bucket=time:15000:en:seeded
+make leaderboards bucket=quote:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e
 ```
 
 One transaction: count, enumerate every cell with an eligible run, `TRUNCATE`,
@@ -154,10 +262,18 @@ about who owns a slot. Walking cells costs one statement each and makes
 "rebuild ≡ incremental" true by construction rather than by two implementations
 agreeing.
 
+The enumeration yields candidate **coordinates**, and Go collapses them into the
+**boards** they name before walking them. The two are the same thing for a
+language board; for a quote board they are not, because the mode and language a
+quote was played at ride along in the row and the board ignores them. Collapsing
+on `Bucket.Key` — the one producer, again — is what keeps "one cell, one entry"
+true and `RebuildStats.Cells` honest.
+
 Run it after:
 
 - flipping `TYPEMORE_LEADERBOARD_REQUIRE_VERIFIED_EMAIL`,
-- changing `leaderboard_eligible_runs` (new ranked size, new eligibility rule),
+- changing `leaderboard_eligible_runs` (new ranked size, new eligibility rule,
+  a quote whose runs were projected before it was resolvable),
 - any suspicion that the projection drifted.
 
 A healthy rebuild reports **unchanged**. That it can be run, and that it changes
@@ -178,6 +294,16 @@ and it says so itself rather than dragging the others behind middleware.
 | GET | `/api/v1/runs/{id}/replay` | — | One accepted run's playback metadata |
 | GET | `/api/v1/runs/{id}/replay/log` | — | The same run's event log, as stored gzip |
 
+**Quote boards added no route.** `{bucket}` takes `quote:<id>` exactly where it
+takes `time:15000:en:seeded`, so paging, `/me`, the cursor, the counted rank and
+the `404` for a key that names no board are one implementation rather than two.
+That is the payoff for putting quotes in the *same* key space instead of giving
+them a parallel `/quote-leaderboards` subtree, and the operator tool is the
+observable proof: `make leaderboards bucket=quote:<uuid>` inspects a quote board
+today, and `cmd/leaderboardctl` needed **zero lines changed** for it — it prints
+`Bucket.Key()` and parses through `ParseBucketKey`, and both already knew. Anything
+that "tidies" quote boards into their own namespace pays all of this back.
+
 The session on `/me` is resolved by `auth.OptionalAuth` — it attaches the user
 when a cookie is present and never rejects, which is what lets a public subtree
 have one personalised route.
@@ -186,6 +312,8 @@ have one personalised route.
 
 ```json
 { "buckets": [
+  { "bucket": "quote:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e",
+    "quoteId": "1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e", "entries": 4 },
   { "bucket": "time:15000:ru-RU:seeded", "mode": "time", "durationMs": 15000,
     "lang": "ru-RU", "textSource": "seeded", "entries": 1 },
   { "bucket": "words:25:ru-RU:seeded", "mode": "words", "wordCount": 25,
@@ -193,16 +321,44 @@ have one personalised route.
 ] }
 ```
 
-The dimension is rendered under the name its mode gives it, so a client never has
-to know that "the number" means milliseconds here and words there. Empty buckets
-are absent rather than enumerated: which shapes are ranked is a property of the
-schema, and a board with nothing in it is not news.
+| Field | On | Meaning |
+|---|---|---|
+| `bucket` | both | The key. The only thing a client needs to fetch the board. |
+| `quoteId` | quote boards | The quote to resolve through `GET /api/v1/quotes/{id}` for its text and attribution |
+| `mode` | language boards | `time` or `words` |
+| `durationMs` / `wordCount` | language boards | The dimension, under the name its mode gives it — mutually exclusive |
+| `lang` | language boards | The dictionary language |
+| `textSource` | language boards | Always `seeded` today |
+| `entries` | both | Visible players on the board |
+
+A language board's fields are **absent** on a quote board rather than empty or
+zero, because a quote board does not have them: rendering `"mode": ""` would
+invite a client to read a mode off a board that has none. The dimension is
+rendered under the name its mode gives it, so a client never has to know that
+"the number" means milliseconds here and words there.
 
 `entries` is an integer count of the bucket's **visible** rows — the query is
 `count(*) … FROM leaderboard_rows GROUP BY bucket_key`, and `leaderboard_rows`
 is the ban-filtered view, so a bucket whose only player is banned does not report
 one, it disappears (`TestBanHidesTheEntryEverywhereAndKeepsIt`). It is a count of
 *players*, not of runs: one slot per player per bucket.
+
+**Quote boards are in here, and they are what stops this response being bounded
+by the schema.** Before quotes, the set of possible boards was 2 modes × 3 sizes
+× the served languages — a few dozen, forever. There are 9 881 quotes
+([`QUOTES.md`](QUOTES.md)), so on a busy corpus this list grows with what people
+play. Two things keep that honest for now, and one is deferred:
+
+- empty boards are absent, so the list is bounded by *play*, not by the corpus —
+  which is also why "which shapes are ranked is a property of the schema" is no
+  longer quite true, and this paragraph replaces it;
+- nobody discovers a quote board by browsing this list. You arrive at one from a
+  quote you already have an id for, exactly as you arrive at a beatmap leaderboard
+  from the beatmap. The index is for the language boards.
+
+Deferred, deliberately: paging or a `?kind=` filter here. The trigger is a real
+corpus with real traffic making the response large, not the arithmetic above —
+adding a query parameter now would be guessing at which one clients want.
 
 ### `GET /api/v1/leaderboards/{bucket}`
 
@@ -221,6 +377,65 @@ one, it disappears (`TestBanHidesTheEntryEverywhereAndKeepsIt`). It is a count o
   "nextCursor": "Mjg2NDoxNzg0…"
 }
 ```
+
+A quote board's rows are the same shape plus one field:
+
+```json
+{
+  "bucket": "quote:1f5f1f2c-6f0f-4d5a-9f0a-3f2a1b0c9d8e",
+  "entries": [
+    { "rank": 1, "userId": "245d0902-…", "displayName": "boardsmoke",
+      "score": 3120, "wpm": 91.4, "raw": 92.0, "acc": 1, "grade": "SS",
+      "mods": { "…": "…" },
+      "source": "Johann Wolfgang von Goethe",
+      "runId": "e865dae0-…", "achievedAt": "2026-07-25T13:43:14.772724Z" }
+  ]
+}
+```
+
+**`source` is the quote's attribution, and on a quote board it is not
+optional** — a quote is someone's words, and a board that shows the text without
+saying whose is not something to ship. It is absent (not empty) on a language
+board, where there is no quote to attribute.
+
+It reaches the row as a **snapshot column**, `leaderboard_entries.quote_source`,
+not as a join in `leaderboard_rows`. Three reasons, in order of weight:
+
+1. **The language boards must not pay for it.** A board page is one index range
+   scan plus the display-name join (`docs/PERFORMANCE.md`, zone 3). A second join
+   to `quotes` in the read view would be charged to every page of every language
+   board to serve a column that is NULL on all of them.
+2. **A published quote is never edited** ([`QUOTES.md`](QUOTES.md),
+   "Immutability"), so the snapshot cannot go stale behind the board. That is
+   what makes snapshotting *safe* here; it is not safe in general, and it is the
+   same argument the score and metric columns already rest on.
+3. **It is resolved once, on the write, for the one row that won the cell.**
+   `RecomputeLeaderboardCell` does `LEFT JOIN quotes q ON q.id = b.quote_id`
+   after the `LIMIT 1` — one primary-key probe per projected entry, on a NULL key
+   for a seeded run, which matches nothing and costs nothing. Not once per
+   candidate run, and never once per reader.
+
+The join is `LEFT` rather than inner because of the **language** rows, not
+because a quote might be missing: a language cell has no quote id at all, and an
+inner join would drop every language board's entry. On a quote board the quote
+row is guaranteed — `leaderboard_eligible_runs` resolves `quote_id` *through*
+`quotes`, so a run is a candidate for a quote cell only if that quote exists.
+That is what makes `source` **non-optional** on a quote board rather than merely
+usually present.
+
+It is also what keeps the two projection paths agreeing. The per-verdict path
+asks `RunBucketCell` which cell a run belongs to and the rebuild enumerates cells
+out of the view; both resolve the quote through the same join, so an accepted run
+naming a quote that is not in the registry is ranked **nowhere by both**. Before
+the view resolved the id (it read it straight out of the setup document), the
+rebuild invented a board for such a run and the incremental path did not —
+`TestRebuildReproducesIncrementalMaintenance` plants exactly that run and caught
+it.
+
+Everything else on a quote board is the same rule as a language board and is not
+re-derived for it: ordering, the cursor, and the counted rank all come from the
+same three queries against `leaderboard_rows`
+(`TestQuoteBoardOrderingAndPaging`).
 
 `limit` defaults to **50**, clamped to **100**. An unparseable bucket key is
 `404`; a well-formed but unpopulated one is an empty page.
@@ -291,7 +506,9 @@ like.
 ```
 
 `durationMs` and `wordCount` are mutually exclusive — the run carries whichever
-its mode gives it, and the other is absent. There is **no `log` field**.
+its mode gives it, and the other is absent. A **quote run carries neither**
+(`"mode": "quote"`), because its length is a property of the text
+([`RUNS.md`](RUNS.md), "Dimensions"). There is **no `log` field**.
 
 **There is no word list either, and that is the point of `seed` + `dictHash`.**
 The client regenerates the exact text with the core's own generator from the seed
@@ -306,6 +523,45 @@ Both fields are already on the owner's authenticated summary
 It carries the verdict's *result*, never its reasoning: no `validation`, no
 `clientScore`, no `clientMetrics`. A spectator has no business reading the
 moderation trail.
+
+#### Watching a quote run
+
+**The shape is unchanged and needed no quote discriminator added to it**, because
+it already carries one. Verified against both queries: a quote run comes back
+from this route like any other, with
+
+```json
+{
+  "mode": "quote", "lang": "english",
+  "seed": 20260724, "dictHash": "8b1cf30a",
+  "setup": { "generation": { "…": "…",
+    "textSource": { "kind": "quote", "quoteId": "1f5f1f2c-…", "quoteHash": "8b1cf30a" } } }
+}
+```
+
+and no `durationMs` or `wordCount`. The discriminator a client needs is
+`setup.generation.textSource.kind === "quote"`, which is *the same field the
+server itself branches on* — the eligible view reads exactly this document. A
+second, top-level copy of the same fact would be a second thing to keep true.
+
+Two details that look wrong until you know why:
+
+- **`dictHash` on a quote run is not a dictionary hash.** It is
+  `dictVersion([text])` — the quote's `text_hash`, byte for byte the value the
+  registry stores ([`QUOTES.md`](QUOTES.md)), because the core computes a quote
+  run's `SeedContext.dictVersion` from the text instead of from a word list. It
+  will not resolve against the dictionary registry, and it is not supposed to:
+  the client fetches `GET /api/v1/quotes/{quoteId}` and checks *that* `textHash`
+  against it. Same verification, same field, different corpus.
+- **`quoteHash` and `dictHash` are therefore the same string.** That looks
+  redundant and is not: one is the hash the client *claimed* when it submitted
+  the run and lives inside the immutable setup snapshot; the other is the hash
+  the run was actually judged against. Watching them agree is the check.
+
+`seed` is still there and still meaningless for a quote — `generateWords` splits
+the text on spaces and consumes no PRNG — but it is a column on every run and
+omitting it here would make the envelope's shape depend on the text source for no
+gain.
 
 #### Log — `GET /api/v1/runs/{id}/replay/log`
 
@@ -377,18 +633,24 @@ bans
   expires_at timestamptz NULL                  -- NULL = permanent
 
 leaderboard_entries
-  bucket_key  text          -- formatted by leaderboard.Bucket.Key, nothing else
-  user_id     uuid → users ON DELETE CASCADE
-  run_id      uuid → runs  ON DELETE CASCADE
-  score       bigint        -- the SERVER's score
-  wpm/raw/acc numeric       -- the SERVER's metrics
-  grade       text          -- run_grade(acc)
-  mods        jsonb         -- run_mods(setup)
-  achieved_at timestamptz   -- runs.created_at: when it was PLAYED, not projected
+  bucket_key   text          -- formatted by leaderboard.Bucket.Key, nothing else
+  user_id      uuid → users ON DELETE CASCADE
+  run_id       uuid → runs  ON DELETE CASCADE
+  score        bigint        -- the SERVER's score
+  wpm/raw/acc  numeric       -- the SERVER's metrics
+  grade        text          -- run_grade(acc)
+  mods         jsonb         -- run_mods(setup)
+  quote_source text NULL     -- quotes.source, on quote boards only
+  achieved_at  timestamptz   -- runs.created_at: when it was PLAYED, not projected
   PRIMARY KEY (bucket_key, user_id)                                  -- one slot per player per bucket
   idx (bucket_key, score DESC, achieved_at ASC, user_id ASC)         -- the ranking scan
   unique idx (run_id)                                                -- a run holds at most one slot
 ```
+
+There is deliberately **no `quote_id` column**: the bucket key already carries it,
+and a second copy is a second thing that can disagree with the first. Nothing in
+SQL needs to know which board a row belongs to — SQL never parses a bucket key —
+so the column would exist only to be denormalised.
 
 The columns are a **snapshot** of the run, not a join to it: a page is one index
 range scan plus the display-name join, and a run that later loses its accepted
@@ -401,16 +663,17 @@ boards. It has already earned its keep once, in a test.
 
 ### Derivations, and where they live
 
-Four SQL objects exist so that "eligible" and "visible" cannot drift between the
+These SQL objects exist so that "eligible" and "visible" cannot drift between the
 projection, the rebuild and the reads:
 
 | Object | Answers |
 |---|---|
 | `run_grade(numeric)` | The letter grade of an accuracy |
 | `run_text_source_kind(jsonb)` | Where a run's text came from |
+| `run_quote_id(jsonb)` | Which quote a run was played on, if any |
 | `run_mods(jsonb)` | Which mod flags a run was played under |
 | `active_bans` | Which bans are in force right now |
-| `leaderboard_eligible_runs` | Which runs may hold a slot |
+| `leaderboard_eligible_runs` | Which runs may hold a slot, and in which cell |
 | `leaderboard_rows` | Which entries a reader may see |
 
 **`run_grade` mirrors the core's `gradeOf`** (`shared/core/score.ts`), and that
@@ -428,12 +691,26 @@ combination counts as what" logic stay in the core; the score column already has
 them folded in. `TestModsProjectionCoversEveryCoreMod` reads `MOD_MULTIPLIERS`
 out of the bundle and asserts every mod the core knows about has a field here.
 
-**`run_text_source_kind` defaults an absent `textSource` to `seeded`.** Today's
-client generates every text from the seed and sends no such field; BACKEND.md §8's
-`seeded|fixed` abstraction will populate it when quotes land. The default is safe
-rather than trusting, because a run whose text did not come from the seed cannot
-survive replay in the first place: the worker regenerates the words from
-seed + dictionary before judging the log.
+**`run_text_source_kind` defaults an absent `textSource` to `seeded`.** An absent
+field is the legacy shape — every run written before quotes existed has no
+`textSource` at all, and keeping that shape valid is what holds
+`EVENT_LOG_VERSION` at 1 — so "missing" and `'seeded'` must mean the same thing
+everywhere. The default is safe rather than trusting, because a run whose text
+did not come from the seed cannot survive replay in the first place: the worker
+regenerates the words from seed + dictionary before judging the log.
+
+**`run_quote_id` returns the quote id or NULL, and guards the cast.** It requires
+`textSource.kind = 'quote'` *and* a syntactically valid uuid before casting,
+because `'q1'::uuid` raises rather than returning NULL and this function is
+evaluated inside the replay worker's verdict transaction — one hand-edited setup
+document must not be able to abort the batch that wrote it. The ingest validator
+already rejects a malformed quote id with a `422` ([`RUNS.md`](RUNS.md)); this is
+the guard for everything that did not come through it.
+
+A run whose quote id resolves to nothing is ranked **nowhere**: it fails the quote
+branch (there is no quote) and the seeded branch (its text source is not
+`seeded`). Failing closed is the only safe direction — the alternatives are a
+board on a text nobody can fetch, or a quote score in the global ranking.
 
 ## Why no Redis
 
@@ -475,11 +752,20 @@ database, or ranking latency showing up in traces — not a diagram.
   already ordered by `score`; a parallel WPM ranking is a second index and a
   second ordering, not a new pipeline.
 - **TP / profile rating** (SCORING_CONCEPT §5) — its own phase, its own formula,
-  deliberately not derived from `score`.
-- **Daily challenge boards** (one seed for everyone) — needs the scheduler.
-- **Per-quote boards** (SCORING_CONCEPT §6) — the `textSource` kind is already in
-  the bucket key so they land additively, as `words:*:*:quote`-shaped boards or
-  their own key space.
+  deliberately not derived from `score`. When it lands it counts
+  `leaderboard_eligible_runs WHERE quote_id IS NULL`; see "Quotes rank per quote,
+  and nowhere else".
+- **Daily challenge boards** (one seed for everyone) — needs the scheduler. A
+  daily challenge may itself be a quote, which is why a quote board is a board
+  and not a special case bolted onto the language ones.
+- **A "Quotes TP"** (SCORING_CONCEPT §6, "far beyond MVP") — a rating computed
+  *within* the corpus, where memorisation is the game rather than a leak. It
+  needs its own formula for the same reason TP does, and nothing here blocks it.
+- **Star rating per quote** (SCORING_CONCEPT §6) — the same analyser the seeded
+  texts will use. A quote board ranks by score today, and score has no
+  `textDifficulty` factor yet for either text source.
+- **Paging or filtering the board index.** Quote boards make it grow with play
+  rather than with the schema; see `GET /api/v1/leaderboards`.
 - **The admin surface that issues bans.** The table and the read filter are here;
   the moderation UI is BACKEND.md §11.
 - **Pagination beyond keyset** (jump to page N, "around my rank"). Both need an

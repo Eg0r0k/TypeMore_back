@@ -56,7 +56,7 @@ func New(pool *pgxpool.Pool, requireVerifiedEmail bool) *Store {
 func (s *Store) ProjectRun(ctx context.Context, tx pgx.Tx, runID uuid.UUID) error {
 	q := s.q.WithTx(tx)
 
-	cell, err := q.RunBucketCell(ctx, runID)
+	row, err := q.RunBucketCell(ctx, runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -64,36 +64,72 @@ func (s *Store) ProjectRun(ctx context.Context, tx pgx.Tx, runID uuid.UUID) erro
 		return fmt.Errorf("leaderboard/pgstore: resolve cell for run %s: %w", runID, err)
 	}
 
-	// A run whose shape cannot name a bucket (an unranked mode) can never have
-	// held a slot, so there is nothing to recompute for it.
-	bucket, err := leaderboard.NewBucket(cell.Mode, cell.DurationMs, cell.WordCount, cell.Lang, cell.TextSourceKind)
+	c := cell{
+		userID: row.UserID, quoteID: row.QuoteID,
+		mode: row.Mode, durationMs: row.DurationMs, wordCount: row.WordCount,
+		lang: row.Lang, textSourceKind: row.TextSourceKind,
+	}
+	// A run whose shape cannot name a bucket (an unranked mode, a quote id that
+	// resolves to nothing) can never have held a slot, so there is nothing to
+	// recompute for it.
+	bucket, err := c.bucket()
 	if err != nil {
 		return nil //nolint:nilerr // not an error: unrankable runs simply have no cell
 	}
 
-	return s.recompute(ctx, q, bucket, cell.UserID, cell.DurationMs, cell.WordCount)
+	return s.recompute(ctx, q, bucket, c)
+}
+
+// cell is one (player, board) coordinate tuple, in the spelling both the
+// per-verdict lookup and the rebuild's enumeration produce. quoteID is the
+// discriminator: when it is set the run was played on a quote, and the language
+// coordinates describe the run without naming its board.
+type cell struct {
+	userID                uuid.UUID
+	quoteID               *uuid.UUID
+	mode                  string
+	durationMs, wordCount *int32
+	lang, textSourceKind  string
+}
+
+// bucket names the board this cell belongs to. A quote run's board is its quote
+// and nothing else (SCORING_CONCEPT §6): the mode, size and language it was
+// played at describe the run, not a ranking it competes in, so they are dropped
+// here rather than carried into a key.
+func (c cell) bucket() (leaderboard.Bucket, error) {
+	if c.quoteID != nil {
+		return leaderboard.NewQuoteBucket(*c.quoteID)
+	}
+	return leaderboard.NewBucket(c.mode, c.durationMs, c.wordCount, c.lang, c.textSourceKind)
 }
 
 // recompute is the single write statement, shared by the projection and the
 // rebuild. Both paths reaching the table through here is what makes the rebuilt
 // board equal to the incrementally maintained one by construction rather than
 // by testing two implementations against each other.
+//
+// The coordinates are passed as the cell reported them, NOT as the bucket
+// re-derived them: which of them the statement actually matches on is SQL's
+// decision, and for a quote cell it matches on the quote alone. Go choosing the
+// wrong cell is therefore a recompute that finds nothing, never a run filed
+// into a board the eligible view would not have put it in.
 func (s *Store) recompute(
 	ctx context.Context, q *leaderboarddb.Queries,
-	bucket leaderboard.Bucket, userID uuid.UUID, durationMs, wordCount *int32,
+	bucket leaderboard.Bucket, c cell,
 ) error {
 	err := q.RecomputeLeaderboardCell(ctx, leaderboarddb.RecomputeLeaderboardCellParams{
 		BucketKey:            bucket.Key(),
-		UserID:               userID,
-		Mode:                 bucket.Mode,
-		DurationMs:           durationMs,
-		WordCount:            wordCount,
-		Lang:                 bucket.Lang,
-		TextSourceKind:       bucket.TextSource,
+		UserID:               c.userID,
+		QuoteID:              c.quoteID,
+		Mode:                 c.mode,
+		DurationMs:           c.durationMs,
+		WordCount:            c.wordCount,
+		Lang:                 c.lang,
+		TextSourceKind:       c.textSourceKind,
 		RequireVerifiedEmail: s.requireVerifiedEmail,
 	})
 	if err != nil {
-		return fmt.Errorf("leaderboard/pgstore: recompute %s for %s: %w", bucket.Key(), userID, err)
+		return fmt.Errorf("leaderboard/pgstore: recompute %s for %s: %w", bucket.Key(), c.userID, err)
 	}
 	return nil
 }
@@ -138,19 +174,37 @@ func (s *Store) Rebuild(ctx context.Context) (RebuildStats, error) {
 		return stats, fmt.Errorf("leaderboard/pgstore: clear: %w", err)
 	}
 
+	// One recompute per BOARD, not per enumerated coordinate tuple. The two are
+	// the same thing for a language board, but a quote board ignores the mode,
+	// size and language its runs were played at, so two tuples can name it — and
+	// recomputing the same cell twice would double-count it in stats.Cells while
+	// producing exactly one entry. The bucket key is the identity here for the
+	// same reason it is everywhere else: it is what the table is keyed by.
+	seen := make(map[string]struct{}, len(cells))
 	for i := range cells {
-		c := &cells[i]
-		bucket, err := leaderboard.NewBucket(c.Mode, c.DurationMs, c.WordCount, c.Lang, c.TextSourceKind)
+		c := cell{
+			userID: cells[i].UserID, quoteID: cells[i].QuoteID,
+			mode: cells[i].Mode, durationMs: cells[i].DurationMs,
+			wordCount: cells[i].WordCount, lang: cells[i].Lang,
+			textSourceKind: cells[i].TextSourceKind,
+		}
+		bucket, err := c.bucket()
 		if err != nil {
 			// Unreachable through the eligible view, which only admits ranked
-			// shapes — but a view change must not silently drop rows.
+			// shapes and resolvable quotes — but a view change must not
+			// silently drop rows.
 			return stats, fmt.Errorf("leaderboard/pgstore: eligible run in an unrankable cell: %w", err)
 		}
-		if err := s.recompute(ctx, q, bucket, c.UserID, c.DurationMs, c.WordCount); err != nil {
+		slot := bucket.Key() + "|" + c.userID.String()
+		if _, dup := seen[slot]; dup {
+			continue
+		}
+		seen[slot] = struct{}{}
+		if err := s.recompute(ctx, q, bucket, c); err != nil {
 			return stats, err
 		}
 	}
-	stats.Cells = len(cells)
+	stats.Cells = len(seen)
 
 	if stats.After, err = q.CountLeaderboardEntries(ctx); err != nil {
 		return stats, fmt.Errorf("leaderboard/pgstore: count after: %w", err)
@@ -257,7 +311,7 @@ func firstRowToEntry(r leaderboarddb.ListLeaderboardPageFirstRow) leaderboard.En
 	return leaderboard.Entry{
 		UserID: r.UserID, DisplayName: r.DisplayName, RunID: r.RunID,
 		Score: r.Score, WPM: r.Wpm, Raw: r.Raw, Acc: r.Acc, Grade: r.Grade,
-		Mods: r.Mods, AchievedAt: r.AchievedAt,
+		Mods: r.Mods, AchievedAt: r.AchievedAt, Source: text(r.QuoteSource),
 	}
 }
 
@@ -265,7 +319,7 @@ func afterRowToEntry(r leaderboarddb.ListLeaderboardPageAfterRow) leaderboard.En
 	return leaderboard.Entry{
 		UserID: r.UserID, DisplayName: r.DisplayName, RunID: r.RunID,
 		Score: r.Score, WPM: r.Wpm, Raw: r.Raw, Acc: r.Acc, Grade: r.Grade,
-		Mods: r.Mods, AchievedAt: r.AchievedAt,
+		Mods: r.Mods, AchievedAt: r.AchievedAt, Source: text(r.QuoteSource),
 	}
 }
 
@@ -273,6 +327,16 @@ func getRowToEntry(r leaderboarddb.GetLeaderboardEntryRow) leaderboard.Entry {
 	return leaderboard.Entry{
 		UserID: r.UserID, DisplayName: r.DisplayName, RunID: r.RunID,
 		Score: r.Score, WPM: r.Wpm, Raw: r.Raw, Acc: r.Acc, Grade: r.Grade,
-		Mods: r.Mods, AchievedAt: r.AchievedAt,
+		Mods: r.Mods, AchievedAt: r.AchievedAt, Source: text(r.QuoteSource),
 	}
+}
+
+// text flattens a nullable column into the empty string. A language board has
+// no quote and therefore no attribution, and "absent" is exactly what the API
+// omits it as.
+func text(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

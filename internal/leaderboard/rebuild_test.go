@@ -34,16 +34,30 @@ func TestRebuildReproducesIncrementalMaintenance(t *testing.T) {
 	for i := range 6 {
 		users = append(users, b.user(fmt.Sprintf("player%02d", i), i%3 != 0))
 	}
+	// Two quotes in the corpus. They make this test the fence for the one place
+	// the two paths spell a cell DIFFERENTLY: the per-verdict path reads a run's
+	// raw coordinates and drops the language ones itself, while the rebuild
+	// enumerates coordinates out of leaderboard_eligible_runs. If those two ever
+	// disagreed about what cell a quote run belongs to, the incremental table and
+	// the rebuilt one would stop matching — right here.
+	quotes := []uuid.UUID{
+		b.quote("english", "a fixed map, typed the same by everyone", "Author One"),
+		b.quote("russian", "another fixed map", "Author Two"),
+	}
 	shapes := []runSpec{
 		{mode: leaderboard.ModeTime, durationMs: new(int32(15000)), lang: "en"},
 		{mode: leaderboard.ModeTime, durationMs: new(int32(30000)), lang: "en"},
 		{mode: leaderboard.ModeTime, durationMs: new(int32(60000)), lang: "ru"},
 		{mode: leaderboard.ModeWords, wordCount: new(int32(25)), lang: "en"},
 		{mode: leaderboard.ModeWords, wordCount: new(int32(50)), lang: "german"},
-		// Deliberately unrankable: 10min and an odd word count must survive the
-		// whole exercise without ever producing an entry, on either path.
+		{quote: quotes[0], lang: "english"},
+		{quote: quotes[1], lang: "russian"},
+		// Deliberately unrankable: 10min, an odd word count, and a run claiming a
+		// quote that is not in the registry must survive the whole exercise
+		// without ever producing an entry, on either path.
 		{mode: leaderboard.ModeTime, durationMs: new(int32(600_000)), lang: "en"},
 		{mode: leaderboard.ModeWords, wordCount: new(int32(7)), lang: "en"},
+		{quote: uuid.New(), lang: "en"},
 	}
 	statuses := []string{"accepted", "flagged", "rejected", "pending"}
 

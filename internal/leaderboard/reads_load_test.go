@@ -257,14 +257,14 @@ func TestLoadBoardBannedLeader(t *testing.T) {
 // runs.
 
 const sqlPageFirst = `SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
-       achieved_at
+       achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = $1
 ORDER BY score DESC, achieved_at ASC, user_id ASC
 LIMIT $2`
 
 const sqlPageAfter = `SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
-       achieved_at
+       achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = $1
   AND (score < $2
@@ -281,7 +281,7 @@ WHERE bucket_key = $1
        OR (score = $2 AND achieved_at = $3 AND user_id < $4))`
 
 const sqlEntryFor = `SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
-       achieved_at
+       achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = $1 AND user_id = $2`
 

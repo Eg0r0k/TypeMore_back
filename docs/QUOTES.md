@@ -7,10 +7,12 @@ means something next to other scores on the same text.
 That is the whole difference from a seeded run. A seeded run's text is
 regenerated from `seed` + dictionary and is effectively infinite; a quote is a
 finite, memorisable artefact. Quotes therefore rank **per quote and never
-globally** — they are excluded from the score buckets by
-`leaderboard_eligible_runs` (`textSource.kind = 'seeded'`, see
-[`LEADERBOARDS.md`](LEADERBOARDS.md)) — and, being artefacts, they are
-**published, not edited**.
+globally**: each one has its own `quote:<id>` board, and
+`leaderboard_eligible_runs.quote_id` is what keeps a quote run out of every
+language board and a seeded run out of every quote board (see
+[`LEADERBOARDS.md`](LEADERBOARDS.md), "Quotes rank per quote, and nowhere
+else"). Being artefacts, they are also **published, not edited** — which is what
+makes a board row safe to snapshot the quote's `source` onto.
 
 ```mermaid
 flowchart LR

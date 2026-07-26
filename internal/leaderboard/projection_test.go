@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -183,14 +185,11 @@ func TestAcceptedRunWithFlagsStillRanks(t *testing.T) {
 // Eligibility, as a table. Everything here is decided by the
 // leaderboard_eligible_runs view, so this is the executable form of the
 // eligibility table in docs/LEADERBOARDS.md.
+//
+// `eligible` means "holds a slot somewhere", not "holds a slot on a language
+// board" — WHICH board a quote run lands on, and the fact that it lands on no
+// other, is quotes_test.go's subject.
 func TestEligibility(t *testing.T) {
-	quoteSetup := `{
-	  "config":      {"mode":"time","durationMs":15000,"maxExtraChars":20,"difficulty":"normal","nospace":false,"minWpm":0},
-	  "generation":  {"mode":"time","length":0,"punctuation":false,"numbers":false,"randomCase":false,"reverse":false,
-	                  "textSource":{"kind":"quote","quoteId":"q1"}},
-	  "declaration": {"blind":false,"fading":false,"flashlight":false}
-	}`
-
 	cases := []struct {
 		name     string
 		spec     runSpec
@@ -203,7 +202,8 @@ func TestEligibility(t *testing.T) {
 		{"pending", runSpec{status: "pending"}, false, "an unjudged run has no server numbers to rank"},
 		{"flagged", runSpec{status: "flagged"}, false, "a run under review is not a result"},
 		{"rejected", runSpec{status: "rejected"}, false, "an invalid log is not a result"},
-		{"quote text", runSpec{setup: quoteSetup}, false, "quotes rank per quote, never globally (SCORING_CONCEPT §6)"},
+		{"quote naming no registry row", runSpec{quote: uuid.New()}, false,
+			"a quote board on a quote that does not exist is not a board; and its text did not come from the seed either"},
 		{"unranked duration", runSpec{durationMs: new(int32(600_000))}, false, "10min is out of ranked (SCORING_CONCEPT §4)"},
 		{"unranked word count", runSpec{mode: leaderboard.ModeWords, wordCount: new(int32(10))}, false, "not a ranked word count"},
 		{"odd duration", runSpec{durationMs: new(int32(17_000))}, false, "not a ranked duration"},

@@ -106,7 +106,7 @@ func newBoard(t *testing.T, mutators ...func(*boardOpts)) *board {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, `TRUNCATE leaderboard_entries, bans, runs, users CASCADE`)
+	_, err = pool.Exec(ctx, `TRUNCATE leaderboard_entries, bans, runs, users, quotes CASCADE`)
 	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -138,6 +138,36 @@ const defaultSetup = `{
   "generation":  {"mode":"time","length":0,"punctuation":false,"numbers":false,"randomCase":false,"reverse":false},
   "declaration": {"blind":false,"fading":false,"flashlight":false}
 }`
+
+// quoteSetupFor is a QUOTE run's setup snapshot, in the shape the client
+// actually submits (TypeMore_front buildRunPayload): the textSource names the
+// quote by id and hash and deliberately carries NO text, because the server
+// re-resolves the bytes itself and never trusts the client's copy
+// (docs/QUOTES.md).
+func quoteSetupFor(quoteID uuid.UUID, quoteHash string) string {
+	return fmt.Sprintf(`{
+  "config":      {"mode":"quote","maxExtraChars":20,"difficulty":"normal","nospace":false,"minWpm":0},
+  "generation":  {"mode":"quote","length":0,"punctuation":false,"numbers":false,"randomCase":false,"reverse":false,
+                  "textSource":{"kind":"quote","quoteId":%q,"quoteHash":%q}},
+  "declaration": {"blind":false,"fading":false,"flashlight":false}
+}`, quoteID, quoteHash)
+}
+
+// quote plants one published quote and returns its id. The text is irrelevant
+// to a board — what the projection needs from the registry is the id it is
+// keyed by and the `source` it must attribute.
+func (b *board) quote(lang, text, source string) uuid.UUID {
+	b.t.Helper()
+	var id uuid.UUID
+	err := b.pool.QueryRow(context.Background(), `
+		INSERT INTO quotes (id, lang, upstream_id, text, source, length, len_group, text_hash)
+		VALUES (gen_random_uuid(), $1,
+		        (SELECT coalesce(max(upstream_id), 0) + 1 FROM quotes WHERE lang = $1),
+		        $2, $3, char_length($2), 1, 'deadbeef')
+		RETURNING id`, lang, text, source).Scan(&id)
+	require.NoError(b.t, err, "insert quote")
+	return id
+}
 
 func (b *board) user(name string, verifiedEmail bool) uuid.UUID {
 	b.t.Helper()
@@ -172,17 +202,29 @@ type runSpec struct {
 	acc        float64
 	achievedAt time.Time
 	setup      string
+	// quote, when set, makes this a QUOTE run: mode 'quote', no duration and no
+	// word count (the dimension rule 00008 enforces for them), and a setup whose
+	// textSource names that quote.
+	quote uuid.UUID
 	// flags is written into validation.flags — an accepted run may carry them
 	// (docs/REPLAY.md, "Review policy") and that must not affect eligibility.
 	flags []string
 }
 
 func (s *runSpec) withDefaults() {
-	if s.mode == "" {
-		s.mode = leaderboard.ModeTime
-	}
-	if s.durationMs == nil && s.wordCount == nil {
-		s.durationMs = new(int32(15000))
+	if s.quote != uuid.Nil {
+		s.mode = "quote"
+		s.durationMs, s.wordCount = nil, nil
+		if s.setup == "" {
+			s.setup = quoteSetupFor(s.quote, "deadbeef")
+		}
+	} else {
+		if s.mode == "" {
+			s.mode = leaderboard.ModeTime
+		}
+		if s.durationMs == nil && s.wordCount == nil {
+			s.durationMs = new(int32(15000))
+		}
 	}
 	if s.lang == "" {
 		s.lang = "en"
@@ -279,19 +321,27 @@ func (b *board) unban(userID uuid.UUID) {
 // storedEntry is one row of leaderboard_entries, read WITHOUT the visibility
 // view — the only way to tell "hidden from readers" from "deleted".
 type storedEntry struct {
-	BucketKey  string
-	UserID     uuid.UUID
-	RunID      uuid.UUID
-	Score      int64
-	Grade      string
-	Mods       json.RawMessage
-	AchievedAt time.Time
+	BucketKey string
+	UserID    uuid.UUID
+	RunID     uuid.UUID
+	Score     int64
+	Grade     string
+	Mods      json.RawMessage
+	// QuoteSource is the snapshotted attribution: the quote's `source` on a
+	// quote board, empty on a language board.
+	QuoteSource string
+	AchievedAt  time.Time
 }
+
+// storedColumns is spelled once so the two readers below cannot drift into
+// disagreeing about what an entry is.
+const storedColumns = `bucket_key, user_id, run_id, score, grade, mods,
+                        coalesce(quote_source, ''), achieved_at`
 
 func (b *board) storedEntries() []storedEntry {
 	b.t.Helper()
 	rows, err := b.pool.Query(context.Background(), `
-		SELECT bucket_key, user_id, run_id, score, grade, mods, achieved_at
+		SELECT `+storedColumns+`
 		FROM leaderboard_entries
 		ORDER BY bucket_key, user_id`)
 	require.NoError(b.t, err)
@@ -301,7 +351,7 @@ func (b *board) storedEntries() []storedEntry {
 	for rows.Next() {
 		var e storedEntry
 		require.NoError(b.t, rows.Scan(&e.BucketKey, &e.UserID, &e.RunID, &e.Score,
-			&e.Grade, &e.Mods, &e.AchievedAt))
+			&e.Grade, &e.Mods, &e.QuoteSource, &e.AchievedAt))
 		out = append(out, e)
 	}
 	require.NoError(b.t, rows.Err())
@@ -312,10 +362,10 @@ func (b *board) storedEntry(bucket leaderboard.Bucket, userID uuid.UUID) (stored
 	b.t.Helper()
 	var e storedEntry
 	err := b.pool.QueryRow(context.Background(), `
-		SELECT bucket_key, user_id, run_id, score, grade, mods, achieved_at
+		SELECT `+storedColumns+`
 		FROM leaderboard_entries WHERE bucket_key = $1 AND user_id = $2`,
 		bucket.Key(), userID).Scan(&e.BucketKey, &e.UserID, &e.RunID, &e.Score,
-		&e.Grade, &e.Mods, &e.AchievedAt)
+		&e.Grade, &e.Mods, &e.QuoteSource, &e.AchievedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return storedEntry{}, false
 	}
@@ -346,6 +396,14 @@ func decodeInto[T any](t *testing.T, resp *http.Response) T {
 func bucket15s(t *testing.T) leaderboard.Bucket {
 	t.Helper()
 	b, err := leaderboard.NewBucket(leaderboard.ModeTime, new(int32(15000)), nil, "en", leaderboard.TextSourceSeeded)
+	require.NoError(t, err)
+	return b
+}
+
+// quoteBucket is the board one quote ranks on.
+func quoteBucket(t *testing.T, quoteID uuid.UUID) leaderboard.Bucket {
+	t.Helper()
+	b, err := leaderboard.NewQuoteBucket(quoteID)
 	require.NoError(t, err)
 	return b
 }

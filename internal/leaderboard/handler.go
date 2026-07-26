@@ -34,24 +34,31 @@ func (s *Service) Routes() http.Handler {
 	return r
 }
 
-// bucketView is one board in the index. The dimension is rendered under the name
-// the mode gives it, so a client never has to know that "the number" means
-// milliseconds here and words there.
+// bucketView is one board in the index. A language board renders its dimension
+// under the name its mode gives it, so a client never has to know that "the
+// number" means milliseconds here and words there; a quote board renders its
+// quote id and NOTHING else, because it has nothing else — the fields a
+// language board fills are absent rather than empty, so a client cannot read a
+// mode off a board that has none.
 type bucketView struct {
-	Bucket     string `json:"bucket"`
-	Mode       string `json:"mode"`
-	DurationMs *int32 `json:"durationMs,omitempty"`
-	WordCount  *int32 `json:"wordCount,omitempty"`
-	Lang       string `json:"lang"`
-	TextSource string `json:"textSource"`
-	Entries    int64  `json:"entries"`
+	Bucket     string     `json:"bucket"`
+	QuoteID    *uuid.UUID `json:"quoteId,omitempty"`
+	Mode       string     `json:"mode,omitempty"`
+	DurationMs *int32     `json:"durationMs,omitempty"`
+	WordCount  *int32     `json:"wordCount,omitempty"`
+	Lang       string     `json:"lang,omitempty"`
+	TextSource string     `json:"textSource,omitempty"`
+	Entries    int64      `json:"entries"`
 }
 
 func toBucketView(b Bucket, entries int64) bucketView {
-	v := bucketView{
-		Bucket: b.Key(), Mode: b.Mode, Lang: b.Lang,
-		TextSource: b.TextSource, Entries: entries,
+	v := bucketView{Bucket: b.Key(), Entries: entries}
+	if b.IsQuote() {
+		id := b.QuoteID
+		v.QuoteID = &id
+		return v
 	}
+	v.Mode, v.Lang, v.TextSource = b.Mode, b.Lang, b.TextSource
 	dim := b.Dimension
 	if b.Mode == ModeTime {
 		v.DurationMs = &dim
@@ -66,8 +73,9 @@ type bucketsResponse struct {
 }
 
 // handleBuckets lists the boards that currently hold at least one visible entry.
-// Empty buckets are absent rather than enumerated: which shapes are ranked is a
-// property of the schema, and a board with nothing in it is not news.
+// Empty boards are absent rather than enumerated: a board with nothing in it is
+// not news, and for quotes it is also the only thing keeping this response
+// finite — there are 9 881 of them (docs/LEADERBOARDS.md, "The board index").
 func (s *Service) handleBuckets(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.Buckets(r.Context())
 	if err != nil {
@@ -92,15 +100,19 @@ type entryView struct {
 	Acc         float64         `json:"acc"`
 	Grade       string          `json:"grade"`
 	Mods        json.RawMessage `json:"mods"`
-	RunID       uuid.UUID       `json:"runId"`
-	AchievedAt  time.Time       `json:"achievedAt"`
+	// Source is the quote's attribution and appears on quote boards only. It is
+	// not optional there: a quote is someone's words, and a board that shows the
+	// text without saying whose is not something to ship.
+	Source     string    `json:"source,omitempty"`
+	RunID      uuid.UUID `json:"runId"`
+	AchievedAt time.Time `json:"achievedAt"`
 }
 
 func toEntryView(e Entry) entryView {
 	return entryView{
 		Rank: e.Rank, UserID: e.UserID, DisplayName: e.DisplayName,
 		Score: e.Score, WPM: e.WPM, Raw: e.Raw, Acc: e.Acc, Grade: e.Grade,
-		Mods: e.Mods, RunID: e.RunID, AchievedAt: e.AchievedAt,
+		Mods: e.Mods, Source: e.Source, RunID: e.RunID, AchievedAt: e.AchievedAt,
 	}
 }
 

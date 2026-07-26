@@ -28,7 +28,10 @@ type Entry struct {
 	Acc         float64
 	Grade       string
 	// Mods is the run's mod flags as stored (run_mods in the schema).
-	Mods       json.RawMessage
+	Mods json.RawMessage
+	// Source is the quote's attribution, and it is present on exactly the quote
+	// boards. A language board has no quote and therefore nothing to attribute.
+	Source     string
 	AchievedAt time.Time
 }
 
