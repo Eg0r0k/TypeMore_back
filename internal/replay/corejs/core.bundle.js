@@ -88,15 +88,19 @@ var TypeMoreCore = (() => {
     SCORE_VERSION_2: () => SCORE_VERSION_2,
     TICK_INTERVAL_MS: () => TICK_INTERVAL_MS,
     activeModsV1: () => activeModsV1,
+    afkBetween: () => afkBetween,
     afkOf: () => afkOf,
     afkStatsOf: () => afkStatsOf,
+    analyzeLog: () => analyzeLog,
     asMs: () => asMs,
     asSeq: () => asSeq,
+    bufferOf: () => bufferOf,
     comboMultiplier: () => comboMultiplier,
     commitEvent: () => commitEvent,
     computeMetrics: () => computeMetrics,
     deleteEvent: () => deleteEvent,
     dictVersion: () => dictVersion,
+    emitsRawTokens: () => emitsRawTokens,
     endsLine: () => endsLine,
     errorWords: () => errorWords,
     errorWordsOf: () => errorWordsOf,
@@ -112,6 +116,7 @@ var TypeMoreCore = (() => {
     insertEvent: () => insertEvent,
     kogasa: () => kogasa,
     makeSeedContext: () => makeSeedContext,
+    metricsFrom: () => metricsFrom,
     metricsOf: () => metricsOf,
     minSpeedFailInstant: () => minSpeedFailInstant,
     modMultiplierV1: () => modMultiplierV1,
@@ -121,6 +126,7 @@ var TypeMoreCore = (() => {
     parseEventBatch: () => parseEventBatch,
     parseGameEvent: () => parseGameEvent,
     progressOf: () => progressOf,
+    quoteOf: () => quoteOf,
     reduce: () => reduce,
     replaceEvent: () => replaceEvent,
     reverseWord: () => reverseWord,
@@ -168,7 +174,10 @@ var TypeMoreCore = (() => {
     source
   });
   function sortEvents(events) {
-    return [...events].sort((a, b) => a.seq - b.seq);
+    for (let i = 1; i < events.length; i++) {
+      if (events[i].seq < events[i - 1].seq) return [...events].sort((a, b) => a.seq - b.seq);
+    }
+    return events;
   }
 
   // node_modules/.pnpm/neverthrow@8.2.0/node_modules/neverthrow/dist/index.es.js
@@ -668,8 +677,21 @@ var TypeMoreCore = (() => {
   function dictVersion(words) {
     return fnv1a(words.join("\0")).toString(16).padStart(8, "0");
   }
+  function quoteOf(gen) {
+    var _a;
+    return ((_a = gen.textSource) == null ? void 0 : _a.kind) === "quote" ? gen.textSource : void 0;
+  }
+  function emitsRawTokens(gen) {
+    var _a;
+    return gen.rawTokens === true || ((_a = gen.textSource) == null ? void 0 : _a.kind) === "quote";
+  }
   function makeSeedContext(dict, seed, generation) {
-    return { seed, dictVersion: dictVersion(dict.words), generation };
+    const quote = quoteOf(generation);
+    return {
+      seed,
+      dictVersion: quote ? dictVersion([quote.text]) : dictVersion(dict.words),
+      generation
+    };
   }
   var NUMBER_WEIGHT = 0.2;
   var PUNCTUATION_WEIGHT = 0.25;
@@ -716,6 +738,21 @@ var TypeMoreCore = (() => {
   }
   function generateWords(dict, context) {
     var _a;
+    const quote = quoteOf(context.generation);
+    if (quote) {
+      const actualHash = dictVersion([quote.text]);
+      if (actualHash !== context.dictVersion) {
+        return err({
+          kind: "DictVersionMismatch",
+          message: `quote ${quote.quoteId} text hash mismatch: context=${context.dictVersion} actual=${actualHash}`
+        });
+      }
+      const words2 = quote.text.split(" ").filter((word) => word.length > 0);
+      if (words2.length === 0) {
+        return err({ kind: "EmptyQuote", message: `quote ${quote.quoteId} has no typeable words` });
+      }
+      return ok({ words: words2, context, dictName: dict.name });
+    }
     if (dict.words.length === 0) {
       return err({ kind: "EmptyDictionary", message: `dictionary "${dict.name}" has no words` });
     }
@@ -728,7 +765,7 @@ var TypeMoreCore = (() => {
     }
     const rng = mulberry32(context.seed);
     const count = targetCount(context.generation);
-    const raw = context.generation.rawTokens === true;
+    const raw = emitsRawTokens(context.generation);
     const words = [];
     let prevIndex = -1;
     let capitalizeNext = !raw && context.generation.punctuation;
@@ -762,48 +799,223 @@ var TypeMoreCore = (() => {
       failReason: null
     };
   }
-  function initialStateOf(ctx) {
-    const state = initialState();
-    if (ctx.config.startPolicy !== "go") return state;
-    return __spreadProps(__spreadValues({}, state), { phase: "running", startedAt: asMs(0) });
+  var STATE_CORE = Symbol("gameStateBuffers");
+  function coreOf(state) {
+    return state[STATE_CORE];
+  }
+  function seek(store, version) {
+    while (store.version > version) {
+      const entry = store.version - 1;
+      store.slots[store.jIndex[entry]] = store.jPrev[entry];
+      store.len = store.jLen[entry];
+      store.version = entry;
+    }
+    while (store.version < version) {
+      const entry = store.version;
+      const index = store.jIndex[entry];
+      store.slots[index] = store.jNext[entry];
+      if (index >= store.len) store.len = index + 1;
+      store.version = entry + 1;
+    }
+  }
+  function bufferOf(state, index) {
+    var _a;
+    const core = coreOf(state);
+    if (core === void 0) return (_a = state.input[index]) != null ? _a : "";
+    const store = core.store;
+    if (store.version !== core.version) seek(store, core.version);
+    return index < store.len ? store.slots[index] : "";
+  }
+  function materialize(core) {
+    const store = core.store;
+    if (store.version !== core.version) seek(store, core.version);
+    return store.slots.slice(0, store.len);
   }
   function setInput(input, index, value) {
     const next = input.slice();
     next[index] = value;
     return next;
   }
-  function withEvent(state, patch, event) {
-    return __spreadProps(__spreadValues(__spreadValues({}, state), patch), { lastSeq: event.seq });
+  function emptyCore(words) {
+    return {
+      store: { words, slots: [], len: 0, version: 0, jIndex: [], jPrev: [], jNext: [], jLen: [] },
+      version: 0,
+      sep: 0,
+      correct: 0,
+      target: 0,
+      cache: null
+    };
+  }
+  function writeCore(core, index, value) {
+    var _a;
+    let store = core.store;
+    if (core.version !== store.jIndex.length) {
+      const slots = materialize(core);
+      store = {
+        words: store.words,
+        slots,
+        len: slots.length,
+        version: 0,
+        jIndex: [],
+        jPrev: [],
+        jNext: [],
+        jLen: []
+      };
+    } else if (store.version !== core.version) {
+      seek(store, core.version);
+    }
+    const entry = store.version;
+    store.jIndex[entry] = index;
+    store.jPrev[entry] = (_a = store.slots[index]) != null ? _a : "";
+    store.jNext[entry] = value;
+    store.jLen[entry] = store.len;
+    store.slots[index] = value;
+    if (index >= store.len) store.len = index + 1;
+    store.version = entry + 1;
+    return {
+      store,
+      version: entry + 1,
+      sep: core.sep,
+      correct: core.correct,
+      target: core.target,
+      cache: null
+    };
+  }
+  function matchingChars(target, typed) {
+    const shared = target.length < typed.length ? target.length : typed.length;
+    let correct = 0;
+    for (let k = 0; k < shared; k++) if (typed[k] === target[k]) correct++;
+    return correct;
+  }
+  function buffersFor(ctx, state) {
+    const core = coreOf(state);
+    return core !== void 0 && core.store.words === ctx.words ? core : state.input;
+  }
+  function buffersOf(state) {
+    var _a;
+    return (_a = coreOf(state)) != null ? _a : state.input;
+  }
+  function writeBuffers(buffers, index, value) {
+    return Array.isArray(buffers) ? setInput(buffers, index, value) : writeCore(buffers, index, value);
+  }
+  function commitBuffers(ctx, buffers, index, typed) {
+    if (Array.isArray(buffers) || index >= ctx.words.length) return buffers;
+    const core = buffers;
+    const word = ctx.words[index];
+    return {
+      store: core.store,
+      version: core.version,
+      sep: core.sep + (endsLine(word) ? 0 : 1),
+      correct: core.correct + matchingChars(word, typed),
+      target: core.target + word.length,
+      cache: core.cache
+    };
+  }
+  function uncommitBuffers(ctx, buffers, index, typed) {
+    if (Array.isArray(buffers) || index >= ctx.words.length) return buffers;
+    const core = buffers;
+    const word = ctx.words[index];
+    return {
+      store: core.store,
+      version: core.version,
+      sep: core.sep - (endsLine(word) ? 0 : 1),
+      correct: core.correct - matchingChars(word, typed),
+      target: core.target - word.length,
+      cache: core.cache
+    };
+  }
+  function makeState(phase, wordIndex, buffers, startedAt, finishedAt, lastSeq, failReason) {
+    if (Array.isArray(buffers)) {
+      return {
+        phase,
+        wordIndex,
+        input: buffers,
+        startedAt,
+        finishedAt,
+        lastSeq,
+        failReason
+      };
+    }
+    const core = buffers;
+    const state = {
+      phase,
+      wordIndex,
+      get input() {
+        var _a;
+        return (_a = core.cache) != null ? _a : core.cache = materialize(core);
+      },
+      startedAt,
+      finishedAt,
+      lastSeq,
+      failReason
+    };
+    Object.defineProperty(state, STATE_CORE, { value: core, configurable: true });
+    return state;
+  }
+  function initialStateOf(ctx) {
+    const running = ctx.config.startPolicy === "go";
+    return makeState(
+      running ? "running" : "idle",
+      0,
+      emptyCore(ctx.words),
+      running ? asMs(0) : null,
+      null,
+      null,
+      null
+    );
+  }
+  function withSeq(state, event) {
+    return makeState(
+      state.phase,
+      state.wordIndex,
+      buffersOf(state),
+      state.startedAt,
+      state.finishedAt,
+      event.seq,
+      state.failReason
+    );
   }
   var MINSPEED_GRACE_MS = 3e3;
   function endsLine(word) {
     return word.endsWith("\n");
   }
   function separatorsOf(ctx, state) {
-    var _a;
+    var _a, _b;
     const committed = Math.min(state.wordIndex, ctx.words.length);
     const finishedByCount = state.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
+    const core = coreOf(state);
+    if (core !== void 0 && core.store.words === ctx.words) {
+      const last = finishedByCount && committed > 0 && !endsLine((_a = ctx.words[committed - 1]) != null ? _a : "");
+      return last ? core.sep - 1 : core.sep;
+    }
     let spaces = 0;
     for (let i = 0; i < committed; i++) {
       if (finishedByCount && i === committed - 1) continue;
-      if (endsLine((_a = ctx.words[i]) != null ? _a : "")) continue;
+      if (endsLine((_b = ctx.words[i]) != null ? _b : "")) continue;
       spaces++;
     }
     return spaces;
   }
   function netCharsOf(ctx, state) {
     var _a, _b, _c, _d;
-    const committed = Math.min(state.wordIndex, ctx.words.length);
+    const core = coreOf(state);
+    const incremental = core !== void 0 && core.store.words === ctx.words;
     let correct = 0;
-    for (let i = 0; i < committed; i++) {
-      const target = (_a = ctx.words[i]) != null ? _a : "";
-      const typed = (_b = state.input[i]) != null ? _b : "";
-      const n = Math.min(target.length, typed.length);
-      for (let k = 0; k < n; k++) if (typed[k] === target[k]) correct++;
+    if (incremental) {
+      correct = core.correct;
+    } else {
+      const committed = Math.min(state.wordIndex, ctx.words.length);
+      const input = state.input;
+      for (let i = 0; i < committed; i++) {
+        const target = (_a = ctx.words[i]) != null ? _a : "";
+        const typed = (_b = input[i]) != null ? _b : "";
+        const n = Math.min(target.length, typed.length);
+        for (let k = 0; k < n; k++) if (typed[k] === target[k]) correct++;
+      }
     }
     if (state.wordIndex < ctx.words.length) {
       const target = (_c = ctx.words[state.wordIndex]) != null ? _c : "";
-      const buffer = (_d = state.input[state.wordIndex]) != null ? _d : "";
+      const buffer = incremental ? bufferOf(state, state.wordIndex) : (_d = state.input[state.wordIndex]) != null ? _d : "";
       const n = Math.min(target.length, buffer.length);
       for (let k = 0; k < n; k++) if (buffer[k] === target[k]) correct++;
     }
@@ -811,12 +1023,18 @@ var TypeMoreCore = (() => {
   }
   function targetCharsOf(ctx, state) {
     var _a, _b, _c;
-    const committed = Math.min(state.wordIndex, ctx.words.length);
+    const core = coreOf(state);
+    const incremental = core !== void 0 && core.store.words === ctx.words;
     let chars = 0;
-    for (let i = 0; i < committed; i++) chars += ((_a = ctx.words[i]) != null ? _a : "").length;
+    if (incremental) {
+      chars = core.target;
+    } else {
+      const committed = Math.min(state.wordIndex, ctx.words.length);
+      for (let i = 0; i < committed; i++) chars += ((_a = ctx.words[i]) != null ? _a : "").length;
+    }
     if (state.wordIndex < ctx.words.length) {
       const target = ((_b = ctx.words[state.wordIndex]) != null ? _b : "").length;
-      const typed = ((_c = state.input[state.wordIndex]) != null ? _c : "").length;
+      const typed = incremental ? bufferOf(state, state.wordIndex).length : ((_c = state.input[state.wordIndex]) != null ? _c : "").length;
       chars += typed < target ? typed : target;
     }
     return chars;
@@ -854,7 +1072,15 @@ var TypeMoreCore = (() => {
       }
     }
     if (finishAt !== null && nowMs >= finishAt) {
-      return __spreadProps(__spreadValues({}, state), { phase: "finished", finishedAt: finishAt, failReason: reason });
+      return makeState(
+        "finished",
+        state.wordIndex,
+        buffersOf(state),
+        state.startedAt,
+        finishAt,
+        state.lastSeq,
+        reason
+      );
     }
     return state;
   }
@@ -868,105 +1094,120 @@ var TypeMoreCore = (() => {
   function stoppedOnError(message, event) {
     return { kind: "StoppedOnError", message, seq: event.seq };
   }
-  function commitCurrentWord(ctx, state, event) {
-    var _a, _b;
-    const wordIndex = state.wordIndex;
-    const buffer = (_a = state.input[wordIndex]) != null ? _a : "";
-    const target = (_b = ctx.words[wordIndex]) != null ? _b : "";
+  function commitWord(ctx, event, wordIndex, buffer, buffers, startedAt) {
+    var _a;
+    const target = (_a = ctx.words[wordIndex]) != null ? _a : "";
     if (ctx.config.difficulty === "expert" && buffer !== target) {
-      return ok(
-        withEvent(state, { phase: "finished", finishedAt: event.t, failReason: "expert" }, event)
-      );
+      return ok(makeState("finished", wordIndex, buffers, startedAt, event.t, event.seq, "expert"));
     }
     const nextIndex = wordIndex + 1;
+    const advanced = commitBuffers(ctx, buffers, wordIndex, buffer);
     const finishesByCount = ctx.config.mode !== "time" && ctx.config.mode !== "free" && nextIndex >= ctx.words.length;
     if (finishesByCount) {
-      return ok(
-        withEvent(state, { wordIndex: nextIndex, phase: "finished", finishedAt: event.t }, event)
-      );
+      return ok(makeState("finished", nextIndex, advanced, startedAt, event.t, event.seq, null));
     }
-    return ok(withEvent(state, { wordIndex: nextIndex }, event));
+    return ok(makeState("running", nextIndex, advanced, startedAt, null, event.seq, null));
   }
   function applyEdit(ctx, state, event, next, insertedText, insertedAt) {
     var _a, _b;
-    const target = (_a = ctx.words[state.wordIndex]) != null ? _a : "";
+    const wordIndex = state.wordIndex;
+    const target = (_a = ctx.words[wordIndex]) != null ? _a : "";
     if (next.length > target.length + ctx.config.maxExtraChars) {
       return err({
         kind: "WordLengthExceeded",
-        message: `word ${state.wordIndex} exceeds length cap`,
+        message: `word ${wordIndex} exceeds length cap`,
         seq: event.seq
       });
     }
     const wrongInsert = hasWrongChar(target, insertedText, insertedAt);
-    const withBuffer = __spreadProps(__spreadValues({}, state), {
-      phase: "running",
-      startedAt: (_b = state.startedAt) != null ? _b : event.t,
-      input: setInput(state.input, state.wordIndex, next)
-    });
-    if (ctx.config.difficulty === "master" && wrongInsert) {
-      return ok(
-        withEvent(withBuffer, { phase: "finished", finishedAt: event.t, failReason: "master" }, event)
-      );
+    const master = ctx.config.difficulty === "master";
+    if (wrongInsert && !master && ctx.config.stopOnError === "letter") {
+      return err(stoppedOnError(`wrong character refused in word ${wordIndex}`, event));
     }
-    if (ctx.config.stopOnError === "letter" && wrongInsert) {
-      return err(stoppedOnError(`wrong character refused in word ${state.wordIndex}`, event));
-    }
-    if (ctx.config.nospace && next.length >= target.length) {
-      return commitCurrentWord(ctx, withBuffer, event);
+    const buffers = writeBuffers(buffersFor(ctx, state), wordIndex, next);
+    const startedAt = (_b = state.startedAt) != null ? _b : event.t;
+    if (master && wrongInsert) {
+      return ok(makeState("finished", wordIndex, buffers, startedAt, event.t, event.seq, "master"));
     }
     const countsWords = ctx.config.mode !== "time" && ctx.config.mode !== "free";
-    const isLastWord = state.wordIndex + 1 >= ctx.words.length;
-    if (ctx.config.quickEnd === true && countsWords && isLastWord && next.length >= target.length) {
-      return commitCurrentWord(ctx, withBuffer, event);
+    const isLastWord = wordIndex + 1 >= ctx.words.length;
+    const autoCommits = next.length >= target.length && (ctx.config.nospace || ctx.config.quickEnd === true && countsWords && isLastWord);
+    if (autoCommits) {
+      return commitWord(ctx, event, wordIndex, next, buffers, startedAt);
     }
-    return ok(withEvent(withBuffer, {}, event));
+    return ok(
+      makeState(
+        "running",
+        wordIndex,
+        buffers,
+        startedAt,
+        state.finishedAt,
+        event.seq,
+        state.failReason
+      )
+    );
   }
   function prevWordLocked(ctx, state) {
-    var _a, _b;
+    var _a;
     if (ctx.config.freedomMode === true) return false;
     const previous = state.wordIndex - 1;
     if (previous < 0) return false;
-    return ((_a = state.input[previous]) != null ? _a : "") === ((_b = ctx.words[previous]) != null ? _b : "");
+    return bufferOf(state, previous) === ((_a = ctx.words[previous]) != null ? _a : "");
   }
   function reduceDelete(ctx, state, event) {
-    var _a;
-    const buffer = (_a = state.input[state.wordIndex]) != null ? _a : "";
-    const crossesBoundary = buffer.length === 0 && state.wordIndex > 0;
+    const wordIndex = state.wordIndex;
+    const buffer = bufferOf(state, wordIndex);
+    const crossesBoundary = buffer.length === 0 && wordIndex > 0;
     if (crossesBoundary && prevWordLocked(ctx, state)) {
       return err({
         kind: "BackspaceLocked",
-        message: `backspace blocked at correct word ${state.wordIndex - 1}`,
+        message: `backspace blocked at correct word ${wordIndex - 1}`,
         seq: event.seq
       });
     }
+    const edited = (buffers, index) => makeState(
+      state.phase,
+      index,
+      buffers,
+      state.startedAt,
+      state.finishedAt,
+      event.seq,
+      state.failReason
+    );
     if (event.unit === "word") {
-      if (buffer.length > 0)
-        return ok(withEvent(state, { input: setInput(state.input, state.wordIndex, "") }, event));
-      if (crossesBoundary) {
-        return ok(
-          withEvent(
-            state,
-            { wordIndex: state.wordIndex - 1, input: setInput(state.input, state.wordIndex - 1, "") },
-            event
-          )
-        );
+      if (buffer.length > 0) {
+        return ok(edited(writeBuffers(buffersFor(ctx, state), wordIndex, ""), wordIndex));
       }
-      return ok(withEvent(state, {}, event));
+      if (crossesBoundary) {
+        const previous = wordIndex - 1;
+        const reopened = uncommitBuffers(
+          ctx,
+          buffersFor(ctx, state),
+          previous,
+          bufferOf(state, previous)
+        );
+        return ok(edited(writeBuffers(reopened, previous, ""), previous));
+      }
+      return ok(withSeq(state, event));
     }
     if (buffer.length > 0) {
       return ok(
-        withEvent(
-          state,
-          { input: setInput(state.input, state.wordIndex, buffer.slice(0, -1)) },
-          event
+        edited(writeBuffers(buffersFor(ctx, state), wordIndex, buffer.slice(0, -1)), wordIndex)
+      );
+    }
+    if (crossesBoundary) {
+      const previous = wordIndex - 1;
+      return ok(
+        edited(
+          uncommitBuffers(ctx, buffersFor(ctx, state), previous, bufferOf(state, previous)),
+          previous
         )
       );
     }
-    if (crossesBoundary) return ok(withEvent(state, { wordIndex: state.wordIndex - 1 }, event));
-    return ok(withEvent(state, {}, event));
+    return ok(withSeq(state, event));
   }
   function reduceCommit(ctx, state, event) {
-    var _a, _b;
+    var _a;
     if (ctx.config.nospace) {
       return err({
         kind: "NospaceCommit",
@@ -974,21 +1215,20 @@ var TypeMoreCore = (() => {
         seq: event.seq
       });
     }
-    if (state.phase !== "running") return ok(withEvent(state, {}, event));
-    const buffer = (_a = state.input[state.wordIndex]) != null ? _a : "";
-    const stoppedOnWrongWord = ctx.config.stopOnError === "word" && buffer !== ((_b = ctx.words[state.wordIndex]) != null ? _b : "");
+    if (state.phase !== "running") return ok(withSeq(state, event));
+    const buffer = bufferOf(state, state.wordIndex);
+    const stoppedOnWrongWord = ctx.config.stopOnError === "word" && buffer !== ((_a = ctx.words[state.wordIndex]) != null ? _a : "");
     if (buffer.length === 0) {
       if (stoppedOnWrongWord)
         return err(stoppedOnError(`word ${state.wordIndex} cannot be skipped`, event));
-      return ok(withEvent(state, {}, event));
+      return ok(withSeq(state, event));
     }
     if (stoppedOnWrongWord && ctx.config.difficulty !== "expert") {
       return err(stoppedOnError(`word ${state.wordIndex} is not correct yet`, event));
     }
-    return commitCurrentWord(ctx, state, event);
+    return commitWord(ctx, event, state.wordIndex, buffer, buffersFor(ctx, state), state.startedAt);
   }
   function reduce(ctx, state, event) {
-    var _a, _b;
     if (state.lastSeq !== null && event.seq <= state.lastSeq) {
       return err({
         kind: "NonMonotonicSeq",
@@ -1001,11 +1241,11 @@ var TypeMoreCore = (() => {
     }
     switch (event.kind) {
       case "insert": {
-        const buffer = (_a = state.input[state.wordIndex]) != null ? _a : "";
+        const buffer = bufferOf(state, state.wordIndex);
         return applyEdit(ctx, state, event, buffer + event.text, event.text, buffer.length);
       }
       case "replace": {
-        const buffer = (_b = state.input[state.wordIndex]) != null ? _b : "";
+        const buffer = bufferOf(state, state.wordIndex);
         if (event.from < 0 || event.to < event.from || event.to > buffer.length) {
           return err({
             kind: "InvalidRange",
@@ -1089,45 +1329,56 @@ var TypeMoreCore = (() => {
   };
 
   // src/shared/core/stats.ts
-  function analyze(ctx, events) {
-    var _a, _b;
+  function analyzeLog(ctx, events) {
+    var _a;
     let state = initialStateOf(ctx);
     let correctKeys = 0;
     let totalKeys = 0;
+    let aborted = false;
     const wordFirstT = [];
     const wordLastT = [];
-    const keystrokes = [];
+    const keyTimes = [];
+    const keyCorrect = [];
     const commitTimes = [];
     for (const event of sortEvents(events)) {
       state = settle(ctx, state, event.t);
-      if (state.phase === "finished") break;
+      if (state.phase === "finished") {
+        aborted = true;
+        break;
+      }
       if (event.kind === "insert" || event.kind === "replace") {
         const wordIndex = state.wordIndex;
         const target = (_a = ctx.words[wordIndex]) != null ? _a : "";
-        const startPos = event.kind === "replace" ? event.from : ((_b = state.input[wordIndex]) != null ? _b : "").length;
+        const startPos = event.kind === "replace" ? event.from : bufferOf(state, wordIndex).length;
         for (let k = 0; k < event.text.length; k++) {
           const pos = startPos + k;
           totalKeys++;
           const correct = pos < target.length && target[pos] === event.text[k];
           if (correct) correctKeys++;
-          keystrokes.push({ t: event.t, correct });
+          keyTimes.push(event.t);
+          keyCorrect.push(correct);
         }
         if (wordFirstT[wordIndex] === void 0) wordFirstT[wordIndex] = event.t;
         wordLastT[wordIndex] = event.t;
       }
       const beforeIndex = state.wordIndex;
       const result = reduce(ctx, state, event);
-      if (result.isErr()) break;
+      if (result.isErr()) {
+        aborted = true;
+        break;
+      }
       state = result.value;
       for (let j = beforeIndex; j < state.wordIndex; j++) commitTimes.push(event.t);
     }
     return {
       finalState: state,
+      aborted,
       correctKeys,
       totalKeys,
       wordFirstT,
       wordLastT,
-      keystrokes,
+      keyTimes,
+      keyCorrect,
       commitTimes
     };
   }
@@ -1149,19 +1400,20 @@ var TypeMoreCore = (() => {
   function getChars(ctx, state) {
     var _a, _b;
     const committed = Math.min(state.wordIndex, ctx.words.length);
+    const input = state.input;
     let correct = 0;
     let incorrect = 0;
     let extra = 0;
     let missed = 0;
     for (let i = 0; i < committed; i++) {
-      const word = compareWord(ctx.words[i], (_a = state.input[i]) != null ? _a : "", true);
+      const word = compareWord(ctx.words[i], (_a = input[i]) != null ? _a : "", true);
       correct += word.correct;
       incorrect += word.incorrect;
       extra += word.extra;
       missed += word.missed;
     }
     if (state.wordIndex < ctx.words.length) {
-      const buffer = (_b = state.input[state.wordIndex]) != null ? _b : "";
+      const buffer = (_b = input[state.wordIndex]) != null ? _b : "";
       if (buffer.length > 0) {
         const word = compareWord(ctx.words[state.wordIndex], buffer, false);
         correct += word.correct;
@@ -1174,12 +1426,13 @@ var TypeMoreCore = (() => {
   function burstWpms(ctx, analysis) {
     var _a;
     const out = [];
+    const input = analysis.finalState.input;
     for (let i = 0; i < analysis.wordFirstT.length; i++) {
       const first = analysis.wordFirstT[i];
       const last = analysis.wordLastT[i];
       if (first === void 0 || last === void 0) continue;
       const durationMs = last - first;
-      const chars = ((_a = analysis.finalState.input[i]) != null ? _a : "").length;
+      const chars = ((_a = input[i]) != null ? _a : "").length;
       if (durationMs <= 0 || chars === 0) continue;
       out.push(chars / 5 / (durationMs / 6e4));
     }
@@ -1196,8 +1449,10 @@ var TypeMoreCore = (() => {
     return kogasa(Math.sqrt(variance) / mean);
   }
   function computeMetrics(ctx, events, endMs) {
+    return metricsFrom(ctx, analyzeLog(ctx, events), endMs);
+  }
+  function metricsFrom(ctx, analysis, endMs) {
     var _a;
-    const analysis = analyze(ctx, events);
     const { chars, spaces } = getChars(ctx, analysis.finalState);
     const startedAt = analysis.finalState.startedAt;
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
@@ -1223,17 +1478,46 @@ var TypeMoreCore = (() => {
   }
   function wpmOverTime(ctx, events, endMs) {
     var _a, _b;
-    const analysis = analyze(ctx, events);
+    const analysis = analyzeLog(ctx, events);
     const startedAt = analysis.finalState.startedAt;
     if (startedAt === null) return [];
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
     const seconds = Math.ceil(Math.max(0, (end - startedAt) / 1e3));
+    if (seconds <= 0) return [];
     const finishedByCount = analysis.finalState.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
     const spaceTimes = [];
     for (let i = 0; i < analysis.commitTimes.length; i++) {
       if (finishedByCount && i === analysis.commitTimes.length - 1) continue;
       if (endsLine((_b = ctx.words[i]) != null ? _b : "")) continue;
       spaceTimes.push(analysis.commitTimes[i]);
+    }
+    const { keyTimes, keyCorrect } = analysis;
+    const rawInBucket = new Float64Array(seconds + 2);
+    const errorsInBucket = new Float64Array(seconds + 2);
+    const correctByCheckpoint = new Float64Array(seconds + 2);
+    for (let k = 0; k < keyTimes.length; k++) {
+      const offset = keyTimes[k] - startedAt;
+      if (offset >= 0) {
+        const bucket = Math.floor(offset / 1e3) + 1;
+        if (bucket <= seconds) {
+          rawInBucket[bucket]++;
+          if (!keyCorrect[k]) errorsInBucket[bucket]++;
+        }
+      }
+      if (keyCorrect[k]) {
+        const from = offset <= 0 ? 0 : Math.ceil(offset / 1e3);
+        if (from <= seconds) correctByCheckpoint[from]++;
+      }
+    }
+    const spacesByCheckpoint = new Float64Array(seconds + 2);
+    for (const t of spaceTimes) {
+      const offset = t - startedAt;
+      const from = offset <= 0 ? 0 : Math.ceil(offset / 1e3);
+      if (from <= seconds) spacesByCheckpoint[from]++;
+    }
+    for (let s = 1; s <= seconds; s++) {
+      correctByCheckpoint[s] += correctByCheckpoint[s - 1];
+      spacesByCheckpoint[s] += spacesByCheckpoint[s - 1];
     }
     const points = [];
     for (let s = 1; s <= seconds; s++) {
@@ -1242,36 +1526,50 @@ var TypeMoreCore = (() => {
       const checkpoint = Math.min(bucketEnd, end);
       const tail = checkpoint < bucketEnd;
       const rateStart = Math.max(startedAt, checkpoint - 1e3);
-      let correctSoFar = 0;
-      let rawInWindow = 0;
-      let errorsInBucket = 0;
-      for (const key of analysis.keystrokes) {
-        if (key.t <= checkpoint && key.correct) correctSoFar++;
-        if (key.t >= bucketStart && key.t < bucketEnd && !key.correct) errorsInBucket++;
-        const inWindow = tail ? key.t >= rateStart : key.t >= bucketStart && key.t < bucketEnd;
-        if (inWindow) rawInWindow++;
+      let correctSoFar;
+      let rawInWindow;
+      let errors;
+      let spacesSoFar;
+      if (s < seconds) {
+        correctSoFar = correctByCheckpoint[s];
+        rawInWindow = rawInBucket[s];
+        errors = errorsInBucket[s];
+        spacesSoFar = spacesByCheckpoint[s];
+      } else {
+        correctSoFar = 0;
+        rawInWindow = 0;
+        errors = 0;
+        spacesSoFar = 0;
+        for (let k = 0; k < keyTimes.length; k++) {
+          const t = keyTimes[k];
+          const correct = keyCorrect[k];
+          if (t <= checkpoint && correct) correctSoFar++;
+          if (t >= bucketStart && t < bucketEnd && !correct) errors++;
+          const inWindow = tail ? t >= rateStart : t >= bucketStart && t < bucketEnd;
+          if (inWindow) rawInWindow++;
+        }
+        for (const t of spaceTimes) if (t <= checkpoint) spacesSoFar++;
       }
-      let spacesSoFar = 0;
-      for (const t of spaceTimes) if (t <= checkpoint) spacesSoFar++;
       const elapsedMin = (checkpoint - startedAt) / 6e4;
       const rateMin = (checkpoint - rateStart) / 6e4;
       points.push({
         second: s,
         wpm: elapsedMin > 0 ? (correctSoFar + spacesSoFar) / 5 / elapsedMin : 0,
         raw: rateMin > 0 ? rawInWindow / 5 / rateMin : 0,
-        errors: errorsInBucket
+        errors
       });
     }
     return points;
   }
   function errorWords(ctx, events) {
     var _a;
-    const { finalState } = analyze(ctx, events);
+    const { finalState } = analyzeLog(ctx, events);
     const committed = Math.min(finalState.wordIndex, ctx.words.length);
+    const input = finalState.input;
     const out = [];
     for (let i = 0; i < committed; i++) {
       const expected = ctx.words[i];
-      const typed = (_a = finalState.input[i]) != null ? _a : "";
+      const typed = (_a = input[i]) != null ? _a : "";
       if (typed !== expected) out.push({ expected, typed });
     }
     return out;
@@ -1288,10 +1586,13 @@ var TypeMoreCore = (() => {
   var AFK_BUCKET_MS = 1e3;
   function afkOf(ctx, events, endMs) {
     var _a;
-    const { finalState } = analyze(ctx, events);
-    const start = finalState.startedAt;
+    const { finalState } = analyzeLog(ctx, events);
+    return afkBetween(events, finalState.startedAt, (_a = finalState.finishedAt) != null ? _a : endMs);
+  }
+  function afkBetween(events, startedAt, endMs) {
+    const start = startedAt;
     if (start === null) return { afkMs: 0, buckets: 0 };
-    const end = (_a = finalState.finishedAt) != null ? _a : endMs;
+    const end = endMs;
     const bucketCount = Math.floor((end - start) / AFK_BUCKET_MS);
     if (bucketCount <= 0) return { afkMs: 0, buckets: 0 };
     const active = new Uint8Array(bucketCount + 1);
@@ -1338,13 +1639,14 @@ var TypeMoreCore = (() => {
     const add = (id, on, multiplier) => {
       if (on) mods.push({ id, multiplier });
     };
-    add("punctuation", g.punctuation, MOD_MULTIPLIERS.punctuation);
-    add("numbers", g.numbers, MOD_MULTIPLIERS.numbers);
-    add("randomCase", g.randomCase, MOD_MULTIPLIERS.randomCase);
+    const transformed = !emitsRawTokens(g);
+    add("punctuation", transformed && g.punctuation, MOD_MULTIPLIERS.punctuation);
+    add("numbers", transformed && g.numbers, MOD_MULTIPLIERS.numbers);
+    add("randomCase", transformed && g.randomCase, MOD_MULTIPLIERS.randomCase);
     add("nospace", c.nospace, MOD_MULTIPLIERS.nospace);
     add("expert", c.difficulty === "expert", MOD_MULTIPLIERS.expert);
     add("master", c.difficulty === "master", MOD_MULTIPLIERS.master);
-    add("reverse", g.reverse, MOD_MULTIPLIERS.reverse);
+    add("reverse", transformed && g.reverse, MOD_MULTIPLIERS.reverse);
     if (c.minWpm > 0 && MINSPEED_MULTIPLIERS[c.minWpm] !== void 0) {
       mods.push({ id: `minSpeed${c.minWpm}`, multiplier: MINSPEED_MULTIPLIERS[c.minWpm] });
     }
@@ -1515,10 +1817,10 @@ var TypeMoreCore = (() => {
     const ctx = { config: setup.config, words: setup.words };
     const ordered = sortEvents(log);
     const lastT = ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
+    const analysis = analyzeLog(ctx, ordered);
     let end = lastT;
-    const folded = foldLog(ctx, ordered);
-    if (folded.isOk()) {
-      let finalState = folded.value;
+    if (!analysis.aborted) {
+      let finalState = settle(ctx, analysis.finalState, lastT);
       if (ctx.config.minWpm > 0 && finalState.phase === "running") {
         const failAt = minSpeedFailInstant(ctx, finalState);
         if (failAt !== null) finalState = settle(ctx, finalState, failAt);
@@ -1527,7 +1829,7 @@ var TypeMoreCore = (() => {
     }
     const state = initialScoreState();
     for (const event of ordered) scoreStep(state, event, ctx);
-    const metrics = computeMetrics(ctx, ordered, end);
+    const metrics = metricsFrom(ctx, analysis, end);
     const modMultiplier = modMultiplierV1(
       { generation: setup.generation, config: ctx.config },
       declaration
@@ -1668,7 +1970,7 @@ var TypeMoreCore = (() => {
       });
     }
     const runEnd = (_f = (_e = finalState.finishedAt) != null ? _e : endMs) != null ? _f : events.length > 0 ? events[events.length - 1].t : startT;
-    const afk = afkOf(ctx, events, runEnd);
+    const afk = afkBetween(events, finalState.startedAt, runEnd);
     const runMs = Math.max(0, runEnd - ((_g = finalState.startedAt) != null ? _g : startT));
     if (afk.afkMs > 0 && runMs > 0) {
       const share = afk.afkMs / runMs;
