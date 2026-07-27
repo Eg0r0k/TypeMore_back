@@ -1,18 +1,16 @@
 package runs
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // maxBodyBytes caps the raw POST /runs body; a larger body is rejected 413
@@ -177,7 +175,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := parseLimit(r.URL.Query().Get("limit"))
+	limit := httpx.ParseLimit(r.URL.Query().Get("limit"), defaultLimit, maxLimit)
 	var after *Cursor
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		cur, err := decodeCursor(raw)
@@ -300,7 +298,7 @@ const replayLogCacheControl = "public, max-age=31536000, immutable"
 // untouched and still the only way to reach a run that is pending, flagged or
 // rejected.
 func (s *Service) handlePublicReplay(w http.ResponseWriter, r *http.Request) {
-	if !s.replayLimiter.Allow(clientIP(r)) {
+	if !s.replayLimiter.Allow(httpx.ClientIP(r)) {
 		s.writeError(w, r, apiErrRateLimited)
 		return
 	}
@@ -343,7 +341,7 @@ func (s *Service) handlePublicReplay(w http.ResponseWriter, r *http.Request) {
 // spends two tokens per run watched; the default burst of 30 is therefore 15
 // runs, and the memory that burst can command went DOWN, not up.
 func (s *Service) handlePublicReplayLog(w http.ResponseWriter, r *http.Request) {
-	if !s.replayLimiter.Allow(clientIP(r)) {
+	if !s.replayLimiter.Allow(httpx.ClientIP(r)) {
 		s.writeError(w, r, apiErrRateLimited)
 		return
 	}
@@ -367,7 +365,7 @@ func (s *Service) handlePublicReplayLog(w http.ResponseWriter, r *http.Request) 
 	h := w.Header()
 	h.Set("Cache-Control", replayLogCacheControl)
 	h.Set("ETag", etag)
-	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+	if httpx.ETagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -381,39 +379,6 @@ func (s *Service) handlePublicReplayLog(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write(gz)
 }
 
-// etagMatches implements the If-None-Match comparison for our strong ETags:
-// "*" matches anything, otherwise any list member equal to the tag (weak
-// prefixes are tolerated — the weak comparison function is the correct one for
-// If-None-Match, RFC 9110 §13.1.2).
-//
-// internal/replay/http.go carries the same twelve lines for the dictionary
-// assets. They are not shared because the only place to share them from would
-// make the runs domain import the replay domain — dragging goja and the whole
-// vendored core bundle behind a header parser.
-func etagMatches(ifNoneMatch, etag string) bool {
-	if ifNoneMatch == "" {
-		return false
-	}
-	for candidate := range strings.SplitSeq(ifNoneMatch, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
-			return true
-		}
-	}
-	return false
-}
-
-// clientIP is the rate-limit key for the two unauthenticated endpoints here.
-// RemoteAddr only: the server is expected to sit behind a proxy that sets it,
-// and trusting a forwarded header would make the limit trivially bypassable.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 // writeNotFoundOr maps ErrNotFound to a 404 and anything else to a generic 500.
 func (s *Service) writeNotFoundOr(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, ErrNotFound) {
@@ -423,45 +388,24 @@ func (s *Service) writeNotFoundOr(w http.ResponseWriter, r *http.Request, err er
 	s.writeError(w, r, err)
 }
 
-// parseLimit clamps the ?limit= query to [1, maxLimit], defaulting on absent or
-// unparseable input.
-func parseLimit(raw string) int {
-	if raw == "" {
-		return defaultLimit
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return defaultLimit
-	}
-	if n > maxLimit {
-		return maxLimit
-	}
-	return n
-}
-
 // encodeCursor packs a keyset position into an opaque base64url token.
 // Nanosecond precision is exact for Postgres timestamptz (microseconds), so the
 // round-trip reproduces the stored instant for the equality tie-break.
 func encodeCursor(c Cursor) string {
-	raw := fmt.Sprintf("%d:%s", c.CreatedAt.UTC().UnixNano(), c.ID)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return httpx.EncodeCursor(strconv.FormatInt(c.CreatedAt.UTC().UnixNano(), 10), c.ID.String())
 }
 
 // decodeCursor reverses encodeCursor, rejecting anything malformed.
 func decodeCursor(token string) (Cursor, error) {
-	b, err := base64.RawURLEncoding.DecodeString(token)
+	parts, err := httpx.DecodeCursor(token, 2)
 	if err != nil {
 		return Cursor{}, err
 	}
-	ns, idStr, found := strings.Cut(string(b), ":")
-	if !found {
-		return Cursor{}, errors.New("runs: malformed cursor")
-	}
-	nanos, err := strconv.ParseInt(ns, 10, 64)
+	nanos, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		return Cursor{}, err
 	}
-	id, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(parts[1])
 	if err != nil {
 		return Cursor{}, err
 	}

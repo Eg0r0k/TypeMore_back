@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // Cache-Control policies.
@@ -107,7 +109,7 @@ func writeAsset(w http.ResponseWriter, r *http.Request, a asset, cacheControl st
 	// gzipped body to a client that did not ask for one.
 	h.Add("Vary", "Accept-Encoding")
 
-	if etagMatches(r.Header.Get("If-None-Match"), a.etag) {
+	if httpx.ETagMatches(r.Header.Get("If-None-Match"), a.etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -120,23 +122,6 @@ func writeAsset(w http.ResponseWriter, r *http.Request, a asset, cacheControl st
 	h.Set("Content-Type", "application/json; charset=utf-8")
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	_, _ = w.Write(body)
-}
-
-// etagMatches implements the If-None-Match comparison for our strong ETags:
-// "*" matches anything, otherwise any list member equal to the tag (weak
-// prefixes are tolerated — the weak comparison function is the correct one for
-// If-None-Match).
-func etagMatches(ifNoneMatch, etag string) bool {
-	if ifNoneMatch == "" {
-		return false
-	}
-	for candidate := range strings.SplitSeq(ifNoneMatch, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
-			return true
-		}
-	}
-	return false
 }
 
 // acceptsGzip reports whether the client accepts gzip, honouring an explicit

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // InMemoryRateLimiter is a per-key token-bucket RateLimiter. It is process-local
@@ -89,7 +91,7 @@ func (l *InMemoryRateLimiter) sweep(now time.Time) {
 // when the bucket is empty.
 func (s *Service) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.limiter.Allow(clientIP(r)) {
+		if !s.limiter.Allow(httpx.ClientIP(r)) {
 			s.writeError(w, r, apiErrRateLimited)
 			return
 		}

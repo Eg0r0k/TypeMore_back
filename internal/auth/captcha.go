@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // maxCaptchaBodyBytes bounds what the gate will buffer while it looks for the
@@ -63,7 +65,7 @@ func (s *Service) requireCaptcha(next http.Handler) http.Handler {
 
 		// Same client IP the limiter keys on — one derivation, one behaviour
 		// behind a future reverse proxy (see clientIP).
-		if err := s.captcha.Verify(r.Context(), token, clientIP(r)); err != nil {
+		if err := s.captcha.Verify(r.Context(), token, httpx.ClientIP(r)); err != nil {
 			// The reason stays in the logs. A rejected token and an unreachable
 			// provider are one code to the client: it can act on neither, and
 			// the difference is exactly what a prober would want.

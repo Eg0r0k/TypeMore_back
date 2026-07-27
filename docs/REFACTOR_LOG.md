@@ -143,6 +143,10 @@ relay_load_test.go:1272: BUDGET MISSED 7 | saturating burst: frames lost by the 
    непрогретом Docker уронил каскадом весь пакет `internal/leaderboard`
    (см. Baseline). Влияние: ложные красные на CI/локально при параллельном
    старте контейнеров. Изолированный повтор пакета — рабочий обход.
+   Повторился на прогоне Стейджа 1: `internal/runs` упал каскадом (первый
+   тест 22.9 с — таймаут старта контейнера, остальные 0.00 с) при
+   одновременном старте пяти testcontainers-пакетов; изолированно — зелёный
+   за 151 с. Флейк, не регрессия.
 
 ## Отложено
 
@@ -222,4 +226,28 @@ relay_load_test.go:1272: BUDGET MISSED 7 | saturating burst: frames lost by the 
 
 ## Стейджи
 
-(записи добавляются по ходу работы)
+### S1-a — internal/platform/httpx: дедупликация HTTP-хелперов
+Что: `parseLimit` (×3, байт-в-байт: runs/leaderboard/quote), обвязка
+base64url-курсора encode/decode (×3, различались только полями),
+`clientIP` (×2: runs/auth), `etagMatches` (×2: runs/replay) → один пакет
+`internal/platform/httpx` (ParseLimit, EncodeCursor/DecodeCursor, ClientIP,
+ETagMatches). Доменные `encodeCursor`/`decodeCursor` остались как тонкие
+типизированные обёртки — состав и парсинг полей курсора у каждого домена свой.
+Почему: четыре копипаст-кластера между доменами; комментарий у runs-копии
+`etagMatches` прямо называл причину дублирования — «делиться не откуда, кроме
+как runs импортирует replay» — httpx (platform-уровень, ниже доменов) решает
+ровно её. Токены курсоров, коды ошибок и заголовки на проводе не изменились.
+Альтернатива, которую отверг: generic-кодек курсора целиком (поля и валидация
+у доменов различаются — обобщение дало бы интерфейс шире проблемы);
+`acceptsGzip` в httpx не переехал — вторая «копия» у runs не существует
+(у runs осознанно нет Vary, задокументировано в handler.go).
+Риск: low, чем прикрыт: хендлер-тесты runs/leaderboard/quote (пагинация,
+битые курсоры), auth-тесты (rate-limit по IP), dictionaries_test (ETag/304/
+Vary), contract-тесты.
+Примечание: два удалённых комментария у `clientIP` противоречили друг другу
+(auth: «single-binary assumption», runs: «expected to sit behind a proxy»);
+httpx унаследовал формулировку runs — семантика (RemoteAddr, форвард-заголовкам
+не верить) у обеих копий была идентична. Внутренние тексты ошибок «malformed
+cursor» потеряли доменный префикс («runs:», «leaderboard:», «quote:» →
+«httpx:») — до провода они не доходят (маппятся в фиксированный
+apiErrBadCursor), тестами не сверяются.

@@ -1,17 +1,16 @@
 package leaderboard
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // Pagination bounds for a board page.
@@ -133,7 +132,7 @@ func (s *Service) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := parseLimit(r.URL.Query().Get("limit"))
+	limit := httpx.ParseLimit(r.URL.Query().Get("limit"), defaultLimit, maxLimit)
 	var after *Cursor
 	firstRank := int64(1)
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
@@ -221,39 +220,22 @@ func (s *Service) bucketParam(w http.ResponseWriter, r *http.Request) (Bucket, b
 	return b, true
 }
 
-// parseLimit clamps the ?limit= query to [1, maxLimit], defaulting on absent or
-// unparseable input.
-func parseLimit(raw string) int {
-	if raw == "" {
-		return defaultLimit
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return defaultLimit
-	}
-	if n > maxLimit {
-		return maxLimit
-	}
-	return n
-}
-
 // encodeCursor packs a keyset position into an opaque base64url token.
 // Nanosecond precision is exact for Postgres timestamptz (microseconds), so the
 // round-trip reproduces the stored instant for the equality tie-break.
 func encodeCursor(c Cursor) string {
-	raw := fmt.Sprintf("%d:%d:%s", c.Score, c.AchievedAt.UTC().UnixNano(), c.UserID)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return httpx.EncodeCursor(
+		strconv.FormatInt(c.Score, 10),
+		strconv.FormatInt(c.AchievedAt.UTC().UnixNano(), 10),
+		c.UserID.String(),
+	)
 }
 
 // decodeCursor reverses encodeCursor, rejecting anything malformed.
 func decodeCursor(token string) (Cursor, error) {
-	b, err := base64.RawURLEncoding.DecodeString(token)
+	parts, err := httpx.DecodeCursor(token, 3)
 	if err != nil {
 		return Cursor{}, err
-	}
-	parts := strings.Split(string(b), ":")
-	if len(parts) != 3 {
-		return Cursor{}, errors.New("leaderboard: malformed cursor")
 	}
 	score, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {

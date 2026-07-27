@@ -3,7 +3,6 @@ package auth
 import (
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -123,15 +122,4 @@ func (s *Service) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bo
 		return false
 	}
 	return true
-}
-
-// clientIP extracts the client IP for rate-limit keying. It uses the transport
-// RemoteAddr (single-binary assumption); if a reverse proxy is added later,
-// trust its forwarded header here instead.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

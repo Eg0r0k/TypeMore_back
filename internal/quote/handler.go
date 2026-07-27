@@ -1,15 +1,15 @@
 package quote
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // Pagination bounds for a browse page.
@@ -87,7 +87,7 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := parseLimit(r.URL.Query().Get("limit"))
+	limit := httpx.ParseLimit(r.URL.Query().Get("limit"), defaultLimit, maxLimit)
 	var after *Cursor
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		cur, err := decodeCursor(raw)
@@ -180,41 +180,20 @@ func (s *Service) filterParam(w http.ResponseWriter, r *http.Request) (Filter, b
 	return f, true
 }
 
-// parseLimit clamps the ?limit= query to [1, maxLimit], defaulting on absent or
-// unparseable input.
-func parseLimit(raw string) int {
-	if raw == "" {
-		return defaultLimit
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return defaultLimit
-	}
-	if n > maxLimit {
-		return maxLimit
-	}
-	return n
-}
-
 // encodeCursor packs a browse position into an opaque base64url token. Language
 // ids never contain a colon (they are the dictionary catalogue's own ids), so
 // the three fields split unambiguously.
 func encodeCursor(c Cursor) string {
-	raw := fmt.Sprintf("%s:%d:%s", c.Lang, int16(c.Group), c.ID)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return httpx.EncodeCursor(c.Lang, strconv.FormatInt(int64(int16(c.Group)), 10), c.ID.String())
 }
 
 // decodeCursor reverses encodeCursor, rejecting anything malformed. The group
 // is range-checked here rather than trusted into SQL: the token is client input
 // like any other.
 func decodeCursor(token string) (Cursor, error) {
-	b, err := base64.RawURLEncoding.DecodeString(token)
+	parts, err := httpx.DecodeCursor(token, 3)
 	if err != nil {
 		return Cursor{}, err
-	}
-	parts := strings.Split(string(b), ":")
-	if len(parts) != 3 {
-		return Cursor{}, errors.New("quote: malformed cursor")
 	}
 	group, err := strconv.ParseInt(parts[1], 10, 16)
 	if err != nil {
