@@ -20,8 +20,11 @@ import (
 )
 
 // countdownLeadMs is how far ahead of "now" a Countdown schedules t=0, leaving
-// the client room to run the local 3-2-1 after converting via its NTP offset.
-const countdownLeadMs = 3000
+// the client room to run the local 5-4-3-2-1 after converting via its NTP
+// offset. Five seconds, not three: the client cannot start counting until the
+// frame arrives, and the countdown is also the only window a player has to look
+// at the text before it starts moving.
+const countdownLeadMs = 5000
 
 // Match end timing defaults. deadlineSlackMs is the tolerance added past a
 // match's nominal length before unfinished seats are force-dnf'd; wordModeMsPerWord
