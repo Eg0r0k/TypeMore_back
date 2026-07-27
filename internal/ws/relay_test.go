@@ -797,3 +797,56 @@ func TestPeerBatchInheritsTheSendersVersion(t *testing.T) {
 			tc.playerID, pb.Version, tc.version)
 	}
 }
+
+// TestTelemetryBatchRelaysAndPersistsOpaque pins the relay's posture toward
+// log v2: a batch whose events are keystroke telemetry (down/up, version 2)
+// reaches the peer byte-for-byte and lands in the persisted capture untouched.
+// The relay never parses events — the version field travels, the bytes stay
+// opaque — so accepting v2 required ZERO relay code; this test keeps it that
+// way.
+func TestTelemetryBatchRelaysAndPersistsOpaque(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	store := &fakeStore{}
+	srv := relayServer(t, store)
+
+	m := startMatch(t, ctx, srv, 2, 0)
+	host, guest := m.conns[0], m.conns[1]
+
+	telemetry := []json.RawMessage{
+		json.RawMessage(`{"kind":"down","seq":1,"t":0,"code":"KeyA"}`),
+		json.RawMessage(`{"kind":"insert","seq":2,"t":8,"text":"a"}`),
+		json.RawMessage(`{"kind":"up","seq":3,"t":40,"code":"KeyA"}`),
+	}
+	writeJSON(t, ctx, host, protocol.EventBatch{
+		Type:     protocol.TypeEventBatch,
+		MatchID:  m.matchID,
+		PlayerID: m.ids[0],
+		BatchSeq: 1,
+		Version:  2,
+		Events:   telemetry,
+	})
+	pb := decodePeerBatch(t, expect(t, ctx, guest, protocol.TypePeerBatch))
+	assert.Equal(t, 2, pb.Version, "the relayed batch keeps the sender's log version")
+	require.Len(t, pb.Events, len(telemetry))
+	for i := range telemetry {
+		assert.JSONEq(t, string(telemetry[i]), string(pb.Events[i]))
+	}
+
+	// Finish both seats; the persisted capture must hold the telemetry bytes.
+	writeJSON(t, ctx, host, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
+	readUntil(t, ctx, guest, protocol.TypePeerStatus)
+	writeJSON(t, ctx, guest, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
+
+	require.Eventually(t, func() bool { return len(store.records()) == 1 }, 5*time.Second, 20*time.Millisecond)
+	byID := map[string]ws.MatchRunRecord{}
+	for _, run := range store.records()[0].Runs {
+		byID[run.PlayerID] = run
+	}
+	batches := gunzipBatches(t, byID[m.ids[0]].Log)
+	require.Len(t, batches, 1)
+	require.Len(t, batches[0].Events, len(telemetry))
+	for i := range telemetry {
+		assert.JSONEq(t, string(telemetry[i]), string(batches[0].Events[i]))
+	}
+}
