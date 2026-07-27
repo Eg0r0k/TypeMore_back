@@ -732,12 +732,29 @@ func (r *Registry) Body(dictHash string) ([]byte, bool) {
 	return e.raw, true
 }
 
-// gzipBytes compresses at the highest level: it happens once per dictionary at
-// startup, so trading CPU for a permanently smaller response is free.
+// gzipBytes compresses each body once, at startup.
+//
+// It used to use BestCompression, on the reasoning that paying CPU once for a
+// permanently smaller response is free. That was true of a 40 kB corpus and is
+// not true of a 57 MB one. Measured over the real corpus:
+//
+//	BestCompression      9.92 s   12.08 MB
+//	DefaultCompression   2.57 s   12.26 MB
+//	BestSpeed            0.45 s   15.25 MB
+//
+// BestCompression buys 180 kB across 430 dictionaries — 1.5%, and invisible on
+// any single body — for 7.4 s of startup on every deploy. DefaultCompression is
+// the trade that actually holds now. BestSpeed is 5.7× faster again but 26%
+// bigger, and these bodies are served with `immutable` and cached forever, so
+// bytes on the wire still matter more than the last few seconds of startup.
+//
+// Nothing about this is observable to a client: the level changes the encoded
+// size, never the decoded bytes, and it is the decoded bytes the catalogue's
+// `bytes` field and every hash describe.
 func gzipBytes(src []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Grow(len(src) / 2)
-	zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	zw, err := gzip.NewWriterLevel(&buf, gzip.DefaultCompression)
 	if err != nil {
 		return nil, err
 	}
