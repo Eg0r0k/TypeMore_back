@@ -165,10 +165,12 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 
 | Check | Limit / rule | Failure |
 |---|---|---|
-| Raw body size | ≤ 6.5 MiB | `413 payload_too_large` |
+| Raw body size | ≤ 25 MiB (transport; sized for log v2) | `413 payload_too_large` |
 | `scoreVersion` | one of `KnownScoreVersions` = `{1, 2}` | `422 unsupported_score_version` |
-| `log.version` | must equal `1` | `422 unsupported_log_version` |
-| Event count | 1 … 120 000 | `422 empty_log` / `422 too_many_events` |
+| `log.version` | one of `KnownLogVersions` = `{1, 2}` | `422 unsupported_log_version` |
+| v1 log bytes | ≤ 6.5 MiB (the pre-telemetry envelope, post-decode) | `422 log_too_large` |
+| Event count | 1 … 120 000 (v1) / 1 … 480 000 (v2) | `422 empty_log` / `422 too_many_events` |
+| Telemetry grammar | `down`/`up` only in v2; `code` is 1–32 chars of `[A-Za-z0-9]` | `422 malformed_log` |
 | `seq` | strictly increasing, non-negative start (cheap linear scan) | `422 non_monotonic_seq` |
 | `seed` | integer in `[0, 2³²−1]` (mulberry32) | `422 seed_out_of_range` |
 | `textSource` | `kind` ∈ {`seeded`, `quote`}; a `quote` needs a UUID `quoteId` and a `quoteHash` | `422 invalid_text_source` |
@@ -246,6 +248,46 @@ of request bodies alone**, competing for the same budget as the argon2id gate,
 which is itself sized as a memory ceiling (zone 1). This is now by a wide margin
 the largest single allocation on the ingest path, and it is the next thing to
 measure — not a raise that came for free.
+
+### Log v2 (keystroke telemetry): the re-derived caps
+
+A v2 capture brackets every physical keystroke with its `down`/`up` pair
+(`docs` in the frontend: game-architecture.md, "Event protocol"), so a v2 log
+is **exactly 3× its state events** plus one Shift pair per shifted grapheme in
+the no-hold worst case. Re-measured by the same generator-driven guard test
+that sized the v1 caps
+(`TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2`), over every
+published dictionary, both punctuation arms:
+
+| Worst full-length v2 run | Total events | Modeled log bytes |
+|---|---|---|
+| **code_abap_1k** (worst of all published) | **417 710** | **~21.5 MiB** |
+
+Hence **480 000 events** for a v2 log (~15 % headroom, the discipline that
+sized 120 000) and a **25 MiB transport cap** (the version is unknowable before
+the body is parsed, so the transport must admit the largest grammar). Two
+things deliberately did NOT widen:
+
+- a **v1 log** is bounded post-decode at the old envelope (`log_too_large`
+  above): raising the transport cap for v2 must not quietly hand v1 clients a
+  4× bigger log;
+- the **event cap stays operative** for both grammars — the guard test asserts
+  a body at either event cap fits under its size bound, and
+  `TestLoadReplayMaxRunV2Telemetry` re-checked the replay-timeout margin with a
+  real interleaved maximum run: worst sample 9.8 s against the 45 s interrupt
+  budget (22 %), median 9.5 s against the 22.5 s engineering margin (42 %);
+  scaled to the worst dictionary's 417 710 events that is ~17 s — inside both.
+
+Watch item: the **v1** event cap is nearly exhausted — league_of_legends now
+measures 118 943 events (99 % of 120 000). The next published dictionary that
+crosses it will fail the guard test, which is that test doing its job.
+
+**Storage note.** Telemetry is anticheat/analytics **input**: this phase only
+collects and structurally validates it (the `unpaired-keyup` flag is
+bookkeeping at weight 0.00). The keyboard-portrait projection and the
+hold/overlap plausibility heuristics are LATER phases consuming this data —
+nothing reads `code` semantically today, and the gzip log round-trips
+byte-for-byte exactly as before.
 
 ### Note on `seq`: structural vs. deep
 

@@ -92,29 +92,40 @@ func TestGeneratedLogIsStructurallyValid(t *testing.T) {
 // A body cap that bounds a well-formed log is doing the event cap's job badly.
 // These assertions are what keep it out of that job.
 func TestMaxLegalPayloadSitsAtTheCaps(t *testing.T) {
+	// ── the v1 envelope: event cap operative, v1 log-byte bound above it ────
 	submittable := perf.SubmittableEvents(1)
-	perf.Report(t, "fixture", "events that fit under the body cap", submittable)
+	perf.Report(t, "fixture", "v1 events that fit under the v1 log-byte bound", submittable)
 
 	// The phantom is retired: a client that obeys the documented event cap is
 	// no longer refused by the size cap.
 	atEventCap := perf.MustJSON(perf.MaxEventsPayload(1))
-	perf.Report(t, "fixture", "body at the documented event cap", perf.MiB(uint64(len(atEventCap))))
-	assert.LessOrEqual(t, len(atEventCap), perf.MaxBodyBytes,
-		"the documented event cap is un-submittable again: the body cap has become a second, hidden event cap")
+	perf.Report(t, "fixture", "body at the documented v1 event cap", perf.MiB(uint64(len(atEventCap))))
+	assert.LessOrEqual(t, len(atEventCap), perf.MaxLogBytesV1,
+		"the documented event cap is un-submittable again: the v1 log-byte bound has become a second, hidden event cap")
 	assert.Equal(t, perf.MaxEvents, submittable,
-		"the event cap must be the operative one; the body cap is bounding a well-formed log")
+		"the v1 event cap must be the operative one; the log-byte bound is bounding a well-formed log")
 
-	// And the body cap is not dead weight: it still has to be REACHABLE, or it
-	// is a constant nothing can trip. A paste — one insert carrying many
-	// graphemes — gets there on half the events.
+	// ── the v2 envelope: event cap operative, transport cap above it ────────
+	submittableV2 := perf.SubmittableEventsV2(1)
+	perf.Report(t, "fixture", "v2 events that fit under the transport cap", submittableV2)
+	atEventCapV2 := perf.MustJSON(perf.MaxEventsV2Payload(1))
+	perf.Report(t, "fixture", "body at the documented v2 event cap", perf.MiB(uint64(len(atEventCapV2))))
+	assert.LessOrEqual(t, len(atEventCapV2), perf.MaxBodyBytes,
+		"the v2 event cap is un-submittable: the transport cap has become a second, hidden event cap")
+	assert.Equal(t, perf.MaxEventsV2, submittableV2,
+		"the v2 event cap must be the operative one; the transport cap is bounding a well-formed log")
+
+	// The transport cap is not dead weight: it still has to be REACHABLE, or
+	// it is a constant nothing can trip. A paste — one insert carrying many
+	// graphemes — gets there.
 	fat := perf.MustJSON(perf.BuildPayload(perf.PayloadSpec{
 		Setup: perf.SetupSpec{Mode: "words", WordCount: perf.MaxWordCount, DurationMs: perf.MaxDurationMs},
-		Log:   perf.LogSpec{Events: perf.MaxEvents / 2, Seed: 1, TextLen: 128},
+		Log:   perf.LogSpec{Events: perf.MaxEvents, Seed: 1, TextLen: 512},
 	}))
-	perf.Report(t, "fixture", "body at half the events, 128-grapheme inserts",
+	perf.Report(t, "fixture", "body at the v1 event cap, 512-grapheme inserts",
 		perf.MiB(uint64(len(fat))))
 	assert.Greater(t, len(fat), perf.MaxBodyBytes,
-		"the body cap can no longer be tripped by anything: it has stopped guarding the ingest envelope")
+		"the transport cap can no longer be tripped by anything: it has stopped guarding the ingest envelope")
 
 	p := perf.MaxLegalPayload(1)
 	var log perf.EventLog
@@ -125,12 +136,17 @@ func TestMaxLegalPayloadSitsAtTheCaps(t *testing.T) {
 	assert.EqualValues(t, perf.MaxWordCount, *p.WordCount)
 
 	body := perf.MustJSON(p)
-	perf.Report(t, "fixture", "max ACCEPTED payload body", perf.MiB(uint64(len(body))))
-	assert.LessOrEqual(t, len(body), perf.MaxBodyBytes,
-		"the fixture must be ACCEPTED at the cap, not rejected by it")
-	assert.Greater(t, len(body), perf.MaxBodyBytes*85/100,
-		"and it must still sit NEAR the cap: the two caps have drifted far enough apart that the "+
-			"worst accepted payload no longer measures the worst case")
+	perf.Report(t, "fixture", "max ACCEPTED v1 payload body", perf.MiB(uint64(len(body))))
+	assert.LessOrEqual(t, len(body), perf.MaxLogBytesV1,
+		"the v1 fixture must be ACCEPTED at its bound, not rejected by it")
+
+	bodyV2 := perf.MustJSON(perf.MaxLegalPayloadV2(1))
+	perf.Report(t, "fixture", "max ACCEPTED v2 payload body", perf.MiB(uint64(len(bodyV2))))
+	assert.LessOrEqual(t, len(bodyV2), perf.MaxBodyBytes,
+		"the v2 fixture must be ACCEPTED at the cap, not rejected by it")
+	assert.Greater(t, len(bodyV2), perf.MaxBodyBytes*80/100,
+		"and it must still sit NEAR the transport cap: the two caps have drifted far enough apart "+
+			"that the worst accepted payload no longer measures the worst case")
 
 	// Gzip is what actually gets stored; the ratio matters for the zone 6 budget.
 	gz := perf.Gzip(body)

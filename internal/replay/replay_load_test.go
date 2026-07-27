@@ -3,9 +3,12 @@
 package replay
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"strings"
 	"testing"
@@ -492,6 +495,120 @@ func TestLoadReplayMaxRun(t *testing.T) {
 			Rationale: "a 2x margin below the interrupt budget absorbs a slower box without re-tuning the timeout",
 		}.Assert(t, median)
 	}
+}
+
+// TestLoadReplayMaxRunV2Telemetry re-checks the replay-timeout margin for the
+// telemetry grammar (log v2): the max-submittable REAL run — typed against the
+// core-generated words — with every keystroke bracketed by its down/up pair,
+// which is the exact wire shape a v2 client submits. Telemetry folds as
+// no-ops, but the goja PARSE and the structural walk scale with TOTAL events
+// (~3× the v1 run), which is precisely what "measure, don't assume" means for
+// the caps re-derivation (docs/RUNS.md).
+func TestLoadReplayMaxRunV2Telemetry(t *testing.T) {
+	core, reg, dictHash, lang := testCore(t, measureTimeout)
+	f := buildFixture(t, core, reg, dictHash, lang, runSpec{
+		name:       "max-submittable v2 (telemetry interleaved)",
+		mode:       "words",
+		wordCount:  perf.MaxWordCount,
+		durationMs: perf.MaxDurationMs,
+		maxEvents:  perf.SubmittableEvents(uint64(fixtureSeed)),
+		meanMs:     keystrokeMeanMs,
+	})
+	total := interleaveTelemetry(t, &f)
+	require.LessOrEqual(t, total, perf.MaxEventsV2,
+		"the interleaved max run exceeds the v2 event cap: the cap model has drifted from the capture shape")
+	perf.Report(t, replayZone, "v2 telemetry fixture",
+		fmt.Sprintf("%d total events (%d state), gzip %s", total, f.events, perf.MiB(uint64(f.gzipLog))))
+
+	samples, bytes, allocs := judgeSamples(t, core, reg, f, 3)
+	perf.Report(t, replayZone, "max v2 telemetry distribution", perf.Summary(samples))
+	perf.Report(t, replayZone, "max v2 telemetry allocations", fmt.Sprintf("%s over %d allocs", perf.MiB(bytes), allocs))
+
+	perf.Budget{
+		Zone:      replayZone,
+		Workload:  "max v2 telemetry — worst sample vs the interrupt budget",
+		Limit:     DefaultReplayTimeout,
+		Rationale: "over DefaultReplayTimeout the core call is interrupted and an honest v2 run is flagged replay_timeout",
+	}.Assert(t, perf.Percentile(samples, 100))
+	perf.Budget{
+		Zone:      replayZone,
+		Workload:  "max v2 telemetry — median at 2x margin",
+		Limit:     DefaultReplayTimeout / 2,
+		Rationale: "a 2x margin below the interrupt budget absorbs a slower box without re-tuning the timeout",
+	}.Assert(t, perf.Percentile(samples, 50))
+}
+
+// interleaveTelemetry rewrites a fixture's v1 log as the v2 capture of the
+// same keystrokes: down 8 ms before every event, up 25 ms after, seq
+// renumbered contiguously — the input adapter's exact shape. Returns the new
+// total event count and updates the fixture's log/size fields in place.
+func interleaveTelemetry(t *testing.T, f *fixture) int {
+	t.Helper()
+
+	zr, err := gzip.NewReader(bytes.NewReader(f.run.Log))
+	require.NoError(t, err)
+	rawLog, err := io.ReadAll(zr)
+	require.NoError(t, err)
+	require.NoError(t, zr.Close())
+
+	var log struct {
+		Version int               `json:"version"`
+		Events  []json.RawMessage `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(rawLog, &log))
+
+	out := make([]json.RawMessage, 0, 3*len(log.Events))
+	seq := 0
+	lastT := int64(0)
+	// Clamped stamping keeps `t` monotonic even where the fixture put two
+	// state events on the same instant (a commit sharing its keystroke's t).
+	stamp := func(kind string, at int64, code string) {
+		if at < lastT {
+			at = lastT
+		}
+		lastT = at
+		seq++
+		out = append(out, json.RawMessage(fmt.Sprintf(
+			`{"kind":%q,"seq":%d,"t":%d,"code":%q}`, kind, seq, at, code)))
+	}
+	for _, raw := range log.Events {
+		var e map[string]any
+		require.NoError(t, json.Unmarshal(raw, &e))
+		at := int64(e["t"].(float64))
+		code := "Space"
+		if text, ok := e["text"].(string); ok && text != "" {
+			if r := []rune(text)[0]; (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				code = "Key" + strings.ToUpper(string(r))
+			} else {
+				code = "IntlBackslash" // non-ASCII graphemes: a stable stand-in code
+			}
+		}
+		stamp("down", at-8, code)
+		if at < lastT {
+			at = lastT
+		}
+		lastT = at
+		seq++
+		e["seq"] = seq
+		e["t"] = at
+		reseq, err := json.Marshal(e)
+		require.NoError(t, err)
+		out = append(out, reseq)
+		stamp("up", at+25, code)
+	}
+
+	v2, err := json.Marshal(map[string]any{"version": 2, "events": out})
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err = zw.Write(v2)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	f.run.Log = buf.Bytes()
+	f.rawLog = len(v2)
+	f.gzipLog = buf.Len()
+	return len(out)
 }
 
 // TestLoadReplayMaxRunUnderProductionTimeout demonstrates the consequence of the

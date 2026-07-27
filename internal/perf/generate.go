@@ -14,8 +14,28 @@ import (
 // thing a client may legally send" is the only interesting size: anything the
 // server accepts, it must be able to process.
 const (
-	MaxBodyBytes  = 13 << 19 // 6.5 MiB
+	// MaxBodyBytes is the transport (MaxBytesReader) ceiling. It is sized for
+	// the LARGEST grammar — a log-v2 full-length run on the worst published
+	// dictionary measures ~21.5 MiB
+	// (TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2) — because
+	// the version is not known until the body is parsed. A v1 log is
+	// additionally bounded by MaxLogBytesV1 post-decode, so the old v1
+	// envelope did not widen.
+	MaxBodyBytes = 50 << 19 // 25 MiB
+	// MaxLogBytesV1 preserves the pre-telemetry envelope for v1 logs: the old
+	// 6.5 MiB body cap bounded log+snapshots together, so a v1 LOG alone at
+	// this bound admits every previously-legal payload.
+	MaxLogBytesV1 = 13 << 19 // 6.5 MiB
 	MaxEvents     = 120_000
+	// MaxEventsV2 is the event cap for telemetry (log v2) submissions. A v2
+	// capture is exactly 3× its state events (one down/up pair per physical
+	// keystroke; the adapter skips auto-repeats) plus one Shift pair per
+	// shifted grapheme in the no-hold worst case. Measured over every
+	// published dictionary by
+	// TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2: worst is
+	// code_abap_1k at 417,710 events — this cap gives it ~15% headroom, the
+	// same discipline (and the same generator) that sized MaxEvents.
+	MaxEventsV2   = 480_000
 	MaxWordCount  = 10_000
 	MaxDurationMs = 3_600_000
 )
@@ -41,6 +61,8 @@ type Event struct {
 	Seq  int    `json:"seq"`
 	T    int64  `json:"t"`
 	Text string `json:"text,omitempty"`
+	// Code is the physical key of a log-v2 telemetry event (down/up).
+	Code string `json:"code,omitempty"`
 }
 
 // EventLog is the submitted log envelope.
@@ -62,6 +84,10 @@ type LogSpec struct {
 	// TextLen is the character length of each insert's text. 1 is a keystroke;
 	// larger values model a paste (and trip multi-grapheme-insert).
 	TextLen int
+	// Telemetry emits a log-v2 capture: every insert bracketed by its down/up
+	// pair, exactly as the input adapter records a physical keystroke. Events
+	// then counts TOTAL events (inserts ≈ Events/3), version becomes 2.
+	Telemetry bool
 }
 
 // GenerateLog builds a plausible event log of the requested size: strictly
@@ -87,17 +113,40 @@ func GenerateLog(spec LogSpec) EventLog {
 
 	events := make([]Event, 0, spec.Events)
 	var t float64
-	for i := range spec.Events {
-		t += mean * (jitterMinFraction + rng.Float64()*(jitterMaxFraction-jitterMinFraction))
-		e := Event{Kind: "insert", Seq: i + 1, T: int64(t)}
+	insert := func() Event {
+		e := Event{Kind: "insert", Seq: len(events) + 1, T: int64(t)}
 		if spec.TextLen == 1 {
 			e.Text = string(letters[rng.IntN(len(letters))])
 		} else {
 			e.Text = text
 		}
-		events = append(events, e)
+		return e
 	}
-	return EventLog{Version: 1, Events: events}
+	for len(events) < spec.Events {
+		t += mean * (jitterMinFraction + rng.Float64()*(jitterMaxFraction-jitterMinFraction))
+		if !spec.Telemetry {
+			events = append(events, insert())
+			continue
+		}
+		// A physical keystroke as the adapter captures it: down 8 ms before the
+		// insert, up 25 ms after — the same shape the golden vectors carry. The
+		// tail may truncate mid-triple to land exactly on Events.
+		e := insert()
+		code := "Key" + strings.ToUpper(e.Text[:1])
+		events = append(events, Event{Kind: "down", Seq: len(events) + 1, T: e.T - 8, Code: code})
+		if len(events) < spec.Events {
+			e.Seq = len(events) + 1
+			events = append(events, e)
+		}
+		if len(events) < spec.Events {
+			events = append(events, Event{Kind: "up", Seq: len(events) + 1, T: e.T + 25, Code: code})
+		}
+	}
+	version := 1
+	if spec.Telemetry {
+		version = 2
+	}
+	return EventLog{Version: version, Events: events}
 }
 
 // MaxLegalLog is the largest log the EVENT cap allows: exactly MaxEvents events.
@@ -129,7 +178,7 @@ func SubmittableEvents(seed uint64) int {
 	lo, hi := 1, MaxEvents
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
-		if len(MustJSON(payloadWithEvents(mid, seed))) <= MaxBodyBytes {
+		if len(MustJSON(payloadWithEvents(mid, seed, false))) <= MaxLogBytesV1 {
 			lo = mid
 		} else {
 			hi = mid - 1
@@ -138,10 +187,25 @@ func SubmittableEvents(seed uint64) int {
 	return lo
 }
 
-func payloadWithEvents(events int, seed uint64) IngestPayload {
+// SubmittableEventsV2 is the v2 counterpart: the largest TOTAL event count of a
+// telemetry log whose full POST body fits under the transport cap.
+func SubmittableEventsV2(seed uint64) int {
+	lo, hi := 1, MaxEventsV2
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if len(MustJSON(payloadWithEvents(mid, seed, true))) <= MaxBodyBytes {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return lo
+}
+
+func payloadWithEvents(events int, seed uint64, telemetry bool) IngestPayload {
 	return BuildPayload(PayloadSpec{
 		Setup: SetupSpec{Mode: "words", WordCount: MaxWordCount, DurationMs: MaxDurationMs},
-		Log:   LogSpec{Events: events, Seed: seed},
+		Log:   LogSpec{Events: events, Seed: seed, Telemetry: telemetry},
 	})
 }
 
@@ -272,7 +336,13 @@ func BuildPayload(p PayloadSpec) IngestPayload {
 // payload the server rejects measures the rejection path, and zone 5 needs the
 // accept path's worst case.
 func MaxLegalPayload(seed uint64) IngestPayload {
-	return payloadWithEvents(SubmittableEvents(seed), seed)
+	return payloadWithEvents(SubmittableEvents(seed), seed, false)
+}
+
+// MaxLegalPayloadV2 is the v2 counterpart of MaxLegalPayload: the largest
+// telemetry submission the transport cap admits.
+func MaxLegalPayloadV2(seed uint64) IngestPayload {
+	return payloadWithEvents(SubmittableEventsV2(seed), seed, true)
 }
 
 // MaxEventsPayload is the payload the DOCUMENTED event cap allows: over the
@@ -281,7 +351,14 @@ func MaxLegalPayload(seed uint64) IngestPayload {
 // the validator promises to accept — the worker must survive a log that large
 // however it arrived (a revalidation of an older row, a raised body cap).
 func MaxEventsPayload(seed uint64) IngestPayload {
-	return payloadWithEvents(MaxEvents, seed)
+	return payloadWithEvents(MaxEvents, seed, false)
+}
+
+// MaxEventsV2Payload is the v2 event cap's payload: MaxEventsV2 total events of
+// telemetry capture — the worst log the validator promises to accept, and the
+// replay-timeout margin's measuring stick.
+func MaxEventsV2Payload(seed uint64) IngestPayload {
+	return payloadWithEvents(MaxEventsV2, seed, true)
 }
 
 // Gzip compresses raw the way ingestion stores a log (stdlib, best speed).

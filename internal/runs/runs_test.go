@@ -116,9 +116,9 @@ func TestIngestBodyTooLarge(t *testing.T) {
 	h := newHarness(t)
 	h.login("big@example.com", "password-123", "Big")
 
-	// Comfortably past the 6.5 MiB cap, so MaxBytesReader trips before
-	// validation runs.
-	oversized := []byte(`{"setup":"` + strings.Repeat("a", 8<<20) + `"}`)
+	// Comfortably past the 25 MiB transport cap (sized for log v2), so
+	// MaxBytesReader trips before validation runs.
+	oversized := []byte(`{"setup":"` + strings.Repeat("a", 26<<20) + `"}`)
 	resp := h.postRaw("/api/v1/runs", oversized)
 	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
 	assert.Equal(t, "payload_too_large", decodeInto[errResp](t, resp).Error)

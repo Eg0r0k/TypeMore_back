@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/dop251/goja"
@@ -850,11 +851,94 @@ func TestEveryPublishedDictionaryCanPlayAFullLengthRun(t *testing.T) {
 		float64(worstEvents)/float64(perf.MaxEvents)*100)
 }
 
+// TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2 re-derives the
+// event cap for telemetry logs the same way the v1 cap was derived: from the
+// real generator's output on every published dictionary, worst case. A v2
+// capture is exactly 3× the state events (every insert and commit is one
+// physical keystroke bracketed by its down/up — auto-repeats are skipped by
+// the adapter), PLUS one Shift pair per shifted grapheme in the pathological
+// no-hold case (a real typist holds Shift across runs of shifted characters;
+// pairing every single one is the upper bound, not the estimate).
+func TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2(t *testing.T) {
+	core, reg := sharedDicts(t)
+
+	worstEvents, worstBytes, worstLang := 0, 0, ""
+	for _, entry := range reg.Catalogue() {
+		body, ok := reg.Body(entry.DictHash)
+		require.True(t, ok, entry.Lang)
+		for _, punctuation := range []bool{false, true} {
+			v1, shifted, graphemes := fullLengthRunShape(t, core, body, entry.DictHash, punctuation)
+			v2 := 3*v1 + 2*shifted
+			// Body bytes, modeled the way the v1 table was: the log dominates the
+			// payload. A state event marshals at ~50 B (insert+seq+t+text), a
+			// telemetry event at ~55 B (kind+seq+t+code, codes up to "ShiftLeft").
+			bytes := 50*v1 + 55*(2*v1+2*shifted)
+			if v2 > worstEvents {
+				worstEvents, worstBytes, worstLang = v2, bytes, entry.Lang
+			}
+			assert.LessOrEqualf(t, v2, perf.MaxEventsV2,
+				"a full %d-word %s v2 run (punctuation=%v, %d graphemes, %d shifted) is %d events, over the %d cap",
+				perf.MaxWordCount, entry.Lang, punctuation, graphemes, shifted, v2, perf.MaxEventsV2)
+		}
+	}
+	t.Logf("worst full-length v2 run: %s at %d events (~%.2f MiB log) — cap %d (%.0f%% used), body cap %d (~%.0f%% used)",
+		worstLang, worstEvents, float64(worstBytes)/(1<<20),
+		perf.MaxEventsV2, float64(worstEvents)/float64(perf.MaxEventsV2)*100,
+		perf.MaxBodyBytes, float64(worstBytes)/float64(perf.MaxBodyBytes)*100)
+}
+
+// fullLengthRunShape mirrors fullLengthRunEvents but also reports the grapheme
+// total and how many graphemes need Shift on a US layout — the input to the v2
+// worst-case model above.
+func fullLengthRunShape(t *testing.T, core *Core, dictBody []byte, dictHash string, punctuation bool) (events, shifted, graphemes int) {
+	t.Helper()
+	words := fullLengthRunWords(t, core, dictBody, dictHash, punctuation)
+	events = len(words) // one commit per word
+	for _, w := range words {
+		for _, r := range w {
+			events++
+			graphemes++
+			if needsShiftUS(r) {
+				shifted++
+			}
+		}
+	}
+	return events, shifted, graphemes
+}
+
+// needsShiftUS reports whether typing r on a US layout involves Shift. Only an
+// upper-bound heuristic for the cap model — the server never interprets codes.
+func needsShiftUS(r rune) bool {
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	switch r {
+	case '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+',
+		'{', '}', '|', ':', '"', '<', '>', '?':
+		return true
+	}
+	// Non-ASCII uppercase (German nouns, Cyrillic capitals) also shifts.
+	return r > 127 && unicode.IsUpper(r)
+}
+
 // fullLengthRunEvents counts the events a flawless MaxWordCount run on this
 // dictionary would emit: one insert per grapheme, one commit per word. The word
 // list comes from the real generator in goja, because the decoration rules
 // (which is what punctuation changes) live there and nowhere else.
 func fullLengthRunEvents(t *testing.T, core *Core, dictBody []byte, dictHash string, punctuation bool) int {
+	t.Helper()
+	words := fullLengthRunWords(t, core, dictBody, dictHash, punctuation)
+	events := len(words) // one commit per word
+	for _, w := range words {
+		events += utf8.RuneCountInString(w) // one insert per grapheme
+	}
+	return events
+}
+
+// fullLengthRunWords generates the word list of a flawless MaxWordCount run
+// through the real generator in goja — the decoration rules live there and
+// nowhere else.
+func fullLengthRunWords(t *testing.T, core *Core, dictBody []byte, dictHash string, punctuation bool) []string {
 	t.Helper()
 	ctx := context.Background()
 
@@ -876,10 +960,5 @@ func fullLengthRunEvents(t *testing.T, core *Core, dictBody []byte, dictHash str
 	require.NoError(t, err)
 	var words []string
 	require.NoError(t, json.Unmarshal(raw, &words))
-
-	events := len(words) // one commit per word
-	for _, w := range words {
-		events += utf8.RuneCountInString(w) // one insert per grapheme
-	}
-	return events
+	return words
 }

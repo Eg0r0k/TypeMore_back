@@ -13,14 +13,26 @@ import (
 // to judge whether a run is plausible (that is the replay worker's job).
 const (
 	// Event-count bounds: a real run has at least one event, and 120k is above
-	// the largest run the documented game permits on ANY published dictionary
-	// — a full MaxWordCount (10 000) code_css run with punctuation measures
-	// 108 274 events; german measures 79 116, 81 430 with punctuation. The old
-	// 50 000 was sized around an interpreter cost that no longer exists and
-	// refused a mode the docs promise. See the caps table in docs/RUNS.md for
-	// the measurements and the tradeoff.
+	// the largest v1 run the documented game permits on ANY published
+	// dictionary — a full MaxWordCount (10 000) code_css run with punctuation
+	// measures 108 274 events; german measures 79 116, 81 430 with
+	// punctuation. The old 50 000 was sized around an interpreter cost that no
+	// longer exists and refused a mode the docs promise. See the caps table in
+	// docs/RUNS.md for the measurements and the tradeoff.
 	minEvents = 1
 	maxEvents = 120_000
+	// maxEventsV2 bounds a telemetry (log v2) submission: a v2 capture is 3×
+	// its state events (one down/up pair per physical keystroke) plus Shift
+	// pairs. The worst published dictionary measures 417 710 total events
+	// (code_abap_1k, re-measured by the same generator-driven guard test that
+	// sized maxEvents); this cap gives it ~15% headroom. Mirrored as
+	// perf.MaxEventsV2.
+	maxEventsV2 = 480_000
+	// maxLogBytesV1 preserves the pre-telemetry envelope for v1 logs: the old
+	// 6.5 MiB BODY cap bounded log+snapshots together, so bounding a v1 LOG
+	// alone at the same number admits every previously-legal payload while the
+	// transport cap above it is sized for v2.
+	maxLogBytesV1 = 13 << 19
 
 	// seedMax is 2³²−1: mulberry32 is a 32-bit PRNG (PROTOCOL.md §4).
 	seedMax = int64(math.MaxUint32)
@@ -88,6 +100,7 @@ const (
 	codeSeedOutOfRange          = "seed_out_of_range"
 	codeInvalidTextSource       = "invalid_text_source"
 	codeQuoteTextSubmitted      = "quote_text_submitted"
+	codeLogTooLarge             = "log_too_large"
 )
 
 // ingestRequest is the POST /runs body. The opaque snapshots and the log are
@@ -366,17 +379,28 @@ func validateLog(raw json.RawMessage) *apiError {
 		return apiErrUnprocessable(codeUnsupportedLogVersion,
 			fmt.Sprintf("unsupported log version; accepted versions are %v", KnownLogVersions))
 	}
+	telemetryAllowed := *env.Version == logVersionTelemetry
+	// The transport cap admits the largest grammar (v2); a v1 log is bounded
+	// here at the pre-telemetry envelope so that raising the transport cap did
+	// not quietly widen what a v1 client may send.
+	if !telemetryAllowed && len(raw) > maxLogBytesV1 {
+		return apiErrUnprocessable(codeLogTooLarge,
+			fmt.Sprintf("a version-1 log may be at most %d bytes", maxLogBytesV1))
+	}
 	n := len(env.Events)
 	if n < minEvents {
 		return apiErrUnprocessable(codeEmptyLog, "log has no events")
 	}
-	if n > maxEvents {
+	eventCap := maxEvents
+	if telemetryAllowed {
+		eventCap = maxEventsV2
+	}
+	if n > eventCap {
 		return apiErrUnprocessable(codeTooManyEvents,
-			fmt.Sprintf("log exceeds the maximum of %d events", maxEvents))
+			fmt.Sprintf("log exceeds the maximum of %d events", eventCap))
 	}
 	// Strictly increasing, non-negative seq. prev starts below zero so the first
 	// event must be >= 0; each subsequent event must exceed its predecessor.
-	telemetryAllowed := *env.Version == logVersionTelemetry
 	prev := int64(-1)
 	for i := range env.Events {
 		event := &env.Events[i]

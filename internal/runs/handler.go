@@ -16,12 +16,14 @@ import (
 // maxBodyBytes caps the raw POST /runs body; a larger body is rejected 413
 // before it is fully read (BACKEND.md §3, structural size check).
 //
-// 6.5 MiB, not 2 MiB. The old cap refused a mode the docs promise: a full
-// MaxWordCount (10 000) run measures 3.87 MiB on german and 5.26 MiB on
-// code_css, so no 10 000-word run was submittable at all. The cost is real and
-// stated plainly in docs/RUNS.md — this is now the largest single allocation on
-// the ingest path, and zone 5 measured the body being JSON-parsed TWICE here.
-const maxBodyBytes = 13 << 19 // 6.5 MiB
+// 25 MiB, sized for log v2: a full-length telemetry run on the worst published
+// dictionary measures ~21.5 MiB of log (the caps table in docs/RUNS.md), and
+// the version is not knowable before the body is parsed, so the transport cap
+// must admit the largest grammar. A v1 log is still bounded post-decode by
+// maxLogBytesV1, so the pre-telemetry envelope did not widen. The cost is real
+// and stated plainly in docs/RUNS.md — this remains the largest single
+// allocation on the ingest path.
+const maxBodyBytes = 50 << 19 // 25 MiB (perf.MaxBodyBytes mirrors this)
 
 // Pagination bounds for GET /runs.
 const (
