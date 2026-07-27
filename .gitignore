@@ -12,3 +12,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Local code-intelligence index, rebuilt from the sources on demand.
+.codegraph/
