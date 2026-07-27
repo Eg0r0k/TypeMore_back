@@ -203,10 +203,7 @@ func testWorkerWithPolicy(t *testing.T, q Queue, p Policy) (*Worker, *Core) {
 
 func testWorkerWith(t *testing.T, q Queue, p Policy, quotes QuoteResolver) (*Worker, *Core) {
 	t.Helper()
-	core, err := NewCore(DefaultReplayTimeout)
-	require.NoError(t, err)
-	reg, err := NewRegistry(core)
-	require.NoError(t, err)
+	core, reg := sharedDicts(t)
 	w := NewWorker(q, reg, quotes, WorkerConfig{BatchSize: 50, Policy: p},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w, core
@@ -648,9 +645,7 @@ func TestUnknownDictIsFlaggedNeverRejected(t *testing.T) {
 func TestQuoteRunNeverConsultsTheDictionaryRegistry(t *testing.T) {
 	v := firstVector(t, "quote-fixed-text")
 
-	core := mustCore(t, DefaultReplayTimeout)
-	reg, err := NewRegistry(core)
-	require.NoError(t, err)
+	_, reg := sharedDicts(t)
 	_, ok := reg.Body(v.Payload.DictHash)
 	require.False(t, ok, "the premise is gone: this quote's hash IS a published dictionary")
 
@@ -981,8 +976,7 @@ func TestInterruptDoesNotLeakToTheNextCall(t *testing.T) {
 
 func registryForTest(t *testing.T) *Registry {
 	t.Helper()
-	reg, err := NewRegistry(mustCore(t, DefaultReplayTimeout))
-	require.NoError(t, err)
+	_, reg := sharedDicts(t)
 	return reg
 }
 

@@ -13,10 +13,10 @@ regenerated from it.
 | Upstream | `https://github.com/monkeytypegame/monkeytype` |
 | Path | `frontend/static/languages` |
 | Files inspected | 446 |
-| **Imported** | **429** |
-| Skipped | 17 |
+| **Imported** | **420** |
+| Skipped | 26 |
 | Already published (10 pre-existing) | 40.9 kB |
-| **Total embedded after import** | **57.37 MB** (warn threshold 60 MB) |
+| **Total embedded after import** | **57.15 MB** (warn threshold 60 MB) |
 | Right-to-left scripts imported | 21 |
 
 ## What a row means
@@ -116,10 +116,50 @@ picking `german_upstream` or `german_v2` for six languages is a naming decision
 with no way back, and this stage's brief is an import, not a re-publication.
 Recorded as a deferred decision instead.
 
-### Deferred by the size budget (9)
+### Cannot play the documented game (10)
+
+`MaxWordCount` is 10 000 words and the ingestion event cap is 120 000
+(docs/RUNS.md). Whether a full-length run fits under that cap is a property of
+the **dictionary**, not of the caps: a run costs one insert per grapheme plus
+one commit per word, so a corpus of long tokens costs more events for the same
+word count. These 10 are over it — measured through the real generator in goja
+by `TestEveryPublishedDictionaryCanPlayAFullLengthRun`, worst of punctuation
+on and off:
+
+| File | Key | Events for a 10 000-word run | Over cap |
+|---|---|---|---|
+| `code_brainfck.json` | `code_brainfck` | 139 546 | 1.16× |
+| `code_common_lisp.json` | `code_common_lisp` | 127 475 | 1.06× |
+| `code_cuda.json` | `code_cuda` | 217 079 | 1.81× |
+| `code_gleam.json` | `code_gleam` | 136 326 | 1.14× |
+| `code_latex.json` | `code_latex` | 129 852 | 1.08× |
+| `code_powershell.json` | `code_powershell` | 140 259 | 1.17× |
+| `dutch_10k.json` | `dutch_10k` | 128 566 | 1.07× |
+| `english_legal.json` | `english_legal` | 360 619 | 3.01× |
+| `german_250k.json` | `german_250k` | 127 229 | 1.06× |
+| `typing_of_the_dead.json` | `typing_of_the_dead` | 161 790 | 1.35× |
+
+Publishing them would advertise a language on which a documented mode is
+refused at ingestion — the exact defect docs/RUNS.md's *Caps* section exists to
+describe. The two alternatives were both rejected:
+
+- **Raise the event cap** to fit english_legal's 360 619 events. That is 3× the
+  ingest envelope (≈19 MiB bodies) and it cuts the replay timeout's margin from
+  5.6× to under 2×. PERFORMANCE.md's discipline is explicit that no cap is
+  widened to turn a test green, and this would be that.
+- **Cap word count per dictionary** so the mode shrinks where the corpus is
+  expensive. That is a real feature — a per-dictionary maximum the client would
+  have to read and enforce — and an import is the wrong change to introduce it
+  in. It is the right long-term answer and it is recorded as deferred.
+
+Note how close some are: `german_250k` is 4.7% over and `english_legal` is
+201% over. A per-dictionary maximum would recover most of these ten; the cap
+would not have to move for any of them.
+
+### Deferred by the size budget (8)
 
 The budget is 60 MB of embedded dictionary bytes. Importing everything would
-embed 140.96 MB, so import stopped by size descending — the largest files buy
+embed 135.73 MB, so import stopped by size descending — the largest files buy
 the fewest languages per byte, and every one of them is a huge-N variant whose
 base language ships anyway.
 
@@ -130,10 +170,9 @@ base language ships anyway.
 | `spanish_650k.json` | `spanish_650k` | 11.98 | `spanish`, `spanish_10k`, `spanish_1k` |
 | `portuguese_550k.json` | `portuguese_550k` | 10.40 | `portuguese`, `portuguese_1k`, `portuguese_3k`, `portuguese_5k`, `portuguese_acentos_e_cedilha` |
 | `russian_375k.json` | `russian_375k` | 10.07 | `russian_10k`, `russian_1k`, `russian_25k`, `russian_50k`, `russian_5k`, `russian_abbreviations`, `russian_contractions`, `russian_contractions_1k` |
-| `english_450k.json` | `english_450k` | 7.91 | `english_10k`, `english_1k`, `english_25k`, `english_5k`, `english_commonly_misspelled`, `english_contractions`, `english_doubleletter`, `english_legal`, `english_medical`, `english_old`, `english_shakespearean` |
+| `english_450k.json` | `english_450k` | 7.91 | `english_10k`, `english_1k`, `english_25k`, `english_5k`, `english_commonly_misspelled`, `english_contractions`, `english_doubleletter`, `english_medical`, `english_old`, `english_shakespearean` |
 | `norwegian_nynorsk_400k.json` | `norwegian_nynorsk_400k` | 7.68 | `norwegian_nynorsk`, `norwegian_nynorsk_100k`, `norwegian_nynorsk_10k`, `norwegian_nynorsk_1k`, `norwegian_nynorsk_5k` |
 | `portuguese_320k.json` | `portuguese_320k` | 6.00 | `portuguese`, `portuguese_1k`, `portuguese_3k`, `portuguese_5k`, `portuguese_acentos_e_cedilha` |
-| `italian_280k.json` | `italian_280k` | 5.00 | `italian`, `italian_1k`, `italian_60k`, `italian_7k` |
 
 No player loses a language to this: every deferred file is a larger word list
 for a language that is imported at a smaller size.
@@ -221,15 +260,15 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `code_arduino.json` | `code_arduino` | Arduino (code) | 1 607 | 104 | import |
 | `code_assembly.json` | `code_assembly` | Assembly (code) | 978 | 81 | import |
 | `code_bash.json` | `code_bash` | Bash (code) | 3 587 | 276 | import |
-| `code_brainfck.json` | `code_brainfck` | Brainfuck (code) | 4 053 | 194 | import |
+| `code_brainfck.json` | `code_brainfck` | — | 4 053 | 194 | skip — a full 10 000-word run is 139 546 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `code_c++.json` | `code_cpp` | C++ (code) | 1 661 | 111 | import |
 | `code_c.json` | `code_c` | C (code) | 2 975 | 200 | import |
 | `code_clojure.json` | `code_clojure` | Clojure (code) | 3 032 | 212 | import |
 | `code_cobol.json` | `code_cobol` | COBOL (code) | 1 681 | 105 | import |
-| `code_common_lisp.json` | `code_common_lisp` | Common Lisp (code) | 19 148 | 978 | import |
+| `code_common_lisp.json` | `code_common_lisp` | — | 19 148 | 978 | skip — a full 10 000-word run is 127 475 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `code_csharp.json` | `code_csharp` | C# (code) | 1 789 | 130 | import |
 | `code_css.json` | `code_css` | — | 1 263 | 72 | skip — key code_css is already published with a different word list; overwriting would move a frozen dict_hash |
-| `code_cuda.json` | `code_cuda` | CUDA (code) | 6 816 | 237 | import |
+| `code_cuda.json` | `code_cuda` | — | 6 816 | 237 | skip — a full 10 000-word run is 217 079 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `code_dart.json` | `code_dart` | Dart (code) | 1 007 | 73 | import |
 | `code_elixir.json` | `code_elixir` | Elixir (code) | 10 103 | 554 | import |
 | `code_erlang.json` | `code_erlang` | Erlang (code) | 3 764 | 245 | import |
@@ -237,7 +276,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `code_fsharp.json` | `code_fsharp` | F# (code) | 1 410 | 102 | import |
 | `code_gdscript.json` | `code_gdscript` | GDScript (code) | 1 568 | 103 | import |
 | `code_gdscript_2.json` | `code_gdscript_2` | GDScript 2 (code) | 1 561 | 102 | import |
-| `code_gleam.json` | `code_gleam` | Gleam (code) | 9 099 | 442 | import |
+| `code_gleam.json` | `code_gleam` | — | 9 099 | 442 | skip — a full 10 000-word run is 136 326 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `code_go.json` | `code_go` | Go (code) | 863 | 63 | import |
 | `code_haskell.json` | `code_haskell` | Haskell (code) | 2 708 | 208 | import |
 | `code_html.json` | `code_html` | HTML (code) | 3 386 | 232 | import |
@@ -248,7 +287,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `code_jule.json` | `code_jule` | Jule (code) | 762 | 59 | import |
 | `code_julia.json` | `code_julia` | Julia (code) | 1 465 | 103 | import |
 | `code_kotlin.json` | `code_kotlin` | Kotlin (code) | 1 165 | 85 | import |
-| `code_latex.json` | `code_latex` | LaTeX (code) | 4 200 | 200 | import |
+| `code_latex.json` | `code_latex` | — | 4 200 | 200 | skip — a full 10 000-word run is 129 852 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `code_lua.json` | `code_lua` | Lua (code) | 845 | 59 | import |
 | `code_luau.json` | `code_luau` | Luau (code) | 1 060 | 73 | import |
 | `code_matlab.json` | `code_matlab` | MATLAB (code) | 882 | 63 | import |
@@ -261,7 +300,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `code_pascal.json` | `code_pascal` | Pascal (code) | 2 006 | 151 | import |
 | `code_perl.json` | `code_perl` | Perl (code) | 3 258 | 234 | import |
 | `code_php.json` | `code_php` | PHP (code) | 3 933 | 296 | import |
-| `code_powershell.json` | `code_powershell` | PowerShell (code) | 2 255 | 106 | import |
+| `code_powershell.json` | `code_powershell` | — | 2 255 | 106 | skip — a full 10 000-word run is 140 259 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `code_python.json` | `code_python` | Python (code) | 2 414 | 174 | import |
 | `code_python_1k.json` | `code_python_1k` | Python (code, 1k) | 18 039 | 1 096 | import |
 | `code_python_2k.json` | `code_python_2k` | Python (code, 2k) | 35 927 | 2 060 | import |
@@ -294,7 +333,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `danish_1k.json` | `danish_1k` | Danish (1k) | 13 335 | 954 | import |
 | `docker_file.json` | `docker_file` | Dockerfile (code) | 303 | 19 | import |
 | `dutch.json` | `dutch` | Dutch | 2 611 | 199 | import |
-| `dutch_10k.json` | `dutch_10k` | Dutch (10k) | 195 728 | 9 998 | import |
+| `dutch_10k.json` | `dutch_10k` | — | 195 728 | 9 998 | skip — a full 10 000-word run is 128 566 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `dutch_1k.json` | `dutch_1k` | Dutch (1k) | 13 661 | 1 000 | import |
 | `english.json` | `english` | — | 2 488 | 200 | skip — already published as english with identical content |
 | `english_10k.json` | `english_10k` | English (10k) | 151 256 | 9 944 | import |
@@ -305,7 +344,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `english_commonly_misspelled.json` | `english_commonly_misspelled` | English (commonly misspelled) | 28 456 | 1 729 | import |
 | `english_contractions.json` | `english_contractions` | English (contractions) | 2 660 | 183 | import |
 | `english_doubleletter.json` | `english_doubleletter` | English (double letters) | 2 977 | 202 | import |
-| `english_legal.json` | `english_legal` | English (legal) | 44 709 | 1 102 | import |
+| `english_legal.json` | `english_legal` | — | 44 709 | 1 102 | skip — a full 10 000-word run is 360 619 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `english_medical.json` | `english_medical` | English (medical) | 10 232 | 580 | import |
 | `english_old.json` | `english_old` | Old English | 2 688 | 200 | import |
 | `english_shakespearean.json` | `english_shakespearean` | English (Shakespearean) | 2 763 | 193 | import |
@@ -348,7 +387,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `german.json` | `german` | — | 2 586 | 200 | skip — key german is already published with a different word list; overwriting would move a frozen dict_hash |
 | `german_10k.json` | `german_10k` | German (10k) | 162 800 | 9 994 | import |
 | `german_1k.json` | `german_1k` | German (1k) | 13 918 | 988 | import |
-| `german_250k.json` | `german_250k` | German (250k) | 4 710 362 | 239 243 | import |
+| `german_250k.json` | `german_250k` | — | 4 710 362 | 239 243 | skip — a full 10 000-word run is 127 229 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `git.json` | `git` | Git (code) | 742 | 52 | import |
 | `greek.json` | `greek` | Greek | 4 263 | 209 | import |
 | `greek_10k.json` | `greek_10k` | Greek (10k) | 251 963 | 9 936 | import |
@@ -386,7 +425,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `irish_1k.json` | `irish_1k` | Irish (1k) | 14 191 | 1 000 | import |
 | `italian.json` | `italian` | Italian | 2 878 | 199 | import |
 | `italian_1k.json` | `italian_1k` | Italian (1k) | 17 212 | 1 159 | import |
-| `italian_280k.json` | `italian_280k` | — | 5 004 897 | 279 833 | skip — deferred by the 60 MB embed budget (5.00 MB, largest remaining) |
+| `italian_280k.json` | `italian_280k` | Italian (280k) | 5 004 897 | 279 833 | import |
 | `italian_60k.json` | `italian_60k` | Italian (60k) | 984 995 | 60 442 | import |
 | `italian_7k.json` | `italian_7k` | Italian (7k) | 114 063 | 7 154 | import |
 | `japanese_hiragana.json` | `japanese_hiragana` | Japanese (hiragana) | 9 297 | 554 | import |
@@ -574,7 +613,7 @@ of the text a client renders, and none of them is a reason to withhold a corpus:
 | `turkish_1k.json` | `turkish_1k` | Turkish (1k) | 14 482 | 1 026 | import |
 | `turkish_5k.json` | `turkish_5k` | Turkish (5k) | 77 318 | 5 016 | import |
 | `twitch_emotes.json` | `twitch_emotes` | Twitch emotes | 3 220 | 201 | import |
-| `typing_of_the_dead.json` | `typing_of_the_dead` | The Typing of the Dead | 232 723 | 10 098 | import |
+| `typing_of_the_dead.json` | `typing_of_the_dead` | — | 232 723 | 10 098 | skip — a full 10 000-word run is 161 790 events, over the 120 000 ingestion cap — MaxWordCount is unreachable on this dictionary |
 | `udmurt.json` | `udmurt` | Udmurt | 3 682 | 212 | import |
 | `ukrainian.json` | `ukrainian` | Ukrainian | 3 581 | 199 | import |
 | `ukrainian_10k.json` | `ukrainian_10k` | Ukrainian (10k) | 244 484 | 9 998 | import |

@@ -28,10 +28,7 @@ import (
 func newTestServer(t *testing.T) (*httptest.Server, *Registry, *Core) {
 	t.Helper()
 
-	core, err := NewCore(0)
-	require.NoError(t, err)
-	reg, err := NewRegistry(core)
-	require.NoError(t, err)
+	core, reg := sharedDicts(t)
 	svc, err := NewDictionaryService(reg)
 	require.NoError(t, err)
 
@@ -175,7 +172,37 @@ func TestADictionaryWithNoDisplayNameIsAStartupError(t *testing.T) {
 // revert the dictionary edit; never update the golden value. See
 // docs/DICTIONARIES.md.
 var publishedHashes = map[string]string{
+	"afrikaans":           "07334ba7",
+	"afrikaans_10k":       "a524e44c",
+	"afrikaans_1k":        "e6c4531a",
+	"albanian":            "45288b96",
+	"albanian_1k":         "04f75b03",
+	"amharic":             "9d76ef2d",
+	"amharic_1k":          "164cffe5",
+	"amharic_5k":          "314c6a49",
 	"arabian":             "09fa6ceb",
+	"arabian_10k":         "636ecdff",
+	"arabian_egypt":       "c41dcb4a",
+	"arabian_egypt_1k":    "08eb339d",
+	"arabian_morocco":     "1c52b9e2",
+	"armenian":            "4d6c680c",
+	"armenian_1k":         "597473d2",
+	"armenian_western":    "e6c58a55",
+	"armenian_western_1k": "cd965456",
+	"azerbaijani":         "d02cfc24",
+	"azerbaijani_1k":      "b3b745b1",
+	"bangla":              "983087a2",
+	"bangla_10k":          "13535aa5",
+	"bangla_letters":      "22510cab",
+	"bashkir":             "1d387f09",
+	"belarusian":          "c612c4d5",
+	"belarusian_100k":     "29193375",
+	"belarusian_10k":      "430cc03a",
+	"belarusian_1k":       "64a124f0",
+	"belarusian_25k":      "fe137bc0",
+	"belarusian_50k":      "3031301d",
+	"belarusian_5k":       "15f298fc",
+	"belarusian_lacinka":  "be6369a7",
 	"chinese":             "2557d6b5",
 	"code_css":            "55ccd317",
 	"english":             "be99aa1a",
@@ -188,10 +215,7 @@ var publishedHashes = map[string]string{
 }
 
 func TestPublishedHashesAreImmutable(t *testing.T) {
-	core, err := NewCore(0)
-	require.NoError(t, err)
-	reg, err := NewRegistry(core)
-	require.NoError(t, err)
+	_, reg := sharedDicts(t)
 
 	for _, e := range reg.Catalogue() {
 		want, published := publishedHashes[e.Lang]
@@ -239,10 +263,7 @@ func TestRenamingADictionaryKeyDoesNotMoveItsHash(t *testing.T) {
 		frozen  = "55ccd317"
 	)
 
-	core, err := NewCore(0)
-	require.NoError(t, err)
-	reg, err := NewRegistry(core)
-	require.NoError(t, err)
+	core, reg := sharedDicts(t)
 
 	require.Equal(t, frozen, publishedHashes[newLang],
 		"the rename moves the KEY of the frozen row; the VALUE is the published hash and must not move")
@@ -410,10 +431,7 @@ func TestGzipNegotiation(t *testing.T) {
 // so it moves the event count as well as the byte count. The two are coupled,
 // and headroom given to one without the other is not headroom.
 func TestEveryPublishedDictionaryCanPlayAFullLengthRun(t *testing.T) {
-	core, err := NewCore(0)
-	require.NoError(t, err)
-	reg, err := NewRegistry(core)
-	require.NoError(t, err)
+	core, reg := sharedDicts(t)
 
 	worstEvents, worstLang := 0, ""
 	for _, entry := range reg.Catalogue() {
