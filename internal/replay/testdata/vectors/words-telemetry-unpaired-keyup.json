@@ -1,0 +1,865 @@
+{
+  "name": "words-telemetry-unpaired-keyup",
+  "description": "Log v2 whose first event is a key RELEASE — the key was held before the log started. Raises unpaired-keyup (weight 0.00: bookkeeping, not suspicion) and must be accepted with the flag kept.",
+  "expect": {
+    "status": "accepted",
+    "verdict": "valid",
+    "flags": [
+      "unpaired-keyup"
+    ]
+  },
+  "payload": {
+    "mode": "words",
+    "wordCount": 6,
+    "lang": "german",
+    "seed": 20260728,
+    "dictHash": "804728e8",
+    "scoreVersion": 2,
+    "setup": {
+      "config": {
+        "mode": "words",
+        "durationMs": 60000,
+        "maxExtraChars": 20,
+        "difficulty": "normal",
+        "nospace": false,
+        "minWpm": 0
+      },
+      "generation": {
+        "mode": "words",
+        "length": 6,
+        "punctuation": false,
+        "numbers": false,
+        "randomCase": false,
+        "reverse": false
+      },
+      "declaration": {
+        "blind": false,
+        "fading": false,
+        "flashlight": false
+      }
+    },
+    "clientMetrics": {
+      "wpm": 108.68670234664472,
+      "raw": 108.68670234664472,
+      "acc": 1
+    },
+    "clientScore": {
+      "version": 2,
+      "total": 581,
+      "base": 427.5,
+      "comboPeak": 39,
+      "accMultiplier": 1,
+      "timeBonus": 1.358583779333059,
+      "modMultiplier": 1
+    },
+    "log": {
+      "version": 2,
+      "events": [
+        {
+          "kind": "up",
+          "seq": 1,
+          "t": 0,
+          "code": "ShiftRight"
+        },
+        {
+          "kind": "down",
+          "seq": 2,
+          "t": 74,
+          "code": "KeyB"
+        },
+        {
+          "kind": "insert",
+          "seq": 3,
+          "t": 82,
+          "text": "B"
+        },
+        {
+          "kind": "up",
+          "seq": 4,
+          "t": 107,
+          "code": "KeyB"
+        },
+        {
+          "kind": "down",
+          "seq": 5,
+          "t": 223,
+          "code": "KeyO"
+        },
+        {
+          "kind": "insert",
+          "seq": 6,
+          "t": 231,
+          "text": "o"
+        },
+        {
+          "kind": "up",
+          "seq": 7,
+          "t": 256,
+          "code": "KeyO"
+        },
+        {
+          "kind": "down",
+          "seq": 8,
+          "t": 363,
+          "code": "KeyN"
+        },
+        {
+          "kind": "insert",
+          "seq": 9,
+          "t": 371,
+          "text": "n"
+        },
+        {
+          "kind": "up",
+          "seq": 10,
+          "t": 396,
+          "code": "KeyN"
+        },
+        {
+          "kind": "down",
+          "seq": 11,
+          "t": 439,
+          "code": "KeyB"
+        },
+        {
+          "kind": "insert",
+          "seq": 12,
+          "t": 447,
+          "text": "b"
+        },
+        {
+          "kind": "up",
+          "seq": 13,
+          "t": 472,
+          "code": "KeyB"
+        },
+        {
+          "kind": "down",
+          "seq": 14,
+          "t": 562,
+          "code": "KeyO"
+        },
+        {
+          "kind": "insert",
+          "seq": 15,
+          "t": 570,
+          "text": "o"
+        },
+        {
+          "kind": "up",
+          "seq": 16,
+          "t": 595,
+          "code": "KeyO"
+        },
+        {
+          "kind": "down",
+          "seq": 17,
+          "t": 647,
+          "code": "KeyN"
+        },
+        {
+          "kind": "insert",
+          "seq": 18,
+          "t": 655,
+          "text": "n"
+        },
+        {
+          "kind": "up",
+          "seq": 19,
+          "t": 680,
+          "code": "KeyN"
+        },
+        {
+          "kind": "down",
+          "seq": 20,
+          "t": 708,
+          "code": "KeyS"
+        },
+        {
+          "kind": "insert",
+          "seq": 21,
+          "t": 716,
+          "text": "s"
+        },
+        {
+          "kind": "up",
+          "seq": 22,
+          "t": 741,
+          "code": "KeyS"
+        },
+        {
+          "kind": "down",
+          "seq": 23,
+          "t": 786,
+          "code": "Space"
+        },
+        {
+          "kind": "commit",
+          "seq": 24,
+          "t": 794
+        },
+        {
+          "kind": "up",
+          "seq": 25,
+          "t": 819,
+          "code": "Space"
+        },
+        {
+          "kind": "down",
+          "seq": 26,
+          "t": 878,
+          "code": "KeyB"
+        },
+        {
+          "kind": "insert",
+          "seq": 27,
+          "t": 886,
+          "text": "B"
+        },
+        {
+          "kind": "up",
+          "seq": 28,
+          "t": 911,
+          "code": "KeyB"
+        },
+        {
+          "kind": "down",
+          "seq": 29,
+          "t": 1022,
+          "code": "KeyA"
+        },
+        {
+          "kind": "insert",
+          "seq": 30,
+          "t": 1030,
+          "text": "a"
+        },
+        {
+          "kind": "up",
+          "seq": 31,
+          "t": 1055,
+          "code": "KeyA"
+        },
+        {
+          "kind": "down",
+          "seq": 32,
+          "t": 1117,
+          "code": "KeyS"
+        },
+        {
+          "kind": "insert",
+          "seq": 33,
+          "t": 1125,
+          "text": "s"
+        },
+        {
+          "kind": "up",
+          "seq": 34,
+          "t": 1150,
+          "code": "KeyS"
+        },
+        {
+          "kind": "down",
+          "seq": 35,
+          "t": 1250,
+          "code": "KeyI"
+        },
+        {
+          "kind": "insert",
+          "seq": 36,
+          "t": 1258,
+          "text": "i"
+        },
+        {
+          "kind": "up",
+          "seq": 37,
+          "t": 1283,
+          "code": "KeyI"
+        },
+        {
+          "kind": "down",
+          "seq": 38,
+          "t": 1369,
+          "code": "KeyL"
+        },
+        {
+          "kind": "insert",
+          "seq": 39,
+          "t": 1377,
+          "text": "l"
+        },
+        {
+          "kind": "up",
+          "seq": 40,
+          "t": 1402,
+          "code": "KeyL"
+        },
+        {
+          "kind": "down",
+          "seq": 41,
+          "t": 1510,
+          "code": "KeyI"
+        },
+        {
+          "kind": "insert",
+          "seq": 42,
+          "t": 1518,
+          "text": "i"
+        },
+        {
+          "kind": "up",
+          "seq": 43,
+          "t": 1543,
+          "code": "KeyI"
+        },
+        {
+          "kind": "down",
+          "seq": 44,
+          "t": 1603,
+          "code": "KeyK"
+        },
+        {
+          "kind": "insert",
+          "seq": 45,
+          "t": 1611,
+          "text": "k"
+        },
+        {
+          "kind": "up",
+          "seq": 46,
+          "t": 1636,
+          "code": "KeyK"
+        },
+        {
+          "kind": "down",
+          "seq": 47,
+          "t": 1719,
+          "code": "KeyU"
+        },
+        {
+          "kind": "insert",
+          "seq": 48,
+          "t": 1727,
+          "text": "u"
+        },
+        {
+          "kind": "up",
+          "seq": 49,
+          "t": 1752,
+          "code": "KeyU"
+        },
+        {
+          "kind": "down",
+          "seq": 50,
+          "t": 1867,
+          "code": "KeyM"
+        },
+        {
+          "kind": "insert",
+          "seq": 51,
+          "t": 1875,
+          "text": "m"
+        },
+        {
+          "kind": "up",
+          "seq": 52,
+          "t": 1900,
+          "code": "KeyM"
+        },
+        {
+          "kind": "down",
+          "seq": 53,
+          "t": 2011,
+          "code": "Space"
+        },
+        {
+          "kind": "commit",
+          "seq": 54,
+          "t": 2019
+        },
+        {
+          "kind": "up",
+          "seq": 55,
+          "t": 2044,
+          "code": "Space"
+        },
+        {
+          "kind": "down",
+          "seq": 56,
+          "t": 2127,
+          "code": "KeyW"
+        },
+        {
+          "kind": "insert",
+          "seq": 57,
+          "t": 2135,
+          "text": "W"
+        },
+        {
+          "kind": "up",
+          "seq": 58,
+          "t": 2160,
+          "code": "KeyW"
+        },
+        {
+          "kind": "down",
+          "seq": 59,
+          "t": 2187,
+          "code": "KeyU"
+        },
+        {
+          "kind": "insert",
+          "seq": 60,
+          "t": 2195,
+          "text": "u"
+        },
+        {
+          "kind": "up",
+          "seq": 61,
+          "t": 2220,
+          "code": "KeyU"
+        },
+        {
+          "kind": "down",
+          "seq": 62,
+          "t": 2324,
+          "code": "KeyR"
+        },
+        {
+          "kind": "insert",
+          "seq": 63,
+          "t": 2332,
+          "text": "r"
+        },
+        {
+          "kind": "up",
+          "seq": 64,
+          "t": 2357,
+          "code": "KeyR"
+        },
+        {
+          "kind": "down",
+          "seq": 65,
+          "t": 2439,
+          "code": "KeyS"
+        },
+        {
+          "kind": "insert",
+          "seq": 66,
+          "t": 2447,
+          "text": "s"
+        },
+        {
+          "kind": "up",
+          "seq": 67,
+          "t": 2472,
+          "code": "KeyS"
+        },
+        {
+          "kind": "down",
+          "seq": 68,
+          "t": 2578,
+          "code": "KeyT"
+        },
+        {
+          "kind": "insert",
+          "seq": 69,
+          "t": 2586,
+          "text": "t"
+        },
+        {
+          "kind": "up",
+          "seq": 70,
+          "t": 2611,
+          "code": "KeyT"
+        },
+        {
+          "kind": "down",
+          "seq": 71,
+          "t": 2654,
+          "code": "Space"
+        },
+        {
+          "kind": "commit",
+          "seq": 72,
+          "t": 2662
+        },
+        {
+          "kind": "up",
+          "seq": 73,
+          "t": 2687,
+          "code": "Space"
+        },
+        {
+          "kind": "down",
+          "seq": 74,
+          "t": 2788,
+          "code": "KeyS"
+        },
+        {
+          "kind": "insert",
+          "seq": 75,
+          "t": 2796,
+          "text": "S"
+        },
+        {
+          "kind": "up",
+          "seq": 76,
+          "t": 2821,
+          "code": "KeyS"
+        },
+        {
+          "kind": "down",
+          "seq": 77,
+          "t": 2882,
+          "code": "KeyA"
+        },
+        {
+          "kind": "insert",
+          "seq": 78,
+          "t": 2890,
+          "text": "a"
+        },
+        {
+          "kind": "up",
+          "seq": 79,
+          "t": 2915,
+          "code": "KeyA"
+        },
+        {
+          "kind": "down",
+          "seq": 80,
+          "t": 2992,
+          "code": "KeyH"
+        },
+        {
+          "kind": "insert",
+          "seq": 81,
+          "t": 3000,
+          "text": "h"
+        },
+        {
+          "kind": "up",
+          "seq": 82,
+          "t": 3025,
+          "code": "KeyH"
+        },
+        {
+          "kind": "down",
+          "seq": 83,
+          "t": 3057,
+          "code": "KeyN"
+        },
+        {
+          "kind": "insert",
+          "seq": 84,
+          "t": 3065,
+          "text": "n"
+        },
+        {
+          "kind": "up",
+          "seq": 85,
+          "t": 3090,
+          "code": "KeyN"
+        },
+        {
+          "kind": "down",
+          "seq": 86,
+          "t": 3176,
+          "code": "KeyE"
+        },
+        {
+          "kind": "insert",
+          "seq": 87,
+          "t": 3184,
+          "text": "e"
+        },
+        {
+          "kind": "up",
+          "seq": 88,
+          "t": 3209,
+          "code": "KeyE"
+        },
+        {
+          "kind": "down",
+          "seq": 89,
+          "t": 3275,
+          "code": "Space"
+        },
+        {
+          "kind": "commit",
+          "seq": 90,
+          "t": 3283
+        },
+        {
+          "kind": "up",
+          "seq": 91,
+          "t": 3308,
+          "code": "Space"
+        },
+        {
+          "kind": "down",
+          "seq": 92,
+          "t": 3374,
+          "code": "KeyW"
+        },
+        {
+          "kind": "insert",
+          "seq": 93,
+          "t": 3382,
+          "text": "W"
+        },
+        {
+          "kind": "up",
+          "seq": 94,
+          "t": 3407,
+          "code": "KeyW"
+        },
+        {
+          "kind": "down",
+          "seq": 95,
+          "t": 3468,
+          "code": "KeyA"
+        },
+        {
+          "kind": "insert",
+          "seq": 96,
+          "t": 3476,
+          "text": "a"
+        },
+        {
+          "kind": "up",
+          "seq": 97,
+          "t": 3501,
+          "code": "KeyA"
+        },
+        {
+          "kind": "down",
+          "seq": 98,
+          "t": 3605,
+          "code": "KeyS"
+        },
+        {
+          "kind": "insert",
+          "seq": 99,
+          "t": 3613,
+          "text": "s"
+        },
+        {
+          "kind": "up",
+          "seq": 100,
+          "t": 3638,
+          "code": "KeyS"
+        },
+        {
+          "kind": "down",
+          "seq": 101,
+          "t": 3686,
+          "code": "KeyS"
+        },
+        {
+          "kind": "insert",
+          "seq": 102,
+          "t": 3694,
+          "text": "s"
+        },
+        {
+          "kind": "up",
+          "seq": 103,
+          "t": 3719,
+          "code": "KeyS"
+        },
+        {
+          "kind": "down",
+          "seq": 104,
+          "t": 3771,
+          "code": "KeyE"
+        },
+        {
+          "kind": "insert",
+          "seq": 105,
+          "t": 3779,
+          "text": "e"
+        },
+        {
+          "kind": "up",
+          "seq": 106,
+          "t": 3804,
+          "code": "KeyE"
+        },
+        {
+          "kind": "down",
+          "seq": 107,
+          "t": 3872,
+          "code": "KeyR"
+        },
+        {
+          "kind": "insert",
+          "seq": 108,
+          "t": 3880,
+          "text": "r"
+        },
+        {
+          "kind": "up",
+          "seq": 109,
+          "t": 3905,
+          "code": "KeyR"
+        },
+        {
+          "kind": "down",
+          "seq": 110,
+          "t": 3997,
+          "code": "Space"
+        },
+        {
+          "kind": "commit",
+          "seq": 111,
+          "t": 4005
+        },
+        {
+          "kind": "up",
+          "seq": 112,
+          "t": 4030,
+          "code": "Space"
+        },
+        {
+          "kind": "down",
+          "seq": 113,
+          "t": 4135,
+          "code": "KeyT"
+        },
+        {
+          "kind": "insert",
+          "seq": 114,
+          "t": 4143,
+          "text": "T"
+        },
+        {
+          "kind": "up",
+          "seq": 115,
+          "t": 4168,
+          "code": "KeyT"
+        },
+        {
+          "kind": "down",
+          "seq": 116,
+          "t": 4268,
+          "code": "KeyR"
+        },
+        {
+          "kind": "insert",
+          "seq": 117,
+          "t": 4276,
+          "text": "r"
+        },
+        {
+          "kind": "up",
+          "seq": 118,
+          "t": 4301,
+          "code": "KeyR"
+        },
+        {
+          "kind": "down",
+          "seq": 119,
+          "t": 4379,
+          "code": "BracketLeft"
+        },
+        {
+          "kind": "insert",
+          "seq": 120,
+          "t": 4387,
+          "text": "ü"
+        },
+        {
+          "kind": "up",
+          "seq": 121,
+          "t": 4412,
+          "code": "BracketLeft"
+        },
+        {
+          "kind": "down",
+          "seq": 122,
+          "t": 4462,
+          "code": "KeyF"
+        },
+        {
+          "kind": "insert",
+          "seq": 123,
+          "t": 4470,
+          "text": "f"
+        },
+        {
+          "kind": "up",
+          "seq": 124,
+          "t": 4495,
+          "code": "KeyF"
+        },
+        {
+          "kind": "down",
+          "seq": 125,
+          "t": 4572,
+          "code": "KeyF"
+        },
+        {
+          "kind": "insert",
+          "seq": 126,
+          "t": 4580,
+          "text": "f"
+        },
+        {
+          "kind": "up",
+          "seq": 127,
+          "t": 4605,
+          "code": "KeyF"
+        },
+        {
+          "kind": "down",
+          "seq": 128,
+          "t": 4680,
+          "code": "KeyE"
+        },
+        {
+          "kind": "insert",
+          "seq": 129,
+          "t": 4688,
+          "text": "e"
+        },
+        {
+          "kind": "up",
+          "seq": 130,
+          "t": 4713,
+          "code": "KeyE"
+        },
+        {
+          "kind": "down",
+          "seq": 131,
+          "t": 4797,
+          "code": "KeyL"
+        },
+        {
+          "kind": "insert",
+          "seq": 132,
+          "t": 4805,
+          "text": "l"
+        },
+        {
+          "kind": "up",
+          "seq": 133,
+          "t": 4830,
+          "code": "KeyL"
+        },
+        {
+          "kind": "down",
+          "seq": 134,
+          "t": 4932,
+          "code": "Space"
+        },
+        {
+          "kind": "commit",
+          "seq": 135,
+          "t": 4940
+        }
+      ]
+    }
+  }
+}

@@ -442,6 +442,38 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	assert.True(t, sawNospace, "no nospace-with-space-presses vector: the NospaceCommit guard is unpinned")
 	assert.True(t, sawNewlineDict, "no '\\n'-dictionary vector: the separator rule is unpinned")
 	assert.True(t, sawQuote, "no quote vector: the fixed-text path is unpinned")
+
+	// Log v2 telemetry: a vector that carries down/up events, and its stripped
+	// v1 twin with THE SAME numbers — the compatibility proof in vector form.
+	var telemetryV2, strippedTwin *vector
+	for i := range vectors {
+		switch vectors[i].Name {
+		case "words-telemetry-v2":
+			telemetryV2 = &vectors[i]
+		case "words-telemetry-stripped-v1":
+			strippedTwin = &vectors[i]
+		}
+	}
+	require.NotNil(t, telemetryV2, "no log-v2 telemetry vector: the down/up grammar is unpinned")
+	require.NotNil(t, strippedTwin, "no stripped v1 twin: the stripping property is unpinned in vector form")
+	// The vectors are pretty-printed, so the discriminator carries a space.
+	assert.Contains(t, string(telemetryV2.Payload.Log), `"kind": "down"`)
+	assert.Contains(t, string(telemetryV2.Payload.Log), `"kind": "up"`)
+	assert.NotContains(t, string(strippedTwin.Payload.Log), `"kind": "down"`)
+	assert.JSONEq(t, string(strippedTwin.Payload.ClientScore), string(telemetryV2.Payload.ClientScore),
+		"the telemetry vector and its stripped twin disagree on the score — telemetry moved a number")
+	assert.JSONEq(t, string(strippedTwin.Payload.ClientMetrics), string(telemetryV2.Payload.ClientMetrics),
+		"the telemetry vector and its stripped twin disagree on the metrics — telemetry moved a number")
+
+	var sawUnpaired bool
+	for _, v := range vectors {
+		for _, flag := range v.Expect.Flags {
+			if flag == FlagUnpairedKeyup && v.Expect.Status == StatusAccepted {
+				sawUnpaired = true
+			}
+		}
+	}
+	assert.True(t, sawUnpaired, "no unpaired-keyup vector: the telemetry pairing flag is unpinned")
 }
 
 // A vector whose language is not published yet cannot travel the worker path —

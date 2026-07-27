@@ -36,6 +36,7 @@ const core = new Function(`${bundleSrc}\n;return TypeMoreCore;`)()
 
 const {
   EVENT_LOG_VERSION,
+  EVENT_LOG_VERSION_TELEMETRY,
   GameCore,
   commitEvent,
   deleteEvent,
@@ -44,6 +45,8 @@ const {
   generateWords,
   initialScoreState,
   insertEvent,
+  keyDownEvent,
+  keyUpEvent,
   metricsOf,
   modMultiplierV1,
   scoreOfLog,
@@ -120,6 +123,20 @@ const noMods = { blind: false, fading: false, flashlight: false }
  * A typing session that mirrors the game store's dispatch semantics exactly:
  * stamp → dispatch → on reject, hand the seq back so the log stays contiguous.
  */
+/**
+ * The physical key a grapheme is typed on, for log-v2 telemetry vectors. ASCII
+ * letters map to their `KeyX` code; the German non-ASCII graphemes map to the
+ * physical keys that carry them on a German layout (ä = Quote, ö = Semicolon,
+ * ü = BracketLeft, ß = Minus); anything else lands on a stable stand-in. Only
+ * determinism matters here — the server never interprets codes this phase.
+ */
+function codeOf(ch) {
+  if (/^[a-z]$/i.test(ch)) return `Key${ch.toUpperCase()}`
+  if (/^[0-9]$/.test(ch)) return `Digit${ch}`
+  const german = { ä: 'Quote', ö: 'Semicolon', ü: 'BracketLeft', ß: 'Minus' }
+  return german[ch.toLowerCase()] ?? 'IntlBackslash'
+}
+
 function session({
   config,
   generation,
@@ -128,6 +145,7 @@ function session({
   jitterSeed = 7,
   fixedInterval = 0,
   commitAtSameInstant = false,
+  telemetry = false,
   dict = dictionary,
   dictHash = DICT_HASH
 }) {
@@ -168,6 +186,20 @@ function session({
     return false
   }
 
+  // Log v2 telemetry, mirroring the input adapter: `down` is stamped 8 ms
+  // before the keystroke's instant, `up` 25 ms after — both inside the ≥60 ms
+  // inter-keystroke gap, so `t` stays monotonic across the interleave. The
+  // store stops capturing at run finish, so a finished core records nothing.
+  const sendKey = (kind, code, at) => {
+    if (!telemetry || gameCore.state.phase === 'finished') return
+    seq += 1
+    const event = kind === 'down' ? keyDownEvent(seq, at, code) : keyUpEvent(seq, at, code)
+    if (gameCore.dispatch(event).isErr()) {
+      seq -= 1
+      rejected += 1
+    }
+  }
+
   return {
     words,
     core: gameCore,
@@ -179,14 +211,25 @@ function session({
     },
     type(text, dtOverride) {
       step(dtOverride)
-      return send((s, at) => insertEvent(s, at, text))
+      sendKey('down', codeOf(text), t - 8)
+      const ok = send((s, at) => insertEvent(s, at, text))
+      sendKey('up', codeOf(text), t + 25)
+      return ok
     },
     commit() {
       // Under a fixed cadence the commit must share the previous instant, or
       // the gap across a word boundary would be two steps and the interval
       // series would no longer be uniform (mirrors the core suite's typeAll).
       if (!commitAtSameInstant) step()
-      return send((s, at) => commitEvent(s, at))
+      sendKey('down', 'Space', t - 8)
+      const ok = send((s, at) => commitEvent(s, at))
+      sendKey('up', 'Space', t + 25)
+      return ok
+    },
+    /** A bare telemetry event at the current instant (holds, unpaired cases). */
+    key(kind, code, dt = 0) {
+      t += dt
+      sendKey(kind, code, t)
     },
     back(unit = 'char') {
       step()
@@ -201,7 +244,10 @@ function session({
       const modMultiplier = modMultiplierV1({ generation, config }, declaration)
       return {
         words,
-        log: { version: EVENT_LOG_VERSION, events: gameCore.events },
+        log: {
+          version: telemetry ? EVENT_LOG_VERSION_TELEMETRY : EVENT_LOG_VERSION,
+          events: gameCore.events
+        },
         metrics,
         scoreV2: finalizeScoreV2(scoreState.base, scoreState.comboPeak, metrics, config.mode, modMultiplier),
         scoreV1: scoreOfLog(gameCore.events, ctx)
@@ -641,6 +687,88 @@ function emit(name, description, expect, payload, extra = {}) {
       quote: { id: QUOTE_ID, hash: QUOTE_HASH, text: QUOTE_TEXT },
       spaces: finished.metrics.spaces
     }
+  )
+}
+
+// ── 11 + 12. log v2 telemetry, and its stripped v1 twin ──────────────────────
+// The compatibility proof in vector form. Two sessions run the SAME strokes at
+// the SAME instants (same seed, same jitter stream — telemetry consumes no
+// jitter): one captures down/up around every keystroke (log v2, a Shift hold
+// bracketing the first word for an overlap), the other is the v1 capture a
+// pre-telemetry client would have produced. Their metrics and score must be
+// EQUAL — telemetry is invisible to every number — and the Go harness then
+// proves goja agrees with both, bit for bit.
+{
+  const config = coreConfig()
+  const generation = generationConfig({ length: 8 })
+  const seed = 20260727
+  const declaration = noMods
+
+  const runStrokes = (s) => {
+    s.key('down', 'ShiftLeft') // held across the first word — the overlap shape
+    for (let i = 0; i < generation.length; i++) {
+      typeWord(s, s.words[i])
+      // +30 ms: past the previous keystroke's own `up` (+25), before the next
+      // stroke's `down` (the commit steps ≥60 further) — `t` stays monotonic.
+      if (i === 0) s.key('up', 'ShiftLeft', 30)
+      s.commit()
+    }
+    return s.finish()
+  }
+
+  const v2 = runStrokes(session({ config, generation, declaration, seed, jitterSeed: 37, telemetry: true }))
+  const v1 = runStrokes(session({ config, generation, declaration, seed, jitterSeed: 37 }))
+
+  const numbersOf = (f) => JSON.stringify({ m: f.metrics, s: f.scoreV2 })
+  if (numbersOf(v2) !== numbersOf(v1)) {
+    throw new Error('vectors 11/12: telemetry moved the numbers — the stripping property is broken')
+  }
+  const telemetryEvents = v2.log.events.filter((e) => e.kind === 'down' || e.kind === 'up').length
+  if (telemetryEvents === 0) throw new Error('vector 11 captured no telemetry')
+  if (v1.log.events.some((e) => e.kind === 'down' || e.kind === 'up')) {
+    throw new Error('vector 12 is supposed to be telemetry-free')
+  }
+
+  emit(
+    'words-telemetry-v2',
+    'Log v2: every keystroke bracketed by down/up telemetry (physical KeyboardEvent.code), plus a Shift ' +
+      'hold overlapping the first word. State no-ops by contract — the score and metrics below are ' +
+      'IDENTICAL to words-telemetry-stripped-v1, the same strokes captured by a v1 client.',
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({ config, generation, declaration, seed, finished: v2, scoreVersion: 2 }),
+    { telemetryEvents, pairOf: 'words-telemetry-stripped-v1' }
+  )
+  emit(
+    'words-telemetry-stripped-v1',
+    'The v1 twin of words-telemetry-v2: the same strokes at the same instants, captured without telemetry. ' +
+      'Its numbers must equal the v2 vector’s — the stripping property in vector form.',
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({ config, generation, declaration, seed, finished: v1, scoreVersion: 2 }),
+    { pairOf: 'words-telemetry-v2' }
+  )
+}
+
+// ── 13. an unpaired key release: flagged for the record, never suspicious ────
+// A key held across the log start releases into the log with no preceding
+// down. The core raises `unpaired-keyup` — structural bookkeeping with a 0.00
+// weight — and the run must come out ACCEPTED with the flag recorded.
+{
+  const config = coreConfig()
+  const generation = generationConfig({ length: 6 })
+  const seed = 20260728
+  const s = session({ config, generation, declaration: noMods, seed, jitterSeed: 41, telemetry: true })
+  s.key('up', 'ShiftRight') // released 0 ms in: it was down before the log began
+  for (let i = 0; i < generation.length; i++) {
+    typeWord(s, s.words[i])
+    s.commit()
+  }
+  const finished = s.finish()
+  emit(
+    'words-telemetry-unpaired-keyup',
+    'Log v2 whose first event is a key RELEASE — the key was held before the log started. Raises ' +
+      'unpaired-keyup (weight 0.00: bookkeeping, not suspicion) and must be accepted with the flag kept.',
+    { status: 'accepted', verdict: 'valid', flags: ['unpaired-keyup'] },
+    payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 })
   )
 }
 
