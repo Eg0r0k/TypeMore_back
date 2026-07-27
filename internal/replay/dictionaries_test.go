@@ -147,10 +147,17 @@ func TestCatalogueNamesAreDisplayNamesNotKeys(t *testing.T) {
 // front of a user. Vendoring a dictionary and forgetting to name it has to be
 // impossible to miss, so it is an error and not a default.
 func TestADictionaryWithNoDisplayNameIsAStartupError(t *testing.T) {
-	name, err := displayName("code_rust") // vendored in this test's imagination only
+	// The sentinel has to be a key nothing will ever vendor. It used to be
+	// `code_rust`, which was imaginary right up until the mass import made it
+	// real — at which point this test asserted that a shipped dictionary has no
+	// name, and failed for the opposite of its own reason.
+	const neverVendored = "zzz_not_a_language"
+	require.NotContains(t, displayNames, neverVendored, "the sentinel became a real dictionary")
+
+	name, err := displayName(neverVendored)
 	require.Error(t, err)
 	assert.Empty(t, name, "a failed lookup must not hand back something renderable")
-	assert.Contains(t, err.Error(), "code_rust")
+	assert.Contains(t, err.Error(), neverVendored)
 	assert.Contains(t, err.Error(), "displayNames")
 
 	// Every embedded dictionary does have one — that is the invariant the error
