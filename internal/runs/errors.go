@@ -37,6 +37,16 @@ var (
 		"run payload exceeds the 6.5 MiB limit")
 	apiErrNotFound = newAPIError(http.StatusNotFound, "not_found",
 		"run not found")
+	// apiErrRestricted is what a banned account gets when it submits a run.
+	//
+	// 403 and an honest message, not a silent 202 that drops the run: a
+	// shadow-ban that pretends to accept is a player typing into a void and
+	// wondering why their board rank never moves. The message says the run was
+	// not counted and says nothing about WHY the account is restricted — the
+	// reason is an internal moderation note and never leaves the database
+	// (docs/MODERATION.md).
+	apiErrRestricted = newAPIError(http.StatusForbidden, "account_restricted",
+		"this account is restricted; the run was not counted")
 	apiErrInternal = newAPIError(http.StatusInternalServerError, "internal",
 		"an unexpected error occurred")
 )

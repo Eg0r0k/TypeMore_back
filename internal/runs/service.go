@@ -36,7 +36,25 @@ type Service struct {
 	limiter       RateLimiter
 	replayLimiter RateLimiter
 	userID        UserIDFunc
-	log           *slog.Logger
+	// restrictions gates run submission. Nil means nothing is wired and no
+	// account is restricted — the correct behaviour for a deployment with no
+	// moderation store, and for every test that is not about bans.
+	restrictions Restrictions
+	log          *slog.Logger
+}
+
+// Restrictions answers whether an account is under an active ban. Declared here
+// at the consumer, and deliberately one boolean wide: the gate needs to know
+// whether to refuse, and it must not be able to reach a reason it could leak
+// into the 403.
+type Restrictions interface {
+	IsRestricted(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+// WithRestrictions wires the moderation lookup in front of run submission.
+func (s *Service) WithRestrictions(r Restrictions) *Service {
+	s.restrictions = r
+	return s
 }
 
 // NewService wires the runs service.

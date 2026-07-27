@@ -79,6 +79,26 @@ func (s *Service) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A restricted account's run is refused BEFORE the body is read: there is
+	// nothing to store, so there is no reason to spend a 6.5 MiB read on it.
+	//
+	// Refused, not silently dropped. The standing decision is an honest "not
+	// counted" rather than a shadow ban — a player typing into a void and
+	// wondering why their rank never moves is a worse outcome than one who
+	// knows, and it is also the version that can be appealed.
+	if s.restrictions != nil {
+		restricted, err := s.restrictions.IsRestricted(r.Context(), userID)
+		if err != nil {
+			s.log.Error("resolve account restriction", "err", err, "userId", userID)
+			s.writeError(w, r, apiErrInternal)
+			return
+		}
+		if restricted {
+			s.writeError(w, r, apiErrRestricted)
+			return
+		}
+	}
+
 	// Cap the raw body. MaxBytesReader makes an oversized read fail with a
 	// *http.MaxBytesError, which we translate to 413.
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)

@@ -124,6 +124,10 @@ type Service struct {
 	captcha CaptchaVerifier
 	cfg     Config
 	log     *slog.Logger
+	// restrictions answers "is this account banned right now", for the /me
+	// flag only. Nil means nothing is wired and nobody is restricted, which is
+	// what every test that does not care about moderation gets.
+	restrictions Restrictions
 	// now is time.Now in production; tests may override it.
 	now func() time.Time
 	// oauth holds the per-provider OAuth configuration built from cfg.Providers.
@@ -274,8 +278,32 @@ type userView struct {
 	ID          uuid.UUID `json:"id"`
 	DisplayName string    `json:"displayName"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// Restricted is true while the account is under an active ban.
+	//
+	// It is a bare boolean and it stays one. No reason, no expiry, no issuer:
+	// the banner a restricted player sees is deliberately opaque, and a field
+	// that is not in this struct is a field no handler can leak
+	// (docs/MODERATION.md). Absent from the flow responses because a flow
+	// returns the account that was just created or logged into, and neither is
+	// a moment where a restriction is the news.
+	Restricted bool `json:"restricted"`
 }
 
 func toUserView(u User) userView {
-	return userView(u)
+	return userView{ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt}
+}
+
+// Restrictions answers whether an account is under an active ban. Declared here
+// at the consumer: auth needs one boolean and must not be able to reach a
+// reason or an expiry, because neither is ever shown to the player.
+type Restrictions interface {
+	IsRestricted(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+// WithRestrictions wires the moderation lookup behind GET /me. Without it the
+// flag is always false, which is the correct behaviour for a deployment that
+// has no moderation store and for every test that is not about bans.
+func (s *Service) WithRestrictions(r Restrictions) *Service {
+	s.restrictions = r
+	return s
 }

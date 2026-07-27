@@ -30,6 +30,15 @@ func TestMeJSONContract(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	assert.Equal(t, []string{"createdAt", "displayName", "id"}, keys,
-		"GET /me must expose exactly {id, displayName, createdAt} in lower-camelCase")
+	assert.Equal(t, []string{"createdAt", "displayName", "id", "restricted"}, keys,
+		"GET /me must expose exactly {id, displayName, createdAt, restricted} in lower-camelCase")
+
+	// `restricted` is a bare boolean and this test is where it stays one. The
+	// banner it drives is deliberately opaque, so a reason, an expiry or an
+	// issuer appearing beside it is a leak of an internal moderation note —
+	// and the exact-key assertion above is what catches one arriving
+	// (docs/MODERATION.md).
+	var restricted bool
+	require.NoError(t, json.Unmarshal(fields["restricted"], &restricted))
+	assert.False(t, restricted, "an unbanned account must not be flagged")
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/typemore/typemore-server/internal/auth/pgstore"
 	"github.com/typemore/typemore-server/internal/leaderboard"
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
+	"github.com/typemore/typemore-server/internal/moderation"
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/mail"
@@ -92,9 +93,16 @@ func run() error {
 	authStore := pgstore.New(pool)
 	captcha := newCaptchaVerifier(cfg)
 	logger.Info("captcha", "enabled", captcha != nil)
+	// Moderation. One store, read by two places that must agree about what
+	// "banned right now" means: the /me flag that renders the banner, and the
+	// gate in front of run submission. Both go through the same active_bans
+	// view every board and replay read already filters on, so an unban or an
+	// expiry lifts everywhere at once (docs/MODERATION.md).
+	moderationStore := moderation.New(pool)
+
 	authSvc := auth.NewService(authStore, authStore, newMailer(cfg, logger),
 		auth.NewInMemoryRateLimiter(cfg.AuthRateEvery, cfg.AuthRateBurst),
-		captcha, authCfg, logger)
+		captcha, authCfg, logger).WithRestrictions(moderationStore)
 
 	// Expiry janitor: periodically deletes expired sessions and stale email
 	// tokens. Tied to ctx, so the shutdown signal stops it with the server.
@@ -114,7 +122,7 @@ func run() error {
 		func(ctx context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(ctx)
 			return u.ID, ok
-		}, logger)
+		}, logger).WithRestrictions(moderationStore)
 
 	// Leaderboards: a public read model projected from accepted runs
 	// (docs/LEADERBOARDS.md). The same store is both the read side the HTTP

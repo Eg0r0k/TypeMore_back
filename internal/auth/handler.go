@@ -62,7 +62,20 @@ func (s *Service) HandleMe(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, apiErrUnauthorized)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, toUserView(user))
+	view := toUserView(user)
+	if s.restrictions != nil {
+		restricted, err := s.restrictions.IsRestricted(r.Context(), user.ID)
+		if err != nil {
+			// Reported, not fatal. The flag drives an informational banner; the
+			// ENFORCEMENT of a ban is in SQL, on the run-submission gate and on
+			// every board and replay read, and none of it consults this call.
+			// Failing /me because the banner could not be resolved would take
+			// the whole session endpoint down for a cosmetic field.
+			s.log.Error("resolve account restriction", "err", err, "userId", user.ID)
+		}
+		view.Restricted = restricted
+	}
+	s.writeJSON(w, http.StatusOK, view)
 }
 
 // handleLogout ends the current session.

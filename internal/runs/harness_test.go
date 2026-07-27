@@ -29,6 +29,7 @@ import (
 	authpg "github.com/typemore/typemore-server/internal/auth/pgstore"
 	"github.com/typemore/typemore-server/internal/leaderboard"
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
+	"github.com/typemore/typemore-server/internal/moderation"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/migrate"
 	"github.com/typemore/typemore-server/internal/runs"
@@ -132,6 +133,11 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mailer := &recorderMailer{}
 
+	// Moderation is wired exactly as cmd/server does it: one store behind both
+	// the run-submission gate and the /me flag, so this suite exercises the
+	// same 403 a banned player actually gets.
+	moderationStore := moderation.New(pool)
+
 	authStore := authpg.New(pool)
 	authSvc := auth.NewService(authStore, authStore, mailer,
 		// Effectively unlimited per-IP auth limiter so the test's own
@@ -144,6 +150,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 			CookieSecure:   false,
 			SessionTTL:     time.Hour,
 		}, logger)
+	authSvc = authSvc.WithRestrictions(moderationStore)
 
 	runsStore := runspg.New(pool)
 	runsSvc := runs.NewService(runsStore,
@@ -153,7 +160,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 			u, ok := auth.UserFrom(c)
 			return u.ID, ok
 		},
-		logger)
+		logger).WithRestrictions(moderationStore)
 
 	// The leaderboard is wired exactly as cmd/server does it — one store that is
 	// both the public read model and the projector the replay worker calls
