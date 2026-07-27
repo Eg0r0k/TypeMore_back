@@ -872,9 +872,9 @@ func TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2(t *testing.T) {
 			// Body bytes, modeled the way the v1 table was: the log dominates the
 			// payload. A state event marshals at ~50 B (insert+seq+t+text), a
 			// telemetry event at ~55 B (kind+seq+t+code, codes up to "ShiftLeft").
-			bytes := 50*v1 + 55*(2*v1+2*shifted)
+			logBytes := 50*v1 + 55*(2*v1+2*shifted)
 			if v2 > worstEvents {
-				worstEvents, worstBytes, worstLang = v2, bytes, entry.Lang
+				worstEvents, worstBytes, worstLang = v2, logBytes, entry.Lang
 			}
 			assert.LessOrEqualf(t, v2, perf.MaxEventsV2,
 				"a full %d-word %s v2 run (punctuation=%v, %d graphemes, %d shifted) is %d events, over the %d cap",
