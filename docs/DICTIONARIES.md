@@ -17,16 +17,56 @@ Two reasons the server owns them:
 
 Files: `internal/replay/dicts/*.json`, compiled into the binary with `go:embed`.
 
+## The corpus
+
+| | |
+|---|---|
+| Dictionaries | **430** |
+| Embedded bytes | **57.15 MB** (budget 60 MB) |
+| Distinct base languages | 220 |
+| Size variants (`_1k` … `_250k`) | 214 |
+| `code_*` dictionaries | 63 |
+| Right-to-left | 22 |
+| Catalogue payload | 43.3 kB raw, 9.7 kB gzipped |
+| Startup seeding | ~6.4 s (budget 10 s) |
+
+**`internal/replay/dicts/IMPORT_MANIFEST.md` is the authority**, one row per
+upstream file: its canonical key, display name, byte size, word count, and
+whether it was imported or skipped with the reason. The per-language rows are
+deliberately not reprinted here — at 430 languages a table in prose is a second
+copy to keep in step, and the manifest is the one the import was actually run
+from.
+
+Four budgets are asserted rather than assumed, in `corpus_test.go`: total
+embedded bytes, `NewRegistry` wall time, one short generated run per language
+folded through the goja bundle, and `displayNames` holding in both directions.
+
 **Provenance.** The word lists are vendored from
 [monkeytype](https://github.com/monkeytypegame/monkeytype)'s
-`frontend/static/languages`, normalised to the shape above: LF endings (enforced
-by `.gitattributes`, because the body is served byte-for-byte and its `bytes` is
+`frontend/static/languages`, normalised: LF endings (enforced by
+`.gitattributes`, because the body is served byte-for-byte and its `bytes` is
 published in the catalogue), and upstream-only metadata dropped — `english`
 arrived carrying `noLazyMode` and `orderedByFrequency`, which mean nothing here
-and would have been served to every client forever. Only `name`, `words` and,
-where upstream supplies one, `bcp47` are kept. Nothing is invented: a language
-with no upstream `bcp47` does not get one, which is why its runs and board
-buckets are keyed by the language code (`german`, `code_css`) rather than a tag.
+and would have been served to every client forever. Four fields are kept:
+`name`, `words`, `bcp47` where upstream supplies one, and `rightToleft` for the
+22 RTL corpora. Nothing is invented: a language with no upstream `bcp47` does
+not get one, which is why its runs and board buckets are keyed by the language
+code (`german`, `code_css`) rather than a tag.
+
+The RTL flag is the one field whose *spelling* is normalised. Upstream now
+writes `rightToLeft`; the corpus and the frontend's `DictionaryBodySchema` both
+write `rightToleft`, and serving two names for one flag would have silently
+dropped text direction on every newly imported RTL language.
+
+**A dictionary must be able to play the documented game.** `MaxWordCount` is
+10 000 words and the ingestion event cap is 120 000 (`docs/RUNS.md`), and
+whether a full-length run fits under that cap is a property of the dictionary —
+one insert per grapheme plus one commit per word, so a corpus of long tokens
+costs more events for the same word count. Ten upstream files are over it
+(`english_legal` needs 360 619 events) and were **not** imported.
+`TestEveryPublishedDictionaryCanPlayAFullLengthRun` is what enforces that, and
+the answer when it fails is to leave the dictionary out, never to raise the
+cap.
 
 Adding one is a **vendored file plus a binary rebuild** — see "Adding a
 language" below. There is no runtime loading path and deliberately so: a
@@ -203,6 +243,15 @@ picker can only render as a raw key.
 
 5. Add the new `lang → dictHash` pair to `publishedHashes` in
    `internal/replay/dictionaries_test.go`. That map is what freezes it (below).
+
+6. Run the package's tests. Three gates apply to the new file without being
+   asked for: `TestEveryLanguageGeneratesAPlayableRun` folds one short run on it
+   through the bundle (non-empty targets, a valid verdict, finite metrics, a
+   `dictVersion` that round-trips), `TestEveryPublishedDictionaryCanPlayAFullLengthRun`
+   checks a 10 000-word run still fits the ingestion caps, and
+   `TestEmbeddedCorpusFitsTheBudget` checks the corpus still fits in 60 MB. A
+   malformed word list is meant to fail here rather than on the first player who
+   picks the language.
 
 Removing a language is the same breaking change as editing one — see below.
 
