@@ -6,15 +6,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/runstatus"
 )
 
-// Run status values, mirroring the runs.status CHECK constraint. This phase only
-// ever writes StatusPending; the replay worker owns every other transition.
+// Run status values, re-exported from the shared vocabulary (internal/runstatus,
+// mirroring the runs.status CHECK constraint). This phase only ever writes
+// StatusPending; the replay worker owns every other transition.
 const (
-	StatusPending  = "pending"
-	StatusAccepted = "accepted"
-	StatusFlagged  = "flagged"
-	StatusRejected = "rejected"
+	StatusPending  = runstatus.Pending
+	StatusAccepted = runstatus.Accepted
+	StatusFlagged  = runstatus.Flagged
+	StatusRejected = runstatus.Rejected
 )
 
 // CreateRunParams is the fully-validated input to Store.CreateRun. Log is the
@@ -40,7 +43,7 @@ type CreateRunParams struct {
 // status (always StatusPending this phase), and the creation time.
 type Run struct {
 	ID        uuid.UUID
-	Status    string
+	Status    runstatus.Status
 	CreatedAt time.Time
 }
 
@@ -62,7 +65,7 @@ type Summary struct {
 	ClientMetrics json.RawMessage
 	ClientScore   json.RawMessage
 	ScoreVersion  int16
-	Status        string
+	Status        runstatus.Status
 	ServerMetrics json.RawMessage
 	ServerScore   json.RawMessage
 	Validation    json.RawMessage

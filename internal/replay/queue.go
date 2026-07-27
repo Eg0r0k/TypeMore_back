@@ -6,15 +6,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/runstatus"
 )
 
-// Run status values, mirroring the runs.status CHECK constraint. The replay
-// worker owns every transition out of 'pending'.
+// Run status values, re-exported from the shared vocabulary (internal/runstatus,
+// mirroring the runs.status CHECK constraint). The replay worker owns every
+// transition out of 'pending'.
 const (
-	StatusPending  = "pending"
-	StatusAccepted = "accepted"
-	StatusFlagged  = "flagged"
-	StatusRejected = "rejected"
+	StatusPending  = runstatus.Pending
+	StatusAccepted = runstatus.Accepted
+	StatusFlagged  = runstatus.Flagged
+	StatusRejected = runstatus.Rejected
 )
 
 // PendingRun is one claimed run, exactly as the worker needs it. The jsonb
@@ -37,7 +40,7 @@ type PendingRun struct {
 // Decision is the worker's verdict for one run: the new status plus everything
 // the audit trail needs. Written in the same transaction the run was claimed in.
 type Decision struct {
-	Status string
+	Status runstatus.Status
 	// ServerMetrics / ServerScore are the core's own JSON, never re-encoded by
 	// Go. Nil when the run could not be replayed or its log was invalid.
 	ServerMetrics json.RawMessage
@@ -83,7 +86,7 @@ type Queue interface {
 // report the delta without writing anything.
 type CalibrationRun struct {
 	PendingRun
-	Status        string
+	Status        runstatus.Status
 	PolicyVersion *int16
 	CreatedAt     time.Time
 }
