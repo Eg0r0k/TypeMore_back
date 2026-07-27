@@ -12,10 +12,6 @@ import (
 // reject obviously-malformed or abusive payloads before they reach storage, NOT
 // to judge whether a run is plausible (that is the replay worker's job).
 const (
-	// supportedLogVersion is the only EventLog wire version this server accepts
-	// (frontend core: EVENT_LOG_VERSION). Bumped in lockstep with the client.
-	supportedLogVersion = 1
-
 	// Event-count bounds: a real run has at least one event, and 120k is above
 	// the largest run the documented game permits on ANY published dictionary
 	// — a full MaxWordCount (10 000) code_css run with punctuation measures
@@ -47,6 +43,27 @@ const (
 // check (below) and docs/RUNS.md: v1 is the original formula, v2 is the current
 // client's scoreV2. Anything outside this set is rejected as unsupported.
 var KnownScoreVersions = []int16{1, 2}
+
+// KnownLogVersions enumerates the EventLog wire versions this server accepts
+// (frontend core: EVENT_LOG_VERSION / EVENT_LOG_VERSION_TELEMETRY) — the same
+// single-source pattern as KnownScoreVersions, mirrored in docs/RUNS.md. v1 is
+// the state-event grammar and is accepted forever; v2 additionally carries the
+// optional down/up keystroke telemetry. The version is decided per run by the
+// client's capability detection, so both stay live indefinitely.
+var KnownLogVersions = []int16{1, 2}
+
+// logVersionTelemetry is the version whose grammar admits down/up events.
+const logVersionTelemetry = 2
+
+// isKnownLogVersion reports whether v is an accepted EventLog wire version.
+func isKnownLogVersion(v int) bool {
+	for _, known := range KnownLogVersions {
+		if int(known) == v {
+			return true
+		}
+	}
+	return false
+}
 
 // isKnownScoreVersion reports whether v is an accepted score-formula version.
 func isKnownScoreVersion(v int) bool {
@@ -125,13 +142,17 @@ type setupEnvelope struct {
 	} `json:"generation"`
 }
 
-// logEnvelope is the minimum of the EventLog we parse: the version and each
-// event's sequence number. Everything else stays opaque — the log is stored and
-// replayed verbatim later, so the server does not model its full shape.
+// logEnvelope is the minimum of the EventLog we parse: the version, each
+// event's sequence number, and — because log v2's telemetry has a version-gated
+// grammar — the kind and the telemetry key code. Everything else stays opaque:
+// the log is stored and replayed verbatim later, so the server does not model
+// its full shape, and an unknown kind stays the worker's business.
 type logEnvelope struct {
 	Version *int `json:"version"`
 	Events  []struct {
-		Seq *int64 `json:"seq"`
+		Seq  *int64 `json:"seq"`
+		Kind string `json:"kind"`
+		Code string `json:"code"`
 	} `json:"events"`
 }
 
@@ -329,18 +350,21 @@ func validateDimensions(req *ingestRequest, textSource string) *apiError {
 }
 
 // validateLog checks the EventLog envelope structurally: version, event count,
-// and strictly-increasing non-negative seq (a cheap linear scan). It does NOT
-// enforce contiguity, monotonic time, or any reduce-level rule — those are the
-// replay worker's deep validation (the frontend core's validate.ts).
+// strictly-increasing non-negative seq (a cheap linear scan), and the
+// version-gated telemetry grammar — a v1 log must carry no down/up events, and
+// a v2 telemetry event's code must look like a KeyboardEvent.code. It does NOT
+// enforce contiguity, monotonic time, pairing, or any reduce-level rule — those
+// are the replay worker's deep validation (the frontend core's validate.ts;
+// pairing in particular is a scored FLAG there, never a rejection).
 func validateLog(raw json.RawMessage) *apiError {
 	var env logEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return apiErrUnprocessable(codeMalformedLog,
 			"log is not a valid EventLog envelope")
 	}
-	if env.Version == nil || *env.Version != supportedLogVersion {
+	if env.Version == nil || !isKnownLogVersion(*env.Version) {
 		return apiErrUnprocessable(codeUnsupportedLogVersion,
-			"unsupported log version; this server accepts version 1")
+			fmt.Sprintf("unsupported log version; accepted versions are %v", KnownLogVersions))
 	}
 	n := len(env.Events)
 	if n < minEvents {
@@ -352,18 +376,45 @@ func validateLog(raw json.RawMessage) *apiError {
 	}
 	// Strictly increasing, non-negative seq. prev starts below zero so the first
 	// event must be >= 0; each subsequent event must exceed its predecessor.
+	telemetryAllowed := *env.Version == logVersionTelemetry
 	prev := int64(-1)
 	for i := range env.Events {
-		seq := env.Events[i].Seq
-		if seq == nil {
+		event := &env.Events[i]
+		if event.Seq == nil {
 			return apiErrUnprocessable(codeNonMonotonicSeq,
 				"an event is missing its seq")
 		}
-		if *seq <= prev {
+		if *event.Seq <= prev {
 			return apiErrUnprocessable(codeNonMonotonicSeq,
 				"event seq is not strictly increasing from a non-negative start")
 		}
-		prev = *seq
+		prev = *event.Seq
+		if event.Kind == "down" || event.Kind == "up" {
+			if !telemetryAllowed {
+				return apiErrUnprocessable(codeMalformedLog,
+					"telemetry events (down/up) require log version 2")
+			}
+			if !isKeyCode(event.Code) {
+				return apiErrUnprocessable(codeMalformedLog,
+					"a telemetry event's code must be 1-32 characters of the KeyboardEvent.code charset")
+			}
+		}
 	}
 	return nil
+}
+
+// isKeyCode reports whether s is shaped like a KeyboardEvent.code: 1-32 ASCII
+// alphanumerics ("KeyF", "ShiftLeft", "Numpad0"). Mirrors the core's parse.ts.
+func isKeyCode(s string) bool {
+	if len(s) < 1 || len(s) > 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }

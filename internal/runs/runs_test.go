@@ -131,10 +131,47 @@ func TestIngestBadLogVersion(t *testing.T) {
 	h.login("badver@example.com", "password-123", "BadVer")
 
 	body := validRun()
-	body["log"] = json.RawMessage(`{"version":2,"events":[{"seq":1}]}`)
+	// 2 became legal with the telemetry log (KnownLogVersions {1, 2}); 3 is the
+	// unsupported specimen now.
+	body["log"] = json.RawMessage(`{"version":3,"events":[{"seq":1}]}`)
 	resp := h.post("/api/v1/runs", body)
 	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 	assert.Equal(t, "unsupported_log_version", decodeInto[errResp](t, resp).Error)
+}
+
+// TestIngestLogVersions pins the version-gated telemetry grammar: a v2 log with
+// well-formed down/up events is accepted; a v1 log carrying telemetry, or a v2
+// telemetry event with a junk code, is structurally malformed.
+func TestIngestLogVersions(t *testing.T) {
+	h := newHarness(t)
+	h.login("logver@example.com", "password-123", "LogVer")
+
+	post := func(log string) *http.Response {
+		body := validRun()
+		body["log"] = json.RawMessage(log)
+		return h.post("/api/v1/runs", body)
+	}
+
+	// A v2 run: telemetry brackets the keystroke, seq stays strictly increasing.
+	resp := post(`{"version":2,"events":[
+		{"kind":"down","seq":1,"t":0,"code":"KeyA"},
+		{"kind":"insert","seq":2,"t":8,"text":"a"},
+		{"kind":"up","seq":3,"t":40,"code":"KeyA"}]}`)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	// The same events mislabeled v1: telemetry requires version 2.
+	resp = post(`{"version":1,"events":[
+		{"kind":"down","seq":1,"t":0,"code":"KeyA"},
+		{"kind":"insert","seq":2,"t":8,"text":"a"}]}`)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "malformed_log", decodeInto[errResp](t, resp).Error)
+
+	// A v2 telemetry event whose code is not a KeyboardEvent.code shape.
+	resp = post(`{"version":2,"events":[
+		{"kind":"down","seq":1,"t":0,"code":"Key F!"},
+		{"kind":"insert","seq":2,"t":8,"text":"a"}]}`)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "malformed_log", decodeInto[errResp](t, resp).Error)
 }
 
 func TestIngestNonMonotonicSeq(t *testing.T) {
