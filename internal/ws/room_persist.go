@@ -10,6 +10,11 @@ import (
 	"github.com/typemore/typemore-server/internal/protocol"
 )
 
+// persistTimeout bounds one match-capture write (marshal + gzip + the store
+// call). It is not an Option like the match timings because no test drives it:
+// it exists so a hung database cannot pin the persist goroutine forever.
+const persistTimeout = 15 * time.Second
+
 // snapshotLocked copies everything persistence needs so the gzip/marshal work
 // (and the store call) can happen off the room lock. The captured batch slices
 // are immutable once appended, so sharing their backing arrays is safe.
@@ -70,7 +75,7 @@ type matchSnapshot struct {
 // It runs off the room lock; a failure is logged (the capture is best-effort in
 // v0, and the room has already returned to the lobby).
 func (r *Room) persist(snap matchSnapshot) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 	defer cancel()
 
 	settingsJSON, err := json.Marshal(snap.settings)
