@@ -72,6 +72,22 @@ type LeaderboardEntry struct {
 	Mods        json.RawMessage
 	AchievedAt  time.Time
 	QuoteSource *string
+	SortKey     *int64
+}
+
+type LeaderboardRanked struct {
+	BucketKey   string
+	UserID      uuid.UUID
+	RunID       uuid.UUID
+	Score       int64
+	Wpm         float64
+	Raw         float64
+	Acc         float64
+	Grade       string
+	Mods        json.RawMessage
+	AchievedAt  time.Time
+	QuoteSource *string
+	SortKey     *int64
 }
 
 type LeaderboardRow struct {
@@ -87,6 +103,7 @@ type LeaderboardRow struct {
 	Mods        json.RawMessage
 	AchievedAt  time.Time
 	QuoteSource *string
+	SortKey     *int64
 }
 
 type Match struct {

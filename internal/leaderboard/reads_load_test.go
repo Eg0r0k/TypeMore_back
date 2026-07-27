@@ -256,37 +256,44 @@ func TestLoadBoardBannedLeader(t *testing.T) {
 // paraphrasing the query would assert the plan of something the server never
 // runs.
 
-const sqlPageFirst = `SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+const sqlPageFirst = `-- name: ListLeaderboardPageFirst :many
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
        achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = $1
-ORDER BY score DESC, achieved_at ASC, user_id ASC
+ORDER BY sort_key DESC, achieved_at ASC, user_id ASC
 LIMIT $2`
 
-const sqlPageAfter = `SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+const sqlPageAfter = `-- name: ListLeaderboardPageAfter :many
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
        achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = $1
-  AND (score < $2
-       OR (score = $2 AND achieved_at > $3)
-       OR (score = $2 AND achieved_at = $3 AND user_id > $4))
-ORDER BY score DESC, achieved_at ASC, user_id ASC
+  AND sort_key <= leaderboard_sort_key($2, $3)
+  AND (sort_key < leaderboard_sort_key($2, $3)
+       OR achieved_at > $3::timestamptz
+       OR (achieved_at = $3::timestamptz AND user_id > $4::uuid))
+ORDER BY sort_key DESC, achieved_at ASC, user_id ASC
 LIMIT $5`
 
-const sqlRankAbove = `SELECT count(*)::bigint
-FROM leaderboard_rows
+const sqlRankAbove = `-- name: CountLeaderboardAbove :one
+SELECT count(*)::bigint
+FROM leaderboard_ranked
 WHERE bucket_key = $1
-  AND (score > $2
-       OR (score = $2 AND achieved_at < $3)
-       OR (score = $2 AND achieved_at = $3 AND user_id < $4))`
+  AND sort_key >= leaderboard_sort_key($2, $3)
+  AND (sort_key > leaderboard_sort_key($2, $3)
+       OR achieved_at < $3::timestamptz
+       OR (achieved_at = $3::timestamptz AND user_id < $4::uuid))`
 
-const sqlEntryFor = `SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+const sqlEntryFor = `-- name: GetLeaderboardEntry :one
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
        achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = $1 AND user_id = $2`
 
-const sqlCatalogue = `SELECT bucket_key, count(*)::bigint AS entries
-FROM leaderboard_rows
+const sqlCatalogue = `-- name: ListLeaderboardBuckets :many
+SELECT bucket_key, count(*)::bigint AS entries
+FROM leaderboard_ranked
 GROUP BY bucket_key
 ORDER BY bucket_key`
 

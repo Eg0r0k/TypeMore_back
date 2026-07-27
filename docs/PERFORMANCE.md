@@ -43,9 +43,9 @@ else — anything beyond this list is a new regression:
 | ~~`TestLoadReplayMaxRun`~~ | zone 2 — **FIXED**: 1 m 13.5 s → 3.40 s on the same fixture. Still reports one miss, against the *2× median* line, because the caps were then raised to 120 000 events; the worst legal run is 7.18 s against a 45 s timeout, 5.6× |
 | ~~`TestLoadReplayMaxRunUnderProductionTimeout`~~ | zone 2 — **FIXED**: a legal run is judged, not `replay_timeout`. It now surfaces `score_mismatch` from the fixture's placeholder `clientScore`, which the old timeout hid |
 | `TestLoadReplayRealisticRun` | zone 2 — **still red, improved**: p99 170.5 ms → **76 ms** against a 50 ms budget, 1.5× over (was 3.4×). A realistic 483-event run never had much quadratic term to lose; the remaining gap is linear cost, so this one needs its own look rather than another core fix |
-| `TestLoadBoardPage` | zone 3: deep page 65 ms / 18× page 1 |
-| `TestLoadBoardRank` | zone 3: `/me` 176 ms p99 at rank 99 786 |
-| `TestLoadPlanBoardRankAbove` | zone 3: at depth the count seq-scans `leaderboard_entries` |
+| ~~`TestLoadBoardPage`~~ | zone 3 — **FIXED**: the continuation is a real btree start condition. Deep page 65.20 ms → **3.00 ms**, depth ratio 18.0× → **1.00×** |
+| `TestLoadBoardRank` | zone 3 — **still red, improved**: `/me` 175.77 → **120.01 ms** p99 at the bottom of a 99 802-entry board, 4.0× over (was 5.9×). It passes at rank 10 001 now (45.16 → 14.93 ms). Counting is O(rank) and the last point is counting 99 801 rows |
+| `TestLoadPlanBoardRankAbove` | zone 3 — **still red at depth**: the deep count is a parallel `Seq Scan` of `leaderboard_entries`. The shallow one is an index scan |
 | `TestLoadProjectionRecompute` | zone 4: 10.89 ms p99 against 5 ms (was 64.77) |
 | `TestLoadProjectionWorkerThroughput` | zone 4: +2.75 ms per verdict against 2 ms (was +21.41) |
 | `TestLoadRebuild` | zone 4: 7–11 min against 60 s |
@@ -99,13 +99,13 @@ Three properties of this rig shape every figure:
 | 2 | realistic 60 s run (483 ev) | 170 ms p99 | 50 ms | **MISSED 3.4×** |
 | 2 | 10 000-word generation, short log | 134 ms | 2.5 s | PASS (5%) |
 | 2 | worker throughput, realistic runs | 5.8 runs/s per goroutine | — | reported |
-| 3 | board page 1, 99 802-entry bucket | 2.00 ms p50 / 3.00 ms p99 | 10 ms p99 | PASS (30%) |
+| 3 | board page 1, 99 802-entry bucket | 2.00 ms p50 / 2.00 ms p99 | 10 ms p99 | PASS (20%) |
 | 3 | …with a banned player at rank 1 | 3.00 ms p99, **identical plan** | ≤ 1.2× | PASS (1.00×) |
-| 3 | deep keyset page (page 1001) | **65.20 ms p99** | 10 ms p99 | **MISSED 6.5×** |
-| 3 | keyset depth independence | **18.0×** page 1 | ≤ 3× | **MISSED 6×** |
-| 3 | `/me` rank at 1 001st | 19.27 ms p99 | 30 ms | PASS |
-| 3 | `/me` rank at 10 001st | 45.16 ms p99 | 30 ms | **MISSED 1.5×** |
-| 3 | `/me` rank at 99 786th | **175.77 ms p99** | 30 ms | **MISSED 5.9×** |
+| 3 | deep keyset page (page 1001) *(after sort_key)* | **3.00 ms p99** *(was 65.20)* | 10 ms p99 | PASS (30%) |
+| 3 | keyset depth independence *(after sort_key)* | **1.00×** page 1 *(was 18.0)* | ≤ 3× | PASS |
+| 3 | `/me` rank at 1 001st *(after sort_key)* | **4.00 ms p99** *(was 19.27)* | 30 ms | PASS (13%) |
+| 3 | `/me` rank at 10 001st *(after sort_key)* | **14.93 ms p99** *(was 45.16)* | 30 ms | PASS (50%) |
+| 3 | `/me` rank at 99 802nd *(after sort_key)* | **120.01 ms p99** *(was 175.77)* | 30 ms | **MISSED 4.0×** *(was 5.9×)* |
 | 3 | catalogue, 499 buckets / 427 099 entries | 132.89 ms p99 | 200 ms | PASS (66%) |
 | 4 | `ProjectRun`, typical player *(after fix)* | **10.89 ms p99** *(was 64.77)* | 5 ms p99 | **MISSED 2.2×** *(was 13.0×)* |
 | 4 | `ProjectRun`, 100 000-run cell *(after fix)* | **468.75 ms** *(was 1 m 30 s)* | 10 ms | **MISSED 46.9×** *(was 8 983×)* |
@@ -134,7 +134,7 @@ Three properties of this rig shape every figure:
 | 8 | unrelated request p99 during burst | 28 ms | 50 ms | PASS |
 | 8 | …its degradation vs baseline | **4.30×** (6.5 → 28 ms) | ≤ 3× | **MISSED 1.4×** |
 
-**11 budget rows missed, 0 hidden.** Two fixes have since been implemented: the
+**8 budget rows missed, 0 hidden** (11 when this document was written; zone 3's pagination pair is fixed, see below). Two fixes have since been implemented: the
 zone 4 defect below (a defect in code shipped in the previous phase) and zone 2's
 config stop-gap, which is now the shipped default — `REPLAY_TIMEOUT` 300 s,
 `REPLAY_CONCURRENCY` 4, `REPLAY_BATCH_SIZE` 2, `REPLAY_SHUTDOWN_GRACE` 630 s. The
@@ -160,13 +160,17 @@ Everything else is reported.
 2. **Zone 4 — `rebuild-leaderboards` takes every board offline for its whole run.**
    7–11 minutes at 1 M runs, and `TRUNCATE` holds `ACCESS EXCLUSIVE` throughout,
    so the wall time *is* downtime. Fixable independently of the speed.
-3. **Zone 3 — deep pagination is an `OFFSET` in disguise.** 18× at page 1001;
-   the depth-independence the design is justified by is not true as implemented.
+3. ~~**Zone 3 — deep pagination is an `OFFSET` in disguise.**~~ **DONE.** 18× at
+   page 1001 is now **1.00×**, and the deep page went 65.20 ms → 3.00 ms. The
+   ordering is packed into one descending `sort_key` so the continuation is a
+   real btree start condition. See the zone's Finding 1.
 
 ### Fix soon
 
-4. **Zone 3 — `/me` rank crosses its budget at ~10 000 entries** and reaches
-   176 ms at 100 000.
+4. **Zone 3 — `/me` rank is still linear in rank.** The view split moved it 1.5×
+   (176 → 120 ms at 100 000) and it now passes at 10 001 (45 → 15 ms), but the
+   bottom of a 100 000-entry board is 4.0× over. Counting is O(rank); the next
+   rung is a cached rank snapshot, not another index.
 5. **Zone 6 — the public replay endpoint buffered ~3 copies** of a 2 MiB payload;
    four cooperating IPs could exhaust a 512 MiB instance without tripping the
    limiter. **Fixed** — the log is a separate route serving the stored gzip
@@ -467,7 +471,7 @@ in 55.5 s, projected to **427 099 entries across 499 buckets**, hot bucket
 |---|---|---|
 | `ListLeaderboardPageFirst` | `Limit → Nested Loop ×2 → Index Scan leaderboard_rank_idx → Index Scan bans_pkey → Memoize → Index Scan users_pkey`, 0.61 ms | PASS — **no Sort**, the index supplies the order |
 | …with a banned leader | identical node list, 0.38 ms | PASS — the ban does not move the plan |
-| `ListLeaderboardPageAfter` (row 50 000) | identical node list, **55.78 ms** | PASS on the contract — **see finding 1** |
+| `ListLeaderboardPageAfter` (row 50 000) *(after sort_key)* | `Index Cond` now carries the cursor, **0.79 ms**, 1 row removed by filter | PASS |
 | `CountLeaderboardAbove` (1 000 above) | `Aggregate → Nested Loop → Hash Join → Bitmap Heap Scan → BitmapOr → 3× Bitmap Index Scan`, 4.47 ms | PASS |
 | `CountLeaderboardAbove` (99 785 above) | run A: `Aggregate → Gather → Hash Join ×2 → Seq Scan(users) → Index Only Scan(entries) → Seq Scan(bans)`, 78.42 ms. Run B (independent, same fixture): `… → Seq Scan(leaderboard_entries)`, 148.21 ms | **UNSTABLE — see below** |
 | `GetLeaderboardEntry` | `Nested Loop ×2 → Index Scan ×2 → Seq Scan(bans)`, 0.06 ms | PASS |
@@ -488,63 +492,99 @@ the count *should* be index-only, and finding 2's fix is what would make it so
 reliably. Until then, treat 78 ms as the optimistic case and 148 ms as the one to
 plan for.
 
-### Finding 1 — the keyset continuation is an `OFFSET` in disguise
+### Finding 1 — the keyset continuation was an `OFFSET` in disguise — **FIXED**
 
-Page 1 and page 1001 have the **identical plan** and differ only in what the scan
-throws away:
+Page 1 and page 1001 had the **identical plan** and differed only in what the
+scan threw away:
 
-| | page 1 | page 1001 (row 50 000) |
+| | page 1 | page 1001 (row 50 000) | page 1001, after |
+|---|---|---|---|
+| `Index Cond` | `bucket_key = …` | `bucket_key = …` — **no cursor** | `bucket_key = … AND sort_key <= …` |
+| Rows Removed by Filter | 0 | **50 092** | **1** |
+| shared buffer hits | 53 | **39 482** | **53** |
+| node time | 0.049 ms | 61.5 ms | **0.43 ms** |
+
+The continuation was spelled longhand as an OR of three conjunctions because
+the directions are mixed (`score DESC`, the rest `ASC`), and a btree can start a
+scan from a row comparison but not from an OR-of-conjunctions. So every
+continuation re-walked the bucket from rank 1.
+
+**The fix packs the ordering into one descending integer** (`db/migrations/00011`):
+
+```sql
+sort_key = (score << 32) - floor(epoch(achieved_at))    -- GENERATED, STORED
+CREATE INDEX leaderboard_sort_idx
+    ON leaderboard_entries (bucket_key, sort_key DESC, achieved_at ASC, user_id ASC);
+WHERE bucket_key = $1
+  AND sort_key <= leaderboard_sort_key($2, $3)          -- the start condition
+  AND (sort_key < … OR achieved_at > $3 OR (achieved_at = $3 AND user_id > $4))
+```
+
+Higher score dominates because it holds the high bits; within one score,
+*subtracting* the epoch makes an earlier run sort higher, which is
+`achieved_at ASC` with no second direction to reconcile. The cursor format and
+the API are unchanged — the server packs the client's `(score, achieved_at)`
+with the same expression the column is generated from.
+
+Re-measured on the same fixture:
+
+| | before | after |
 |---|---|---|
-| `Index Cond` | `bucket_key = …` | `bucket_key = …` — **the cursor is not in it** |
-| Rows Removed by Filter | **0** | **50 092** |
-| shared buffer hits | **53** | **39 482** |
-| node time | 0.049 ms | 61.5 ms |
+| deep page p99 | 65.20 ms | **3.00 ms** |
+| deep/first p50 ratio | 18.0× | **1.00×** |
+| page 1 p99 | 3.00 ms | 2.00 ms |
 
-The continuation is spelled out longhand as an OR of three conjunctions, which
-`docs/LEADERBOARDS.md` justifies "because the directions are mixed". That is
-exactly the cost: a btree can start a scan from a **row comparison** but not from
-an OR-of-conjunctions, so every continuation re-walks the bucket from rank 1.
-Walking the whole board sequentially takes **19 s**.
+**The proposed negate-the-score fix was not what was done.** `(-score, …)` fixes
+the direction but leaves a three-column comparison; packing gives the index one
+column to descend on, which is also what makes the rank count index-only.
 
-**Proposed fix — negate the score so the ordering is single-direction:**
+**One thing the packing does not do, and the index compensates for.** Flooring
+to whole seconds means two runs with the same score in the same second collapse
+to one `sort_key` — and the schema's tie rule is "ties are broken by who got
+there first", to the microsecond. `achieved_at` is therefore still in the index
+after `sort_key`. Dropping it would silently re-rank those players:
+`TestSortKeyOrderingEqualsTheLegacyOrdering` measures that on a fixture built to
+collide and reports **56 of 400 rows would move**, so the omission fails loudly
+instead of quietly. A `CHECK (score < 2^24)` guards the other end: a score that
+overflowed into the sign bit would rank a player *last* instead of first.
 
-```sql
-CREATE INDEX leaderboard_rank_idx ON leaderboard_entries (bucket_key, (-score), achieved_at, user_id);
-WHERE bucket_key = @bucket_key AND (-score, achieved_at, user_id) > (-@score::bigint, @achieved_at, @user_id)
-ORDER BY (-score), achieved_at, user_id
-```
+### Finding 2 — `/me` is linear in rank — improved 1.5×, still over budget
 
-Same physical order, same index size, unchanged cursor format and API.
-[INFERENCE] 39 482 buffer hits → ~53, i.e. 36 ms → ~2 ms. **Do this one.**
+17 ms at rank 1 001 → 31 ms at 10 001 → **145 ms at 99 786** (p50) before. The
+count is the whole cost, and at depth the plan **hash-joined the entire
+120 000-row `users` table into a query that counts rows and selects no
+columns**: `leaderboard_rows` filters bans *and* carries the display-name join,
+and a `count(*)` needs the first and not the second.
 
-### Finding 2 — `/me` is linear in rank, and pays for work it does not need
+**Applied:** the view is split, exactly as this finding proposed.
+`leaderboard_ranked` is the ban filter alone; `leaderboard_rows` is that plus
+the name join. `CountLeaderboardAbove` and `ListLeaderboardBuckets` read the
+first. The "no other way to reach the table" property is preserved — the filter
+is still the only door, with two handles on it.
 
-17 ms at rank 1 001 → 31 ms at 10 001 → **145 ms at 99 786** (p50). `EntryFor` is
-`RankAbove` plus a 0.06 ms lookup, so the count is the whole cost. Counting is
-inherently O(rank) — but at depth the plan **hash-joins the entire 120 000-row
-`users` table into a query that counts rows and selects no columns.**
-`leaderboard_rows` filters bans *and* carries the display-name join; a `count(*)`
-needs the first and not the second.
+| rank | before | after | budget |
+|---|---|---|---|
+| 1 001 | 19.27 ms | **4.00 ms** | 30 ms — PASS |
+| 10 001 | 45.16 ms | **14.93 ms** | 30 ms — **now PASS** (was missed 1.5×) |
+| 99 802 | 175.77 ms | **120.01 ms** | 30 ms — **MISSED 4.0×** (was 5.9×) |
 
-**Proposed fix — split the view, keeping the ban filter as the only door:**
+So the middle of the curve is now inside budget and the bottom is not, which is
+the honest outcome: **counting is O(rank)** and the last point counts 99 801
+rows. No index makes that constant.
 
-```sql
-CREATE VIEW leaderboard_ranked AS SELECT e.* FROM leaderboard_entries e
-  WHERE NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = e.user_id);
-CREATE VIEW leaderboard_rows AS SELECT r.*, u.display_name FROM leaderboard_ranked r JOIN users u ON u.id = r.user_id;
-```
+`TestLoadPlanBoardRankAbove` also stays red, and for the reason this document
+already gave: at ~25% selectivity the planner is on a knife edge and chooses a
+parallel `Seq Scan` of `leaderboard_entries` over an index-only scan of the same
+range. The assertion is left as written rather than relaxed — the count *should*
+be index-only — but it is now the only thing standing between zone 3 and green,
+and it is a planner cost-model question rather than a missing index.
 
-`CountLeaderboardAbove` and `ListLeaderboardBuckets` then read
-`leaderboard_ranked`, which `leaderboard_rank_idx` covers completely. The "no
-other way to reach the table" property is preserved — the filter is still the
-only door, with two handles on it.
-
-Whether that clears 30 ms at 100 k was **not measured**. If it does not, the
-ladder is: accept a looser budget for `/me` specifically (it is one authenticated
-request, and a rank is stale the moment it is read anyway) → cached per-bucket
-rank snapshots → the deferred Redis ZSET. `docs/LEADERBOARDS.md` says the trigger
-to revisit Redis is "ranking latency showing up in traces, not a diagram" — this
-is that measurement, but fix the two cheap things first.
+The ladder from here is unchanged and its cheap rungs are spent: accept a looser
+budget for `/me` specifically (it is one authenticated request, and a rank is
+stale the moment it is read) → cached per-bucket rank snapshots → the deferred
+Redis ZSET. `docs/LEADERBOARDS.md` says the trigger to revisit Redis is "ranking
+latency showing up in traces, not a diagram" — this is that measurement, and the
+two cheap things are now done.
 
 ### Finding 3 — ban filtering is free
 

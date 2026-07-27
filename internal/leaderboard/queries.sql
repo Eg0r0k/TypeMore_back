@@ -153,42 +153,63 @@ SELECT count(*) FROM leaderboard_entries;
 -- Quote boards are in here alongside the language ones, and they are the reason
 -- this result is no longer bounded by the schema — see docs/LEADERBOARDS.md.
 SELECT bucket_key, count(*)::bigint AS entries
-FROM leaderboard_rows
+FROM leaderboard_ranked
 GROUP BY bucket_key
 ORDER BY bucket_key;
 
 -- name: ListLeaderboardPageFirst :many
 -- Page one: best score first, earliest achievement first on a tie, user_id as
 -- the final tiebreak so the order is total (and therefore pageable).
+--
+-- The order is expressed over sort_key, which packs (score, achieved_at) into
+-- one descending integer — see db/migrations/00011. That is what makes the
+-- continuation below a btree start condition instead of a filter.
 SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
        achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = @bucket_key
-ORDER BY score DESC, achieved_at ASC, user_id ASC
+ORDER BY sort_key DESC, achieved_at ASC, user_id ASC
 LIMIT @row_limit;
 
 -- name: ListLeaderboardPageAfter :many
--- The keyset continuation of the ordering above. Spelled out rather than as a
--- row comparison because the directions are mixed (score DESC, the rest ASC).
+-- The keyset continuation, as a genuine start condition.
+--
+-- `sort_key <= cursor` is the part the index can descend to: it lands the scan
+-- ON the cursor row instead of at rank 1. The second clause is what excludes
+-- the cursor row itself and orders the players who share its exact sort_key —
+-- the same score in the same second, ordered by who got there first to the
+-- microsecond — and it can only remove rows the scan has
+-- already reached, so it is a Filter over a handful of ties rather than over
+-- everything above the cursor. Measured on a 20 000-row bucket at depth 10 000:
+-- Rows Removed by Filter 1, 53 buffer hits, against 50 092 and 39 482 for the
+-- OR-of-conjunctions this replaced.
 SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
        achieved_at, quote_source
 FROM leaderboard_rows
 WHERE bucket_key = @bucket_key
-  AND (score < @score
-       OR (score = @score AND achieved_at > @achieved_at)
-       OR (score = @score AND achieved_at = @achieved_at AND user_id > @user_id))
-ORDER BY score DESC, achieved_at ASC, user_id ASC
+  AND sort_key <= leaderboard_sort_key(@score, @achieved_at)
+  AND (sort_key < leaderboard_sort_key(@score, @achieved_at)
+       OR achieved_at > @achieved_at::timestamptz
+       OR (achieved_at = @achieved_at::timestamptz AND user_id > @user_id::uuid))
+ORDER BY sort_key DESC, achieved_at ASC, user_id ASC
 LIMIT @row_limit;
 
 -- name: CountLeaderboardAbove :one
 -- How many visible entries outrank this position. Rank = that + 1, which is what
 -- makes the rank on a cursor page exact instead of a guess carried in the token.
+--
+-- It reads leaderboard_ranked, NOT leaderboard_rows: a count needs the ban
+-- filter and does not need a display name, and at depth the planner was
+-- hash-joining the whole 120 000-row users table into a query that selects no
+-- columns (docs/PERFORMANCE.md zone 3, finding 2). leaderboard_sort_idx covers
+-- leaderboard_ranked completely, so this is an index-only scan.
 SELECT count(*)::bigint
-FROM leaderboard_rows
+FROM leaderboard_ranked
 WHERE bucket_key = @bucket_key
-  AND (score > @score
-       OR (score = @score AND achieved_at < @achieved_at)
-       OR (score = @score AND achieved_at = @achieved_at AND user_id < @user_id));
+  AND sort_key >= leaderboard_sort_key(@score, @achieved_at)
+  AND (sort_key > leaderboard_sort_key(@score, @achieved_at)
+       OR achieved_at < @achieved_at::timestamptz
+       OR (achieved_at = @achieved_at::timestamptz AND user_id < @user_id::uuid));
 
 -- name: GetLeaderboardEntry :one
 -- One player's entry in one bucket. A banned player has none (the view), which
