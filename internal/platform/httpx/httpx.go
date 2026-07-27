@@ -15,9 +15,9 @@ import (
 	"strings"
 )
 
-// ParseLimit clamps a ?limit= query value to [1, max], returning def on absent
-// or unparseable input.
-func ParseLimit(raw string, def, max int) int {
+// ParseLimit clamps a ?limit= query value to [1, maxAllowed], returning def on
+// absent or unparseable input.
+func ParseLimit(raw string, def, maxAllowed int) int {
 	if raw == "" {
 		return def
 	}
@@ -25,8 +25,8 @@ func ParseLimit(raw string, def, max int) int {
 	if err != nil || n <= 0 {
 		return def
 	}
-	if n > max {
-		return max
+	if n > maxAllowed {
+		return maxAllowed
 	}
 	return n
 }
