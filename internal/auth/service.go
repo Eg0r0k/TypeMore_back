@@ -283,9 +283,10 @@ type userView struct {
 	// It is a bare boolean and it stays one. No reason, no expiry, no issuer:
 	// the banner a restricted player sees is deliberately opaque, and a field
 	// that is not in this struct is a field no handler can leak
-	// (docs/MODERATION.md). Absent from the flow responses because a flow
-	// returns the account that was just created or logged into, and neither is
-	// a moment where a restriction is the news.
+	// (docs/MODERATION.md). The flow responses (register, login) carry it as
+	// `false`: toUserView does not consult moderation, because a flow returns
+	// the account that was just created or logged into and GET /me is the read
+	// that answers "what is the state of this account now".
 	Restricted bool `json:"restricted"`
 }
 
