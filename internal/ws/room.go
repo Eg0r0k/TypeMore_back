@@ -562,7 +562,14 @@ func (r *Room) relayEventBatch(sess *session, eb protocol.EventBatch, recvMs int
 		st.activeBuckets++
 	}
 
-	pb := protocol.PeerBatch{Type: protocol.TypePeerBatch, PlayerID: st.playerID, Events: eb.Events}
+	// The relayed batch inherits the SENDER's version: it carries the sender's
+	// events, so it is described by the sender's schema (docs/PROTOCOL.md).
+	pb := protocol.PeerBatch{
+		Type:     protocol.TypePeerBatch,
+		PlayerID: st.playerID,
+		Version:  eb.Version,
+		Events:   eb.Events,
+	}
 	for _, other := range r.match.roster {
 		if other == st {
 			continue
@@ -1137,8 +1144,21 @@ func (r *Room) broadcastPeerStatusLocked(subjectID, status string) {
 		return
 	}
 	msg := protocol.PeerStatus{Type: protocol.TypePeerStatus, PlayerID: subjectID, Status: status}
+	// `finished` goes to EVERY seat, the finisher included; every other status
+	// goes to the peers only.
+	//
+	// The asymmetry is deliberate and it is about who owns the fact. A seat
+	// learns it disconnected by disconnecting — there is nothing to tell it, and
+	// no socket to tell it on. But whether a `finish` was ACCEPTED is the
+	// server's answer, not the client's: the client sends `finish` and then
+	// believes its own optimistic transition, which is how a finish the server
+	// rejected (wrong matchId, an already-terminal seat) leaves a client showing
+	// a finished screen for a run nobody recorded. Echoing the status back means
+	// the finisher and its opponents transition on the same message, at the same
+	// instant, from the same authority.
+	echoToSubject := status == protocol.StatusFinished
 	for _, s := range r.match.roster {
-		if s.playerID == subjectID {
+		if s.playerID == subjectID && !echoToSubject {
 			continue
 		}
 		if s.sess != nil && !s.disconnected {

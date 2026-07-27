@@ -756,3 +756,44 @@ func TestHostDropNoSuccession(t *testing.T) {
 	require.NoError(t, json.Unmarshal(expect(t, ctx, guest, protocol.TypeChat), &chat))
 	assert.Equal(t, hostID, chat.From)
 }
+
+// A relayed batch carries the SENDER's version, not the server's idea of one.
+//
+// The payload is the sender's, so the schema that describes it is the sender's
+// too; a receiver that assumed its own version would decode another client's
+// events under the wrong rules the first time two clients disagree, which is
+// during a rollout. Two seats send different versions here precisely so a
+// server that substituted a constant would pass for one of them and fail for
+// the other.
+func TestPeerBatchInheritsTheSendersVersion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	srv := relayServer(t, &fakeStore{})
+
+	m := startMatch(t, ctx, srv, 2, 0)
+	host, guest := m.conns[0], m.conns[1]
+
+	for _, tc := range []struct {
+		from     *websocket.Conn
+		to       *websocket.Conn
+		playerID string
+		version  int
+	}{
+		{host, guest, m.ids[0], 1},
+		{guest, host, m.ids[1], 7},
+	} {
+		writeJSON(t, ctx, tc.from, protocol.EventBatch{
+			Type:     protocol.TypeEventBatch,
+			MatchID:  m.matchID,
+			PlayerID: tc.playerID,
+			BatchSeq: 1,
+			Version:  tc.version,
+			Events:   []json.RawMessage{event(1)},
+		})
+		pb := decodePeerBatch(t, expect(t, ctx, tc.to, protocol.TypePeerBatch))
+		assert.Equal(t, tc.playerID, pb.PlayerID)
+		assert.Equalf(t, tc.version, pb.Version,
+			"peer_batch from %s carried version %d, want the sender's %d",
+			tc.playerID, pb.Version, tc.version)
+	}
+}

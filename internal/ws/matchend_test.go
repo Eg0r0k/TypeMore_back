@@ -65,8 +65,10 @@ func TestMatchEndAllFinished(t *testing.T) {
 	writeJSON(t, ctx, host, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
 	ps := decodePeerStatus(t, expect(t, ctx, guest, protocol.TypePeerStatus))
 	assert.Equal(t, protocol.StatusFinished, ps.Status)
+	expectOwnFinished(t, ctx, host, m.ids[0])
 
 	writeJSON(t, ctx, guest, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
+	expectOwnFinished(t, ctx, guest, m.ids[1])
 
 	// Emission point: the final peer_status, then match_end, then room_state.
 	ps = decodePeerStatus(t, expect(t, ctx, host, protocol.TypePeerStatus))
@@ -145,6 +147,7 @@ func TestWordsAfkShareDNF(t *testing.T) {
 	writeJSON(t, ctx, host, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
 	ps := decodePeerStatus(t, expect(t, ctx, guest, protocol.TypePeerStatus))
 	assert.Equal(t, protocol.StatusFinished, ps.Status)
+	expectOwnFinished(t, ctx, host, m.ids[0])
 
 	ps = decodePeerStatus(t, expect(t, ctx, host, protocol.TypePeerStatus))
 	assert.Equal(t, protocol.StatusDNF, ps.Status)
@@ -256,6 +259,7 @@ func TestFinishWindowDNF(t *testing.T) {
 	expect(t, ctx, host, protocol.TypePeerBatch)
 
 	writeJSON(t, ctx, host, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
+	expectOwnFinished(t, ctx, host, m.ids[0])
 
 	ps := decodePeerStatus(t, expect(t, ctx, host, protocol.TypePeerStatus))
 	assert.Equal(t, protocol.StatusDNF, ps.Status)
@@ -300,6 +304,7 @@ func TestMatchEndInBacklogOnResume(t *testing.T) {
 	// This batch buffers into the graced guest's backlog; the host finishes.
 	sendBatch(t, ctx, host, m.matchID, m.ids[0], 1, []json.RawMessage{event(1)})
 	writeJSON(t, ctx, host, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
+	expectOwnFinished(t, ctx, host, m.ids[0])
 
 	// Deadline dnf's the graced guest and ends the match.
 	ps = decodePeerStatus(t, expect(t, ctx, host, protocol.TypePeerStatus))
@@ -341,6 +346,11 @@ func TestTimeModeNoAfkShareRule(t *testing.T) {
 	writeJSON(t, ctx, host, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
 	ps := decodePeerStatus(t, expect(t, ctx, guest, protocol.TypePeerStatus))
 	assert.Equal(t, protocol.StatusFinished, ps.Status)
+	// The finisher gets its own `finished` too (§ peer_status), so the host has
+	// a frame waiting before anything the guest sends can reach it.
+	own := decodePeerStatus(t, expect(t, ctx, host, protocol.TypePeerStatus))
+	assert.Equal(t, protocol.StatusFinished, own.Status)
+	assert.Equal(t, m.ids[0], own.PlayerID)
 
 	time.Sleep(3600 * time.Millisecond) // well past go + both shrunk windows
 
@@ -353,9 +363,24 @@ func TestTimeModeNoAfkShareRule(t *testing.T) {
 	writeJSON(t, ctx, guest, protocol.Finish{Type: protocol.TypeFinish, MatchID: m.matchID})
 	ps = decodePeerStatus(t, expect(t, ctx, host, protocol.TypePeerStatus))
 	assert.Equal(t, protocol.StatusFinished, ps.Status)
+	assert.Equal(t, m.ids[1], ps.PlayerID)
 	me := decodeMatchEnd(t, expect(t, ctx, host, protocol.TypeMatchEnd))
 	assert.Equal(t, protocol.ReasonAllFinished, me.Reason)
 	byID := resultsByID(t, me, 2)
 	assert.Equal(t, protocol.StatusFinished, byID[m.ids[0]].Status)
 	assert.Equal(t, protocol.StatusFinished, byID[m.ids[1]].Status, "no words-mode AFK dnf in time mode")
+}
+
+// expectOwnFinished consumes the `finished` a seat now receives about ITSELF.
+//
+// peer_status `finished` is broadcast to every seat including the finisher
+// (docs/PROTOCOL.md), so a connection that has just sent `finish` has one frame
+// waiting before anything else can reach it. Consuming it explicitly, rather
+// than skipping frames until the interesting one, is what keeps these tests
+// able to notice an extra or missing broadcast.
+func expectOwnFinished(t *testing.T, ctx context.Context, c *websocket.Conn, playerID string) {
+	t.Helper()
+	ps := decodePeerStatus(t, expect(t, ctx, c, protocol.TypePeerStatus))
+	assert.Equal(t, protocol.StatusFinished, ps.Status)
+	assert.Equal(t, playerID, ps.PlayerID, "a finisher must receive its OWN finished")
 }

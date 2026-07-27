@@ -464,8 +464,15 @@ The relay is **lossless**: while a peer is disconnected the server buffers its
 peer-relay backlog and replays it, in order, on reconnect (§6). `events` is the
 opaque payload (same shape as `event_batch.events`).
 
+`version` is the **sender's** `event_batch.version`, carried through unchanged.
+The relay never rewrites it and never substitutes its own: the payload is the
+sender's, so the schema that describes it is the sender's too. A receiver that
+assumed its own version would decode another client's events under the wrong
+rules the first time two clients disagree — which is during a rollout, i.e. the
+only time it matters.
+
 ```json
-{ "type": "peer_batch", "playerId": "8a2f...91", "events": [ { "k": "insert", "seq": 1 } ] }
+{ "type": "peer_batch", "playerId": "8a2f...91", "version": 1, "events": [ { "k": "insert", "seq": 1 } ] }
 ```
 
 ### `peer_status`
@@ -476,6 +483,16 @@ Reports a peer's lifecycle transition.
   `finished`, `dnf`. A mid-match drop broadcasts `disconnected` (grace starts),
   then `reconnected` on resume or `dnf` on grace expiry; `finished` is broadcast
   on the peer's `finish`.
+
+**`finished` is broadcast to every seat, including the finisher.** Every other
+status goes to the peers only, and the asymmetry is about who owns the fact. A
+seat learns it disconnected by disconnecting; there is nothing to tell it and no
+socket to tell it on. But whether a `finish` was *accepted* is the server's
+answer, not the client's — the client sends `finish` and then believes its own
+optimistic transition, which is how a finish the server rejected (a stale
+`matchId`, an already-terminal seat) leaves a client showing a finished screen
+for a run nobody recorded. Echoing it back means the finisher and its opponents
+transition on the same message, at the same instant, from the same authority.
 
 ```json
 { "type": "peer_status", "playerId": "8a2f...91", "status": "disconnected" }

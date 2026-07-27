@@ -437,9 +437,18 @@ type Kicked struct {
 // PeerBatch relays another player's events to this client, order preserved per
 // player. Events are opaque (see EventBatch).
 type PeerBatch struct {
-	Type     string            `json:"type"`
-	PlayerID string            `json:"playerId"`
-	Events   []json.RawMessage `json:"events"`
+	Type     string `json:"type"`
+	PlayerID string `json:"playerId"`
+	// Version is the sender's event_batch.version, carried through unchanged.
+	//
+	// A relayed batch is the sender's payload, so it is encoded in the sender's
+	// schema, and a receiver that assumed its own version would decode another
+	// client's events under the wrong rules the first time the two disagree —
+	// during a rollout, which is exactly when they will. The relay never
+	// rewrites it: there is one version per batch and it belongs to whoever
+	// produced the events.
+	Version int               `json:"version"`
+	Events  []json.RawMessage `json:"events"`
 }
 
 // PeerStatus reports a lifecycle transition of a peer. See the Status* constants.
