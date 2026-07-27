@@ -30,6 +30,10 @@ const (
 	FlagSuperhumanBurst     = "superhuman-burst"
 	FlagAfkHeavy            = "afk-heavy"
 	FlagTrailingAfk         = "trailing-afk"
+	// FlagUnpairedKeyup is log v2's telemetry pairing sanity: a key release
+	// without a preceding press. Structural bookkeeping, not a cheat signal —
+	// a key held across the log start produces one honestly.
+	FlagUnpairedKeyup = "unpaired-keyup"
 )
 
 // DefaultFlagWeights is THE weights table: how much one unit of a flag's
@@ -80,6 +84,11 @@ var DefaultFlagWeights = map[string]float64{
 	FlagMinInterval:         0.30,
 	FlagAfkHeavy:            0.02,
 	FlagTrailingAfk:         0.02,
+	// Zero on purpose: this phase COLLECTS telemetry; the hold/overlap
+	// plausibility heuristics that would make it a signal are a later phase,
+	// weighted only once there is calibration data (`make calibrate`) to weight
+	// them against. Listed so the table stays exhaustive over the core's flags.
+	FlagUnpairedKeyup: 0.00,
 }
 
 // Policy defaults.

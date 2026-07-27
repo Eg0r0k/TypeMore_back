@@ -79,6 +79,7 @@ var TypeMoreCore = (() => {
     DEFAULT_MAX_EXTRA_CHARS: () => DEFAULT_MAX_EXTRA_CHARS,
     DEFAULT_THRESHOLDS: () => DEFAULT_THRESHOLDS,
     EVENT_LOG_VERSION: () => EVENT_LOG_VERSION,
+    EVENT_LOG_VERSION_TELEMETRY: () => EVENT_LOG_VERSION_TELEMETRY,
     GameCore: () => GameCore,
     MINSPEED_GRACE_MS: () => MINSPEED_GRACE_MS,
     MINSPEED_MULTIPLIERS: () => MINSPEED_MULTIPLIERS,
@@ -114,6 +115,9 @@ var TypeMoreCore = (() => {
     initialState: () => initialState,
     initialStateOf: () => initialStateOf,
     insertEvent: () => insertEvent,
+    isTelemetryEvent: () => isTelemetryEvent,
+    keyDownEvent: () => keyDownEvent,
+    keyUpEvent: () => keyUpEvent,
     kogasa: () => kogasa,
     makeSeedContext: () => makeSeedContext,
     metricsFrom: () => metricsFrom,
@@ -146,7 +150,9 @@ var TypeMoreCore = (() => {
   // src/shared/core/events.ts
   var asSeq = (n) => n;
   var asMs = (n) => n;
+  var isTelemetryEvent = (event) => event.kind === "down" || event.kind === "up";
   var EVENT_LOG_VERSION = 1;
+  var EVENT_LOG_VERSION_TELEMETRY = 2;
   var insertEvent = (seq, t, text) => ({
     kind: "insert",
     seq: asSeq(seq),
@@ -172,6 +178,18 @@ var TypeMoreCore = (() => {
     to,
     text,
     source
+  });
+  var keyDownEvent = (seq, t, code) => ({
+    kind: "down",
+    seq: asSeq(seq),
+    t: asMs(t),
+    code
+  });
+  var keyUpEvent = (seq, t, code) => ({
+    kind: "up",
+    seq: asSeq(seq),
+    t: asMs(t),
+    code
   });
   function sortEvents(events) {
     for (let i = 1; i < events.length; i++) {
@@ -1237,6 +1255,9 @@ var TypeMoreCore = (() => {
         seq: event.seq
       });
     }
+    if (event.kind === "down" || event.kind === "up") {
+      return ok(state);
+    }
     if (state.phase === "finished") {
       return err({ kind: "TestFinished", message: "test already finished", seq: event.seq });
     }
@@ -1341,6 +1362,7 @@ var TypeMoreCore = (() => {
     const keyTimes = [];
     const keyCorrect = [];
     const commitTimes = [];
+    events = events.some(isTelemetryEvent) ? events.filter((e) => !isTelemetryEvent(e)) : events;
     for (const event of sortEvents(events)) {
       state = settle(ctx, state, event.t);
       if (state.phase === "finished") {
@@ -1599,6 +1621,7 @@ var TypeMoreCore = (() => {
     const active = new Uint8Array(bucketCount + 1);
     let activeCount = 0;
     for (const event of events) {
+      if (isTelemetryEvent(event)) continue;
       const offset = event.t - start;
       if (offset < 0) continue;
       const bucket = offset <= 0 ? 1 : Math.ceil(offset / AFK_BUCKET_MS);
@@ -1793,11 +1816,11 @@ var TypeMoreCore = (() => {
   }
   function scoreOfLog(log, setup) {
     const ctx = { config: setup.config, words: setup.words };
-    const ordered = sortEvents(log);
+    const ordered = sortEvents(log).filter((e) => !isTelemetryEvent(e));
     const state = initialScoreState();
     for (const event of ordered) scoreStep(state, event, ctx);
     const endMs = ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
-    const metrics = computeMetrics(ctx, log, endMs);
+    const metrics = computeMetrics(ctx, ordered, endMs);
     return finalizeScore(state.base, state.comboPeak, metrics, ctx.config.mode);
   }
   function finalizeScoreV2(base, comboPeak, metrics, mode, modMultiplier) {
@@ -1816,7 +1839,7 @@ var TypeMoreCore = (() => {
   }
   function scoreV2OfLog(log, setup, declaration) {
     const ctx = { config: setup.config, words: setup.words };
-    const ordered = sortEvents(log);
+    const ordered = sortEvents(log).filter((e) => !isTelemetryEvent(e));
     const lastT = ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
     const analysis = analyzeLog(ctx, ordered);
     let end = lastT;
@@ -1867,7 +1890,7 @@ var TypeMoreCore = (() => {
     return [...text].length;
   }
   function validateLog(input) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     const thresholds = __spreadValues(__spreadValues({}, DEFAULT_THRESHOLDS), input.thresholds);
     const { config, generation } = input.configSnapshot;
     const seedContext = makeSeedContext(input.dictionary, input.seed, generation);
@@ -1881,10 +1904,15 @@ var TypeMoreCore = (() => {
     if (generated.isErr()) return err({ kind: "GenerationFailed", message: generated.error.message });
     const ctx = { config, words: generated.value.words };
     const events = sortEvents(input.log.events);
+    const stateEvents = events.filter((e) => !isTelemetryEvent(e));
+    const telemetry = events.filter(isTelemetryEvent);
     const flags = [];
     const invalid = (reason) => ok({ verdict: "invalid", reason, flags, metrics: ZERO_METRICS });
-    if (input.log.version !== EVENT_LOG_VERSION) {
+    if (input.log.version !== EVENT_LOG_VERSION && input.log.version !== EVENT_LOG_VERSION_TELEMETRY) {
       return invalid(`log version ${input.log.version} != ${EVENT_LOG_VERSION}`);
+    }
+    if (input.log.version === EVENT_LOG_VERSION && telemetry.length > 0) {
+      return invalid(`log version ${EVENT_LOG_VERSION} must not contain telemetry events`);
     }
     for (let i = 0; i < events.length; i++) {
       if (events[i].seq !== i + 1)
@@ -1893,15 +1921,35 @@ var TypeMoreCore = (() => {
         return invalid(`time went backwards at seq ${events[i].seq}`);
     }
     if (events.length > 0 && events[0].t < 0) return invalid("first event has negative t");
+    if (telemetry.length > 0) {
+      const held = /* @__PURE__ */ new Map();
+      let unpaired = 0;
+      for (const e of telemetry) {
+        if (e.kind === "down") {
+          held.set(e.code, ((_a = held.get(e.code)) != null ? _a : 0) + 1);
+        } else {
+          const open = (_b = held.get(e.code)) != null ? _b : 0;
+          if (open > 0) held.set(e.code, open - 1);
+          else unpaired++;
+        }
+      }
+      if (unpaired > 0) {
+        flags.push({
+          code: "unpaired-keyup",
+          score: Math.min(1, unpaired / telemetry.length),
+          detail: `${unpaired} key release(s) without a preceding press`
+        });
+      }
+    }
     if (config.nospace && events.some((e) => e.kind === "commit")) {
       return invalid(
         "nospace log must contain no commit events (progression is derived from inserts)"
       );
     }
-    const startT = config.startPolicy === "go" ? asMs(0) : (_b = (_a = events[0]) == null ? void 0 : _a.t) != null ? _b : asMs(0);
+    const startT = config.startPolicy === "go" ? asMs(0) : (_d = (_c = stateEvents[0]) == null ? void 0 : _c.t) != null ? _d : asMs(0);
     const deadline = startT + config.durationMs;
     if (config.mode === "time") {
-      const past = events.find((e) => e.t >= deadline);
+      const past = stateEvents.find((e) => e.t >= deadline);
       if (past)
         return invalid(`event at seq ${past.seq} (t=${past.t}) is at/after the deadline ${deadline}`);
     }
@@ -1915,7 +1963,7 @@ var TypeMoreCore = (() => {
       const failAt = minSpeedFailInstant(ctx, finalState);
       if (failAt !== null) finalState = settle(ctx, finalState, failAt);
     }
-    const metrics = computeMetrics(ctx, events, (_d = (_c = finalState.finishedAt) != null ? _c : endMs) != null ? _d : startT);
+    const metrics = computeMetrics(ctx, events, (_f = (_e = finalState.finishedAt) != null ? _e : endMs) != null ? _f : startT);
     const multiGrapheme = events.filter(
       (e) => e.kind === "insert" && graphemeCount(e.text) > 1
     ).length;
@@ -1970,9 +2018,9 @@ var TypeMoreCore = (() => {
         detail: `${Math.round(metrics.wpm)} wpm at 100% accuracy`
       });
     }
-    const runEnd = (_f = (_e = finalState.finishedAt) != null ? _e : endMs) != null ? _f : events.length > 0 ? events[events.length - 1].t : startT;
+    const runEnd = (_h = (_g = finalState.finishedAt) != null ? _g : endMs) != null ? _h : stateEvents.length > 0 ? stateEvents[stateEvents.length - 1].t : startT;
     const afk = afkBetween(events, finalState.startedAt, runEnd);
-    const runMs = Math.max(0, runEnd - ((_g = finalState.startedAt) != null ? _g : startT));
+    const runMs = Math.max(0, runEnd - ((_i = finalState.startedAt) != null ? _i : startT));
     if (afk.afkMs > 0 && runMs > 0) {
       const share = afk.afkMs / runMs;
       if (share >= thresholds.afkFlagShare) {
@@ -1983,7 +2031,7 @@ var TypeMoreCore = (() => {
         });
       }
     }
-    const lastEventT = events.length > 0 ? events[events.length - 1].t : null;
+    const lastEventT = stateEvents.length > 0 ? stateEvents[stateEvents.length - 1].t : null;
     if (lastEventT !== null) {
       const tailMs = runEnd - lastEventT;
       if (tailMs >= thresholds.trailingAfkMs) {
@@ -2003,8 +2051,10 @@ var TypeMoreCore = (() => {
   var isValidT = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
   var isDeleteUnit = (value) => value === "char" || value === "word";
   var isReplaceSource = (value) => value === "ime" || value === "paste";
+  var isKeyCode = (value) => typeof value === "string" && /^[A-Za-z0-9]{1,32}$/.test(value);
+  var isLogVersion = (value) => value === EVENT_LOG_VERSION || value === EVENT_LOG_VERSION_TELEMETRY;
   var isIndex = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0;
-  function parseGameEvent(input) {
+  function parseGameEvent(input, version = EVENT_LOG_VERSION) {
     if (!isRecord(input)) {
       return err({
         code: "bad-shape",
@@ -2063,6 +2113,20 @@ var TypeMoreCore = (() => {
         }
         return ok(replaceEvent(seq, t, from, to, text, source));
       }
+      case "down":
+      case "up": {
+        if (version !== EVENT_LOG_VERSION_TELEMETRY) {
+          return err({ code: "bad-kind", message: `unknown event kind ${JSON.stringify(kind)}` });
+        }
+        const { code } = input;
+        if (!isKeyCode(code)) {
+          return err({
+            code: "bad-shape",
+            message: `${kind}.code must be 1-32 chars of the KeyboardEvent.code charset, got ${JSON.stringify(code)}`
+          });
+        }
+        return ok(kind === "down" ? keyDownEvent(seq, t, code) : keyUpEvent(seq, t, code));
+      }
       default:
         return err({ code: "bad-kind", message: `unknown event kind ${JSON.stringify(kind)}` });
     }
@@ -2074,10 +2138,10 @@ var TypeMoreCore = (() => {
         message: `batch must be an object, got ${input === null ? "null" : typeof input}`
       });
     }
-    if (input.version !== EVENT_LOG_VERSION) {
+    if (!isLogVersion(input.version)) {
       return err({
         code: "bad-version",
-        message: `unsupported log version ${JSON.stringify(input.version)}, expected ${EVENT_LOG_VERSION}`
+        message: `unsupported log version ${JSON.stringify(input.version)}, expected ${EVENT_LOG_VERSION} or ${EVENT_LOG_VERSION_TELEMETRY}`
       });
     }
     if (!Array.isArray(input.events)) {
@@ -2085,13 +2149,13 @@ var TypeMoreCore = (() => {
     }
     const events = [];
     for (let i = 0; i < input.events.length; i++) {
-      const parsed = parseGameEvent(input.events[i]);
+      const parsed = parseGameEvent(input.events[i], input.version);
       if (parsed.isErr()) {
         return err(__spreadProps(__spreadValues({}, parsed.error), { index: i, message: `events[${i}]: ${parsed.error.message}` }));
       }
       events.push(parsed.value);
     }
-    return ok({ version: EVENT_LOG_VERSION, events });
+    return ok({ version: input.version, events });
   }
   return __toCommonJS(index_exports);
 })();

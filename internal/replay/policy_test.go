@@ -124,6 +124,7 @@ func TestWeightsTableCoversEveryCoreFlag(t *testing.T) {
 	emitted := []string{
 		FlagMultiGraphemeInsert, FlagPaste, FlagMinInterval, FlagUniformIntervals,
 		FlagZeroVariance, FlagSuperhumanBurst, FlagAfkHeavy, FlagTrailingAfk,
+		FlagUnpairedKeyup, // log v2 telemetry pairing sanity
 	}
 	p := DefaultPolicy()
 	for _, code := range emitted {
