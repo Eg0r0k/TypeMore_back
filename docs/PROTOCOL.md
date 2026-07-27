@@ -588,20 +588,36 @@ and **identical for all players** — everyone types the same text. It is set vi
 |-------|------|-------|
 | `name` | string | 1–32 chars after sanitizing (control chars stripped, trimmed) |
 | `visibility` | `"open"` \| `"private"` | stored and broadcast; `open` also lists the room on the public lobby (below) |
-| `mode` | `"time"` \| `"words"` | selects which of the two below applies |
+| `mode` | `"time"` \| `"words"` \| `"quote"` | selects which of the dimensions below applies |
 | `durationMs` | int > 0 | present for `time` mode |
-| `wordCount` | int > 0 | present for `words` mode |
-| `lang` | string | dictionary language code |
-| `dictHash` | string | FNV-1a dictionary fingerprint the match runs against |
+| `wordCount` | int > 0 | present for `words` **and `quote`** mode (for a quote it is the length of the drawn text) |
+| `lang` | string | dictionary language for a seeded match, corpus key for a quote one |
+| `dictHash` | string | FNV-1a dictionary fingerprint the match runs against; **absent for `quote`** |
 | `textMods` | object | `{ punctuation, numbers, randomCase, reverse }` booleans — **text-affecting**, so shared |
-| `textSource` | object | discriminated; **v0 is `{ "kind": "seeded" }` only** (see below) |
+| `textSource` | object | discriminated: `{ "kind": "seeded" }` or `{ "kind": "quote", "quoteId": "…" }` |
 
-**`textSource` (future-proofing).** v0 validates `textSource.kind == "seeded"`.
-The quote phase will add `{ "kind": "quote", "quoteId": "…" }` **additively**
-(no protocol bump). The generation **seed** is deliberately **not** part of
-`settings`: it is server-generated and appears only in `countdown`. A
-client-chosen seed is rejected by design — a pre-known seed is a pre-practiced
-map.
+**`textSource`.** The two kinds are the two text paths, and validation is
+per-arm rather than one list of required fields:
+
+| kind | requires | rejects |
+|---|---|---|
+| `seeded` | `dictHash`, mode `time`/`words` | a `quote` source |
+| `quote` | `textSource.quoteId`, `wordCount`, mode `quote` | a `seeded` source |
+
+A quote match carries **no `dictHash`**, because a quote carries no dictionary:
+its bytes are published and resolved by id ([`QUOTES.md`](QUOTES.md)), and
+`code_python` and its family are quote-only languages with no served word list
+to fingerprint at all. Clients fetch the text from the public
+`GET /api/v1/quotes/{id}`; the **id** is what travels, never the bytes.
+
+The generation **seed** is deliberately **not** part of `settings`: it is
+server-generated and appears only in `countdown`. A client-chosen seed is
+rejected by design — a pre-known seed is a pre-practiced map. For a quote match
+the seed is sent and ignored: there is nothing to generate.
+
+A quote match is **counted**, not timed: it ends when a player reaches the end
+of the text, so the finish window, the AFK share judgement and the per-word
+duration ceiling all treat it exactly as `words` (`protocol.IsCounted`).
 
 ### Discovery — `GET /api/v1/rooms` (**not** a protocol message)
 

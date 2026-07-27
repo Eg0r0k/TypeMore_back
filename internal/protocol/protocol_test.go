@@ -122,3 +122,93 @@ func TestValidNick(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateSettings covers the two text paths a room can be configured for.
+// They validate DIFFERENT things and neither may be accepted in the other's
+// shape: a seeded room without a dictionary fingerprint and a quote room
+// without an id are equally unplayable, and accepting either here would only
+// move the failure to every client at countdown.
+func TestValidateSettings(t *testing.T) {
+	seeded := func(mutate func(*protocol.Settings)) protocol.Settings {
+		s := protocol.Settings{
+			Name:       "room",
+			Visibility: protocol.VisibilityPrivate,
+			Mode:       protocol.ModeWords,
+			WordCount:  25,
+			Lang:       "english",
+			DictHash:   "e2e00001",
+			TextSource: protocol.TextSource{Kind: protocol.TextSourceSeeded},
+		}
+		if mutate != nil {
+			mutate(&s)
+		}
+		return s
+	}
+	quote := func(mutate func(*protocol.Settings)) protocol.Settings {
+		s := seeded(func(s *protocol.Settings) {
+			s.Mode = protocol.ModeQuote
+			s.WordCount = 7
+			s.DictHash = ""
+			s.TextSource = protocol.TextSource{Kind: protocol.TextSourceQuote, QuoteID: "q-1"}
+		})
+		if mutate != nil {
+			mutate(&s)
+		}
+		return s
+	}
+
+	tests := []struct {
+		name     string
+		settings protocol.Settings
+		wantErr  string
+	}{
+		{"seeded words", seeded(nil), ""},
+		{"seeded time", seeded(func(s *protocol.Settings) {
+			s.Mode = protocol.ModeTime
+			s.WordCount = 0
+			s.DurationMs = 30000
+		}), ""},
+		{"seeded without dictHash", seeded(func(s *protocol.Settings) { s.DictHash = "" }), "dictHash is required"},
+		{"seeded with a quote source", seeded(func(s *protocol.Settings) {
+			s.TextSource = protocol.TextSource{Kind: protocol.TextSourceQuote, QuoteID: "q-1"}
+		}), "textSource.kind must be 'seeded'"},
+
+		// A quote match carries no dictionary at all: `code_python` and friends
+		// are quote-only languages with no served word list to fingerprint.
+		{"quote", quote(nil), ""},
+		{"quote without a dictHash is fine", quote(func(s *protocol.Settings) { s.DictHash = "" }), ""},
+		{"quote without an id", quote(func(s *protocol.Settings) {
+			s.TextSource.QuoteID = ""
+		}), "textSource.quoteId is required for quote mode"},
+		{"quote with a seeded source", quote(func(s *protocol.Settings) {
+			s.TextSource = protocol.TextSource{Kind: protocol.TextSourceSeeded}
+		}), "quote mode requires textSource.kind 'quote'"},
+		{"quote without a word count", quote(func(s *protocol.Settings) {
+			s.WordCount = 0
+		}), "wordCount must be positive for quote mode"},
+		{"quote without a lang", quote(func(s *protocol.Settings) { s.Lang = "" }), "lang is required"},
+
+		{"unknown mode", seeded(func(s *protocol.Settings) {
+			s.Mode = "zen"
+		}), "mode must be 'time', 'words' or 'quote'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := protocol.ValidateSettings(tc.settings)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tc.wantErr, err.Error())
+		})
+	}
+}
+
+// TestIsCounted pins the property the room relies on: a quote match ends the
+// same way a words match does — by running out of text, not out of clock.
+func TestIsCounted(t *testing.T) {
+	assert.True(t, protocol.IsCounted(protocol.ModeWords))
+	assert.True(t, protocol.IsCounted(protocol.ModeQuote))
+	assert.False(t, protocol.IsCounted(protocol.ModeTime))
+}

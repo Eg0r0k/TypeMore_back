@@ -510,12 +510,20 @@ const (
 	VisibilityPrivate = "private"
 )
 
-// Match mode values. TimeMode is bounded by Settings.DurationMs, WordsMode by
-// Settings.WordCount.
+// Match mode values. TimeMode is bounded by Settings.DurationMs; WordsMode and
+// ModeQuote by Settings.WordCount — a quote's word count is the length of the
+// drawn text, which the host knows because the host is what drew it.
 const (
 	ModeTime  = "time"
 	ModeWords = "words"
+	ModeQuote = "quote"
 )
+
+// IsCounted reports whether a match ends by reaching the end of its text rather
+// than by a clock. Everything a words match needs — the finish window, the AFK
+// share judgement, the per-word duration ceiling — a quote match needs for the
+// same reason, so the three call sites ask this instead of naming a mode.
+func IsCounted(mode string) bool { return mode == ModeWords || mode == ModeQuote }
 
 // Freemod difficulty values.
 const (
@@ -524,8 +532,12 @@ const (
 	DifficultyMaster = "master"
 )
 
-// TextSource kinds. v0 has only "seeded"; the quote phase adds "quote".
-const TextSourceSeeded = "seeded"
+// TextSource kinds: a server-seeded generation over a dictionary, or one
+// published quote resolved by id.
+const (
+	TextSourceSeeded = "seeded"
+	TextSourceQuote  = "quote"
+)
 
 // System chat kinds (Chat.Kind when From == "system").
 const (
@@ -581,15 +593,31 @@ func ValidateSettings(s Settings) error {
 		if s.DurationMs <= 0 {
 			return errors.New("durationMs must be positive for time mode")
 		}
-	case ModeWords:
+	case ModeWords, ModeQuote:
 		if s.WordCount <= 0 {
-			return errors.New("wordCount must be positive for words mode")
+			return errors.New("wordCount must be positive for " + s.Mode + " mode")
 		}
 	default:
-		return errors.New("mode must be 'time' or 'words'")
+		return errors.New("mode must be 'time', 'words' or 'quote'")
 	}
 	if s.Lang == "" {
 		return errors.New("lang is required")
+	}
+	// A quote match is the OTHER text path (QUOTES.md): the bytes are published
+	// and resolved by id, nothing is generated, and there is no dictionary to
+	// fingerprint — `code_python` and friends are quote-only and have no served
+	// word list at all. So the two arms validate different things, and neither
+	// tolerates the other's shape: a seeded room without a dictHash and a quote
+	// room without an id are both unplayable, and silently accepting either
+	// would only move the failure to every client at countdown.
+	if s.Mode == ModeQuote {
+		if s.TextSource.Kind != TextSourceQuote {
+			return errors.New("quote mode requires textSource.kind 'quote'")
+		}
+		if s.TextSource.QuoteID == "" {
+			return errors.New("textSource.quoteId is required for quote mode")
+		}
+		return nil
 	}
 	if s.DictHash == "" {
 		return errors.New("dictHash is required")

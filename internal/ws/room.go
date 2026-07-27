@@ -619,7 +619,7 @@ func (r *Room) finish(sess *session, matchID string, forfeit bool) {
 	r.broadcastPeerStatusLocked(st.playerID, protocol.StatusFinished)
 	if r.allTerminalLocked() {
 		r.endMatchLocked(protocol.ReasonAllFinished)
-	} else if r.match.settings.Mode == protocol.ModeWords && r.match.finishWindow == nil {
+	} else if protocol.IsCounted(r.match.settings.Mode) && r.match.finishWindow == nil {
 		// First finish of a words-mode match opens the finish window: at close
 		// every still-racing seat is dnf'd and the match ends (finish_window).
 		id := r.match.id
@@ -794,7 +794,7 @@ func (r *Room) sweepAfk(matchID string) bool {
 	}
 	now := nowMs()
 	windowOldEnough := now-m.goAtMs >= r.reg.timing.afkWarmupMs
-	judgeShare := m.settings.Mode == protocol.ModeWords && windowOldEnough
+	judgeShare := protocol.IsCounted(m.settings.Mode) && windowOldEnough
 	kicked := false
 	for _, s := range m.roster {
 		if s.status != seatActive {
@@ -1313,9 +1313,9 @@ func (r *Room) errLocked(sess *session, code, message string) {
 }
 
 // matchDurationMs is a match's nominal length in ms: the configured duration for
-// time modes, or a generous per-word ceiling for word modes.
+// time modes, or a generous per-word ceiling for counted ones (words, quote).
 func (r *Room) matchDurationMs(s protocol.Settings) int64 {
-	if s.Mode == protocol.ModeWords {
+	if protocol.IsCounted(s.Mode) {
 		return int64(s.WordCount) * r.reg.timing.wordMsPerWord
 	}
 	return int64(s.DurationMs)
