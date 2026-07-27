@@ -26,11 +26,14 @@ type AuthIdentity struct {
 }
 
 type Ban struct {
-	UserID    uuid.UUID
+	UserID uuid.UUID
+	// Internal moderation note. NEVER exposed to the player: the banner they see is deliberately opaque (docs/MODERATION.md).
 	Reason    string
-	IssuedBy  *uuid.UUID
+	IssuedBy  *string
 	IssuedAt  time.Time
 	ExpiresAt *time.Time
+	ID        uuid.UUID
+	RevokedAt *time.Time
 }
 
 type EmailToken struct {

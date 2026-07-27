@@ -18,6 +18,7 @@
 #   make rebuild-leaderboards  recompute the boards from accepted runs
 #   make leaderboards          print the board index (bucket=KEY for one board)
 #   make import-quotes         publish the vendored quote corpora into Postgres
+#   make ban / unban / bans / ban-show   account restrictions (docs/MODERATION.md)
 #   make load        run the performance & load suite (docs/PERFORMANCE.md)
 #   make bench       run the Go benchmarks
 
@@ -49,7 +50,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -119,6 +120,25 @@ rebuild-leaderboards:
 ## leaderboards: print the board index (or one bucket with bucket=KEY)
 leaderboards:
 	go run ./cmd/leaderboardctl show $(if $(bucket),-bucket $(bucket),)
+
+## ban: put an account under restriction (see docs/MODERATION.md)
+##      make ban user=ada reason="cheating" until=72h
+ban:
+	go run ./cmd/banctl ban $(user) --reason "$(reason)" $(if $(until),--until $(until),)
+
+## unban: revoke an account's active ban
+##        make unban user=ada
+unban:
+	go run ./cmd/banctl unban $(user)
+
+## bans: list bans (all=1 to include revoked and expired)
+bans:
+	go run ./cmd/banctl list $(if $(all),--all,--active) $(if $(user),,)
+
+## ban-show: every ban an account has ever had
+##           make ban-show user=ada
+ban-show:
+	go run ./cmd/banctl show $(user)
 
 ## import-quotes: publish the vendored quote corpora into Postgres (lang=ID for one)
 # Driven by internal/quote/quotes/MANIFEST.json, never by a directory listing:
