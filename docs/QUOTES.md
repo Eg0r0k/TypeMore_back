@@ -199,17 +199,29 @@ resolvable through `/quotes/{id}`. There is no delete path, and there must not b
 
 ## Length groups are **per corpus**
 
-Every corpus carries its own `groups` array, and they are **not** all the same:
+Every corpus carries its own `groups` array, and they are **not** all the same.
+Across the 86 vendored corpora there are **six** distinct threshold tables:
 
-| Corpus | short | medium | long | thicc |
-|---|---|---|---|---|
-| everything else | 0–100 | 101–300 | 301–600 | 601+ |
-| **chinese** | **0–30** | **31–80** | **81–200** | **201+** |
+| Corpus | short | medium | long | thicc | why |
+|---|---|---|---|---|---|
+| the other 81 | 0–100 | 101–300 | 301–600 | 601+ | prose in a space-separated script |
+| **chinese** | **0–30** | **31–80** | **81–200** | **201+** | a Han character carries about as much as an English word |
+| **korean** | **0–50** | **51–150** | **151–300** | **301+** | same reason, one notch less dense |
+| **code_vhdl** | **0–150** | **151–300** | **301–500** | **501+** | source, not prose: a "short" snippet is already a paragraph |
+| **code_arduino** | **0–400** | **401–800** | **801–1400** | **1401+** | whole sketches |
+| **code_systemverilog** | **0–500** | **501–4000** | **4001–8000** | **8001+** | whole modules; its thicc band reaches 15 000 characters |
 
 Which is obvious once you look at the text: a Chinese character carries about as
 much as an English word, so 100 characters of chinese is not a short quote, it is
 a long one. Upstream got this right; a server that hard-coded one threshold
 table would quietly file the whole chinese corpus one or two bands too low.
+
+The mass import is what turned that from one exception into five. `chinese` was
+the only witness when nine corpora were vendored; at 86 there are four more, and
+`code_systemverilog`'s ceiling is **150× chinese's**. A global table would file
+every SystemVerilog quote as thicc and every Arduino sketch as thicc — which is
+to say it would delete the distinction entirely for those corpora, not merely
+shift it.
 
 The importer therefore reads **each file's own** `groups` array. The manifest
 records the same numbers so a re-vendor that changed them fails loudly instead of
@@ -222,19 +234,21 @@ different band for real vendored quotes. Today that is 3 of 330 chinese quotes
 short from medium) — a small number, and the honest one. A test that demanded a
 big one would be asserting something the data does not say.
 
-Current distribution, for orientation:
+Current distribution of the ten largest corpora, for orientation (the full set
+is `MANIFEST.json`, which is the authority):
 
-| Corpus | short | medium | long | thicc |
-|---|---|---|---|---|
-| english | 926 | 3786 | 1589 | 187 |
-| russian | 235 | 436 | 283 | 209 |
-| french | 71 | 538 | 483 | 15 |
-| german | 155 | 291 | 84 | 30 |
-| chinese | 327 | 3 | — | — |
-| arabian | 38 | 44 | 7 | — |
-| code_python | 7 | 35 | 20 | 14 |
-| code_javascript | 4 | 33 | 10 | — |
-| code_css | 4 | 11 | 5 | 1 |
+| Corpus | quotes | short | medium | long | thicc |
+|---|---|---|---|---|---|
+| english | 6488 | 926 | 3786 | 1589 | 187 |
+| code_nim | 1411 | 109 | 270 | 313 | 719 |
+| russian | 1163 | 235 | 436 | 283 | 209 |
+| french | 1107 | 71 | 538 | 483 | 15 |
+| german | 560 | 155 | 291 | 84 | 30 |
+| chinese | 330 | 327 | 3 | — | — |
+| bangla | 280 | 217 | 62 | 1 | — |
+| code_rust | 276 | 201 | 70 | 5 | — |
+| polish | 242 | 124 | 110 | 8 | — |
+| indonesian | 223 | 82 | 126 | 13 | 2 |
 
 ## `text_hash` comes from the vendored bundle
 
@@ -278,32 +292,30 @@ directory listing is not enough:
   copy can be *checked* rather than trusted; and
 - it documents what is deliberately absent.
 
-| Language | Upstream file | Quotes |
-|---|---|---|
-| `english` | `english.json` | 6488 |
-| `russian` | `russian.json` | 1163 |
-| `french` | `french.json` | 1107 |
-| `german` | `german.json` | 560 |
-| `chinese` | `chinese_simplified.json` | 330 |
-| `arabian` | `arabic.json` | 89 |
-| `code_python` | `code_python.json` | 76 |
-| `code_javascript` | `code_javascript.json` | 47 |
-| `code_css` | `code_css.json` | 21 |
+**86 languages, 15 817 quotes.** The per-language rows are in `MANIFEST.json`
+and are not reprinted here: at 86 corpora a table in prose is a second copy to
+keep in step, and the manifest is the one the importer actually reads. The ten
+largest are in the distribution table above.
 
-**9 languages, 9 881 quotes.** Every one of them except `code_python` and
-`code_javascript` also has a served dictionary, so a player can do seeded and
-quote runs in the same language; those two are quote-only, added explicitly.
+Every quote language has a served dictionary, so a player can do seeded and
+quote runs in the same language — that is the standing rule, and the mass
+dictionary import is what let it be applied to nearly the whole upstream corpus
+rather than to nine hand-picked languages. Where upstream's file name is not our
+id (`arabic` → `arabian`, `chinese_simplified` → `chinese`, `code_c++` →
+`code_cpp`), the manifest row carries the mapping and says so in its `why`.
 
 ### Excluded
 
-The rule is "a quote language must be a language we serve". These three are
-served dictionaries with no upstream counterpart:
+The rule is "a quote language must be a language we serve", and it now cuts both
+ways: three served dictionaries have no upstream corpus, and one upstream corpus
+has no served dictionary.
 
 | Language | Why |
 |---|---|
 | `japanese` | Served dictionary, but upstream publishes no japanese quote corpus. |
 | `traditional_chinese` | Served dictionary, but upstream publishes no `chinese_traditional` corpus. |
 | `russian_empire` | Served dictionary (pre-reform orthography); no upstream counterpart. |
+| `code_cuda` | The reverse case. Upstream publishes 11 quotes, but there is no `code_cuda` dictionary to serve: a full 10 000-word run on it is 217 079 events, over the 120 000 ingestion cap, so it was left out of the dictionary import (`internal/replay/dicts/IMPORT_MANIFEST.md`). Importing its quotes would publish a language the catalogue does not list. |
 
 `MANIFEST.json`'s own `excluded` array is the authority;
 `TestExcludedLanguagesMatchTheDoc` fails if this table drifts from it.

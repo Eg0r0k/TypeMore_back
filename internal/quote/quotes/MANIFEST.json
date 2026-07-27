@@ -22,81 +22,1055 @@
   },
   "languages": [
     {
-      "lang": "english",
-      "file": "english.json",
-      "quotes": 6488,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
-      "why": "served dictionary (english)"
+      "lang": "afrikaans",
+      "file": "afrikaans.json",
+      "quotes": 10,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (afrikaans)"
     },
     {
-      "lang": "french",
-      "file": "french.json",
-      "quotes": 1107,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
-      "why": "served dictionary (french)"
-    },
-    {
-      "lang": "russian",
-      "file": "russian.json",
-      "quotes": 1163,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
-      "why": "served dictionary (russian)"
-    },
-    {
-      "lang": "german",
-      "file": "german.json",
-      "quotes": 560,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
-      "why": "served dictionary (german)"
+      "lang": "albanian",
+      "file": "albanian.json",
+      "quotes": 25,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (albanian)"
     },
     {
       "lang": "arabian",
       "file": "arabic.json",
       "quotes": 89,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
       "why": "served dictionary (arabian); upstream calls it arabic"
+    },
+    {
+      "lang": "arabian_egypt",
+      "file": "arabic_egypt.json",
+      "quotes": 82,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (arabian_egypt); upstream calls it arabic_egypt"
+    },
+    {
+      "lang": "azerbaijani",
+      "file": "azerbaijani.json",
+      "quotes": 24,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (azerbaijani)"
+    },
+    {
+      "lang": "bangla",
+      "file": "bangla.json",
+      "quotes": 280,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (bangla)"
+    },
+    {
+      "lang": "belarusian",
+      "file": "belarusian.json",
+      "quotes": 109,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (belarusian)"
+    },
+    {
+      "lang": "belarusian_lacinka",
+      "file": "belarusian_lacinka.json",
+      "quotes": 50,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (belarusian_lacinka)"
+    },
+    {
+      "lang": "bulgarian",
+      "file": "bulgarian.json",
+      "quotes": 19,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (bulgarian)"
     },
     {
       "lang": "chinese",
       "file": "chinese_simplified.json",
       "quotes": 330,
-      "groups": [[0, 30], [31, 80], [81, 200], [201, 9999]],
+      "groups": [
+        [0, 30],
+        [31, 80],
+        [81, 200],
+        [201, 9999]
+      ],
       "why": "served dictionary (chinese); upstream calls it chinese_simplified. NOTE the thresholds differ from every other corpus."
+    },
+    {
+      "lang": "code_arduino",
+      "file": "code_arduino.json",
+      "quotes": 80,
+      "groups": [
+        [0, 400],
+        [401, 800],
+        [801, 1400],
+        [1401, 12000]
+      ],
+      "why": "served dictionary (code_arduino)"
+    },
+    {
+      "lang": "code_assembly",
+      "file": "code_assembly.json",
+      "quotes": 7,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_assembly)"
+    },
+    {
+      "lang": "code_bash",
+      "file": "code_bash.json",
+      "quotes": 11,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_bash)"
+    },
+    {
+      "lang": "code_c",
+      "file": "code_c.json",
+      "quotes": 31,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_c)"
+    },
+    {
+      "lang": "code_cpp",
+      "file": "code_c++.json",
+      "quotes": 31,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_cpp); upstream calls it code_c++"
+    },
+    {
+      "lang": "code_csharp",
+      "file": "code_csharp.json",
+      "quotes": 28,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_csharp)"
     },
     {
       "lang": "code_css",
       "file": "code_css.json",
       "quotes": 21,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
       "why": "served dictionary (code_css); the id and the upstream file name agree"
     },
     {
-      "lang": "code_python",
-      "file": "code_python.json",
-      "quotes": 76,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
-      "why": "no seeded dictionary — quote-only language, added explicitly"
+      "lang": "code_go",
+      "file": "code_go.json",
+      "quotes": 51,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_go)"
+    },
+    {
+      "lang": "code_java",
+      "file": "code_java.json",
+      "quotes": 172,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_java)"
     },
     {
       "lang": "code_javascript",
       "file": "code_javascript.json",
       "quotes": 47,
-      "groups": [[0, 100], [101, 300], [301, 600], [601, 9999]],
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
       "why": "no seeded dictionary — quote-only language, added explicitly"
+    },
+    {
+      "lang": "code_jule",
+      "file": "code_jule.json",
+      "quotes": 28,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_jule)"
+    },
+    {
+      "lang": "code_julia",
+      "file": "code_julia.json",
+      "quotes": 6,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_julia)"
+    },
+    {
+      "lang": "code_kotlin",
+      "file": "code_kotlin.json",
+      "quotes": 11,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_kotlin)"
+    },
+    {
+      "lang": "code_lua",
+      "file": "code_lua.json",
+      "quotes": 12,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_lua)"
+    },
+    {
+      "lang": "code_nim",
+      "file": "code_nim.json",
+      "quotes": 1411,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_nim)"
+    },
+    {
+      "lang": "code_php",
+      "file": "code_php.json",
+      "quotes": 20,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_php)"
+    },
+    {
+      "lang": "code_python",
+      "file": "code_python.json",
+      "quotes": 76,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "no seeded dictionary — quote-only language, added explicitly"
+    },
+    {
+      "lang": "code_r",
+      "file": "code_r.json",
+      "quotes": 5,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_r)"
+    },
+    {
+      "lang": "code_ruby",
+      "file": "code_ruby.json",
+      "quotes": 27,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_ruby)"
+    },
+    {
+      "lang": "code_rust",
+      "file": "code_rust.json",
+      "quotes": 276,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_rust)"
+    },
+    {
+      "lang": "code_sql",
+      "file": "code_sql.json",
+      "quotes": 40,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_sql)"
+    },
+    {
+      "lang": "code_systemverilog",
+      "file": "code_systemverilog.json",
+      "quotes": 23,
+      "groups": [
+        [0, 500],
+        [501, 4000],
+        [4001, 8000],
+        [8001, 15000]
+      ],
+      "why": "served dictionary (code_systemverilog)"
+    },
+    {
+      "lang": "code_typescript",
+      "file": "code_typescript.json",
+      "quotes": 21,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_typescript)"
+    },
+    {
+      "lang": "code_vhdl",
+      "file": "code_vhdl.json",
+      "quotes": 8,
+      "groups": [
+        [0, 150],
+        [151, 300],
+        [301, 500],
+        [501, 9999]
+      ],
+      "why": "served dictionary (code_vhdl)"
+    },
+    {
+      "lang": "code_yoptascript",
+      "file": "code_yoptascript.json",
+      "quotes": 3,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (code_yoptascript)"
+    },
+    {
+      "lang": "czech",
+      "file": "czech.json",
+      "quotes": 20,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (czech)"
+    },
+    {
+      "lang": "danish",
+      "file": "danish.json",
+      "quotes": 30,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (danish)"
+    },
+    {
+      "lang": "docker_file",
+      "file": "docker_file.json",
+      "quotes": 20,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (docker_file)"
+    },
+    {
+      "lang": "dutch",
+      "file": "dutch.json",
+      "quotes": 69,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (dutch)"
+    },
+    {
+      "lang": "english",
+      "file": "english.json",
+      "quotes": 6488,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (english)"
+    },
+    {
+      "lang": "esperanto",
+      "file": "esperanto.json",
+      "quotes": 30,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (esperanto)"
+    },
+    {
+      "lang": "esperanto_x_sistemo",
+      "file": "esperanto_x_sistemo.json",
+      "quotes": 30,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (esperanto_x_sistemo)"
+    },
+    {
+      "lang": "estonian",
+      "file": "estonian.json",
+      "quotes": 15,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (estonian)"
+    },
+    {
+      "lang": "filipino",
+      "file": "filipino.json",
+      "quotes": 45,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (filipino)"
+    },
+    {
+      "lang": "finnish",
+      "file": "finnish.json",
+      "quotes": 22,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (finnish)"
+    },
+    {
+      "lang": "french",
+      "file": "french.json",
+      "quotes": 1107,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (french)"
+    },
+    {
+      "lang": "georgian",
+      "file": "georgian.json",
+      "quotes": 23,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (georgian)"
+    },
+    {
+      "lang": "german",
+      "file": "german.json",
+      "quotes": 560,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (german)"
+    },
+    {
+      "lang": "hebrew",
+      "file": "hebrew.json",
+      "quotes": 89,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (hebrew)"
+    },
+    {
+      "lang": "hindi",
+      "file": "hindi.json",
+      "quotes": 63,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (hindi)"
+    },
+    {
+      "lang": "hungarian",
+      "file": "hungarian.json",
+      "quotes": 52,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (hungarian)"
+    },
+    {
+      "lang": "icelandic",
+      "file": "icelandic.json",
+      "quotes": 24,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (icelandic)"
+    },
+    {
+      "lang": "indonesian",
+      "file": "indonesian.json",
+      "quotes": 223,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (indonesian)"
+    },
+    {
+      "lang": "irish",
+      "file": "irish.json",
+      "quotes": 122,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (irish)"
+    },
+    {
+      "lang": "italian",
+      "file": "italian.json",
+      "quotes": 140,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (italian)"
+    },
+    {
+      "lang": "kannada",
+      "file": "kannada.json",
+      "quotes": 27,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (kannada)"
+    },
+    {
+      "lang": "kazakh",
+      "file": "kazakh.json",
+      "quotes": 26,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (kazakh)"
+    },
+    {
+      "lang": "korean",
+      "file": "korean.json",
+      "quotes": 27,
+      "groups": [
+        [0, 50],
+        [51, 150],
+        [151, 300],
+        [301, 9999]
+      ],
+      "why": "served dictionary (korean)"
+    },
+    {
+      "lang": "latin",
+      "file": "latin.json",
+      "quotes": 17,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (latin)"
+    },
+    {
+      "lang": "lithuanian",
+      "file": "lithuanian.json",
+      "quotes": 50,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (lithuanian)"
+    },
+    {
+      "lang": "malagasy",
+      "file": "malagasy.json",
+      "quotes": 3,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (malagasy)"
+    },
+    {
+      "lang": "malayalam",
+      "file": "malayalam.json",
+      "quotes": 8,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (malayalam)"
+    },
+    {
+      "lang": "marathi",
+      "file": "marathi.json",
+      "quotes": 8,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (marathi)"
+    },
+    {
+      "lang": "mongolian",
+      "file": "mongolian.json",
+      "quotes": 60,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (mongolian)"
+    },
+    {
+      "lang": "nepali",
+      "file": "nepali.json",
+      "quotes": 102,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (nepali)"
+    },
+    {
+      "lang": "norwegian_bokmal",
+      "file": "norwegian_bokmal.json",
+      "quotes": 148,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (norwegian_bokmal)"
+    },
+    {
+      "lang": "norwegian_nynorsk",
+      "file": "norwegian_nynorsk.json",
+      "quotes": 48,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (norwegian_nynorsk)"
+    },
+    {
+      "lang": "oromo",
+      "file": "oromo.json",
+      "quotes": 171,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (oromo)"
+    },
+    {
+      "lang": "persian",
+      "file": "persian.json",
+      "quotes": 18,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (persian)"
+    },
+    {
+      "lang": "polish",
+      "file": "polish.json",
+      "quotes": 242,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (polish)"
+    },
+    {
+      "lang": "portuguese",
+      "file": "portuguese.json",
+      "quotes": 109,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (portuguese)"
+    },
+    {
+      "lang": "romanian",
+      "file": "romanian.json",
+      "quotes": 72,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (romanian)"
+    },
+    {
+      "lang": "russian",
+      "file": "russian.json",
+      "quotes": 1163,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (russian)"
+    },
+    {
+      "lang": "sanskrit",
+      "file": "sanskrit.json",
+      "quotes": 9,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (sanskrit)"
+    },
+    {
+      "lang": "serbian",
+      "file": "serbian.json",
+      "quotes": 7,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (serbian)"
+    },
+    {
+      "lang": "slovak",
+      "file": "slovak.json",
+      "quotes": 3,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (slovak)"
+    },
+    {
+      "lang": "spanish",
+      "file": "spanish.json",
+      "quotes": 197,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (spanish)"
+    },
+    {
+      "lang": "swedish",
+      "file": "swedish.json",
+      "quotes": 154,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (swedish)"
+    },
+    {
+      "lang": "tamil",
+      "file": "tamil.json",
+      "quotes": 32,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (tamil)"
+    },
+    {
+      "lang": "tamil_old",
+      "file": "tamil_old.json",
+      "quotes": 45,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (tamil_old)"
+    },
+    {
+      "lang": "thai",
+      "file": "thai.json",
+      "quotes": 18,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (thai)"
+    },
+    {
+      "lang": "toki_pona",
+      "file": "toki_pona.json",
+      "quotes": 2,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (toki_pona)"
+    },
+    {
+      "lang": "turkish",
+      "file": "turkish.json",
+      "quotes": 136,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (turkish)"
+    },
+    {
+      "lang": "ukrainian",
+      "file": "ukrainian.json",
+      "quotes": 147,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (ukrainian)"
+    },
+    {
+      "lang": "urdu",
+      "file": "urdu.json",
+      "quotes": 27,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (urdu)"
+    },
+    {
+      "lang": "vietnamese",
+      "file": "vietnamese.json",
+      "quotes": 105,
+      "groups": [
+        [0, 100],
+        [101, 300],
+        [301, 600],
+        [601, 9999]
+      ],
+      "why": "served dictionary (vietnamese)"
     }
   ],
   "excluded": [
+    {
+      "lang": "code_cuda",
+      "upstream_quotes": 11,
+      "why": "upstream publishes the corpus, but we serve no code_cuda dictionary: a full 10 000-word run on it is 217 079 events, over the 120 000 ingestion cap (internal/replay/dicts/IMPORT_MANIFEST.md)"
+    },
     {
       "lang": "japanese",
       "why": "served dictionary, but upstream publishes no japanese quote corpus"
     },
     {
-      "lang": "traditional_chinese",
-      "why": "served dictionary, but upstream publishes no chinese_traditional corpus"
-    },
-    {
       "lang": "russian_empire",
       "why": "served dictionary (pre-reform orthography); no upstream counterpart"
+    },
+    {
+      "lang": "traditional_chinese",
+      "why": "served dictionary, but upstream publishes no chinese_traditional corpus"
     }
   ]
 }
