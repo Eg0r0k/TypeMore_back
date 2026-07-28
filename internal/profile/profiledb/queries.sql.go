@@ -96,6 +96,24 @@ func (q *Queries) GetProfileCounts(ctx context.Context, userID uuid.UUID) (GetPr
 	return i, err
 }
 
+const getProfileDominantLang = `-- name: GetProfileDominantLang :one
+SELECT lang
+FROM runs
+WHERE user_id = $1
+GROUP BY lang
+ORDER BY count(*) DESC, lang
+LIMIT 1
+`
+
+// The user's most-played dictionary language — the heatmap's default layout
+// comes from it. Ties break alphabetically so the answer is stable.
+func (q *Queries) GetProfileDominantLang(ctx context.Context, userID uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getProfileDominantLang, userID)
+	var lang string
+	err := row.Scan(&lang)
+	return lang, err
+}
+
 const getProfileHistogram = `-- name: GetProfileHistogram :many
 SELECT (floor((server_metrics ->> 'wpm')::float8 / 10) * 10)::int AS bucket,
        count(*)::int                                              AS tests
@@ -122,6 +140,49 @@ func (q *Queries) GetProfileHistogram(ctx context.Context, userID uuid.UUID) ([]
 	for rows.Next() {
 		var i GetProfileHistogramRow
 		if err := rows.Scan(&i.Bucket, &i.Tests); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getProfileKeyboard = `-- name: GetProfileKeyboard :many
+SELECT key_id, presses, errors, interval_sum_ms, interval_count
+FROM user_keyboard_profile
+WHERE user_id = $1
+ORDER BY key_id
+`
+
+type GetProfileKeyboardRow struct {
+	KeyID         string
+	Presses       int64
+	Errors        int64
+	IntervalSumMs float64
+	IntervalCount int64
+}
+
+// The keyboard heatmap read: the projection's rows, verbatim — aggregates the
+// worker maintains at verdict time, never derived from logs at request time.
+func (q *Queries) GetProfileKeyboard(ctx context.Context, userID uuid.UUID) ([]GetProfileKeyboardRow, error) {
+	rows, err := q.db.Query(ctx, getProfileKeyboard, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetProfileKeyboardRow{}
+	for rows.Next() {
+		var i GetProfileKeyboardRow
+		if err := rows.Scan(
+			&i.KeyID,
+			&i.Presses,
+			&i.Errors,
+			&i.IntervalSumMs,
+			&i.IntervalCount,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

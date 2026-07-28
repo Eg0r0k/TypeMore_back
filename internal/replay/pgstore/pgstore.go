@@ -31,11 +31,23 @@ type Projector interface {
 	ProjectRun(ctx context.Context, tx pgx.Tx, runID uuid.UUID) error
 }
 
+// KeyboardProjector maintains the user_keyboard_profile aggregates inside the
+// same verdict transaction, from the observations the core just extracted —
+// the same seam pattern as Projector, for the same reason: "accepted" and
+// "counted in the heatmap" must be one atomic fact, and a rollback must take
+// the projection with it. Declared at the consumer, implemented by
+// internal/keyboard/pgstore, wired by the composition root (nil = feature off).
+type KeyboardProjector interface {
+	ProjectKeyboard(ctx context.Context, tx pgx.Tx, runID uuid.UUID,
+		accepted bool, observations []replay.CharObservation) error
+}
+
 // Queue implements replay.Queue against Postgres.
 type Queue struct {
 	pool      *pgxpool.Pool
 	q         *replaydb.Queries
 	projector Projector
+	keyboard  KeyboardProjector
 }
 
 // Compile-time check that Queue satisfies the consumer interface.
@@ -45,6 +57,12 @@ var _ replay.Queue = (*Queue)(nil)
 // API-only replica or a test that only cares about verdicts passes.
 func New(pool *pgxpool.Pool, projector Projector) *Queue {
 	return &Queue{pool: pool, q: replaydb.New(pool), projector: projector}
+}
+
+// WithKeyboard attaches the keyboard projector (nil leaves the feature off).
+func (q *Queue) WithKeyboard(kb KeyboardProjector) *Queue {
+	q.keyboard = kb
+	return q
 }
 
 // ProcessBatch is the whole queue protocol in one transaction: claim pending
@@ -127,6 +145,12 @@ func (q *Queue) inTx(
 		if q.projector != nil {
 			if err := q.projector.ProjectRun(ctx, tx, runs[i].ID); err != nil {
 				return 0, fmt.Errorf("replay/pgstore: project run %s: %w", runs[i].ID, err)
+			}
+		}
+		if q.keyboard != nil {
+			accepted := d.Status == replay.StatusAccepted
+			if err := q.keyboard.ProjectKeyboard(ctx, tx, runs[i].ID, accepted, d.CharObservations); err != nil {
+				return 0, fmt.Errorf("replay/pgstore: project keyboard for run %s: %w", runs[i].ID, err)
 			}
 		}
 	}

@@ -31,6 +31,7 @@ func (s *Service) Routes(requireAuth func(http.Handler) http.Handler) http.Handl
 		r.Get("/histogram", s.handleHistogram)
 		r.Get("/timeseries", s.handleTimeseries)
 		r.Get("/pbs", s.handlePBs)
+		r.Get("/keyboard", s.handleKeyboard)
 	})
 	return r
 }
@@ -256,6 +257,56 @@ func (s *Service) handlePBs(w http.ResponseWriter, r *http.Request) {
 			view.QuoteID = info.QuoteID
 		}
 		out.PBs[i] = view
+	}
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// keyboardKeyView is one heatmap key: derived ratios, not raw sums — the UI
+// renders errorRate and avgIntervalMs, and shipping the sums would push the
+// division into every client.
+type keyboardKeyView struct {
+	KeyID string `json:"keyId"`
+	Count int64  `json:"count"`
+	// ErrorRate in [0, 1]; 0 when the key was never pressed.
+	ErrorRate float64 `json:"errorRate"`
+	// AvgIntervalMs is the mean inter-key interval ENDING on this key; 0 when
+	// no interval was ever counted for it.
+	AvgIntervalMs float64 `json:"avgIntervalMs"`
+	// Intervals is the observation count behind AvgIntervalMs, so the UI can
+	// refuse to color a key from three presses (the low-data rule).
+	Intervals int64 `json:"intervals"`
+}
+
+type keyboardResponse struct {
+	// Layout is the heatmap's default: the layout of the user's most-played
+	// dictionary language ("qwerty" for a fresh account).
+	Layout string            `json:"layout"`
+	Keys   []keyboardKeyView `json:"keys"`
+}
+
+// handleKeyboard serves GET /profile/keyboard: the projection's aggregates,
+// own profile only — and deliberately so even after public profiles arrive:
+// per-key timing is effectively biometric (docs/PROFILE.md, "Privacy").
+func (s *Service) handleKeyboard(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.currentUser(w, r)
+	if !ok {
+		return
+	}
+	keys, lang, err := s.store.Keyboard(r.Context(), userID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	out := keyboardResponse{Layout: s.layoutFor(lang), Keys: make([]keyboardKeyView, len(keys))}
+	for i, k := range keys {
+		view := keyboardKeyView{KeyID: k.KeyID, Count: k.Presses, Intervals: k.IntervalCount}
+		if k.Presses > 0 {
+			view.ErrorRate = float64(k.Errors) / float64(k.Presses)
+		}
+		if k.IntervalCount > 0 {
+			view.AvgIntervalMs = k.IntervalSumMs / float64(k.IntervalCount)
+		}
+		out.Keys[i] = view
 	}
 	s.writeJSON(w, http.StatusOK, out)
 }

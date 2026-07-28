@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/typemore/typemore-server/internal/keyboard"
+	keyboardpg "github.com/typemore/typemore-server/internal/keyboard/pgstore"
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/quote"
 	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
@@ -72,7 +74,10 @@ func (h *harness) replayOnce(t *testing.T) {
 	require.NoError(t, err)
 
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	queue := replaypg.New(h.pool, leaderboardpg.New(h.pool, false))
+	layouts, err := keyboard.Load()
+	require.NoError(t, err)
+	queue := replaypg.New(h.pool, leaderboardpg.New(h.pool, false)).
+		WithKeyboard(keyboardpg.New(layouts))
 	w := replay.NewWorker(queue, reg, quote.ReplayResolver{Store: quotepg.New(h.pool)},
 		replay.WorkerConfig{BatchSize: 10}, discard)
 	_, err = w.RunBatch(context.Background(), core, discard)
@@ -322,4 +327,29 @@ func TestQuoteRunOnAnUnknownQuoteIsFlaggedNotRejected(t *testing.T) {
 	require.Equal(t, "flagged", after["status"])
 	require.NotEqual(t, "rejected", after["status"])
 	assert.Equal(t, "unknown_quote", after["validation"].(map[string]any)["reason"])
+}
+
+// revalidateOnce drives one bundle/policy-aware revalidate batch under the
+// given policy, keyboard projector attached — the same pass `make revalidate`
+// runs, which is also the keyboard projection's backfill mechanism.
+func (h *harness) revalidateOnce(t *testing.T, policy replay.Policy) {
+	t.Helper()
+	core, err := replay.NewCore(replay.DefaultReplayTimeout)
+	require.NoError(t, err)
+	reg, err := replay.NewRegistry(core)
+	require.NoError(t, err)
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	layouts, err := keyboard.Load()
+	require.NoError(t, err)
+	queue := replaypg.New(h.pool, leaderboardpg.New(h.pool, false)).
+		WithKeyboard(keyboardpg.New(layouts))
+	w := replay.NewWorker(queue, reg, quote.ReplayResolver{Store: quotepg.New(h.pool)},
+		replay.WorkerConfig{BatchSize: 50, Policy: policy}, discard)
+	for {
+		n, err := w.RevalidateBatch(context.Background(), core, discard)
+		require.NoError(t, err)
+		if n == 0 {
+			return
+		}
+	}
 }

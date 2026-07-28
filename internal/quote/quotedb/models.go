@@ -175,6 +175,7 @@ type Run struct {
 	LastError               *string
 	PolicyVersion           *int16
 	RestartsSinceLastSubmit int32
+	KeyboardProjected       bool
 }
 
 type Session struct {
@@ -196,4 +197,13 @@ type UserCredential struct {
 	UserID       uuid.UUID
 	Argon2idHash string
 	UpdatedAt    time.Time
+}
+
+type UserKeyboardProfile struct {
+	UserID        uuid.UUID
+	KeyID         string
+	Presses       int64
+	Errors        int64
+	IntervalSumMs float64
+	IntervalCount int64
 }

@@ -25,6 +25,8 @@ import (
 
 	"github.com/typemore/typemore-server/internal/auth"
 	"github.com/typemore/typemore-server/internal/auth/pgstore"
+	"github.com/typemore/typemore-server/internal/keyboard"
+	keyboardpg "github.com/typemore/typemore-server/internal/keyboard/pgstore"
 	"github.com/typemore/typemore-server/internal/leaderboard"
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/moderation"
@@ -137,6 +139,16 @@ func run() error {
 			return u.ID, ok
 		}, logger)
 
+	// Keyboard layouts: the shared data asset (internal/keyboard/layouts) —
+	// the char → physical-key mapping the keyboard projection folds through,
+	// the heatmap's geometry, and (later) the anticheat bigram heuristics'
+	// finger map. A malformed asset is a startup error by design.
+	layouts, err := keyboard.Load()
+	if err != nil {
+		logger.Error("load keyboard layouts", "err", err)
+		os.Exit(1)
+	}
+
 	// Profile: the caller's own statistics (docs/PROFILE.md), on-demand SQL
 	// over runs plus a read of the PB slots the leaderboard projection already
 	// maintains. Session-scoped — v1 has no public-profile surface at all. The
@@ -168,7 +180,7 @@ func run() error {
 				info.WordCount = &dim
 			}
 			return info, true
-		}, logger)
+		}, layouts.LayoutFor, logger)
 
 	// Quotes: the fixed-text corpus (SCORING_CONCEPT §6, docs/QUOTES.md). Read
 	// only, and unauthenticated like the boards and the dictionaries — a guest
@@ -217,7 +229,7 @@ func run() error {
 		// narrow interfaces; this is the only place that knows they are the
 		// dictionary registry and Postgres.
 		worker := replay.NewWorker(
-			replaypg.New(pool, boardStore),
+			replaypg.New(pool, boardStore).WithKeyboard(keyboardpg.New(layouts)),
 			dictReg,
 			quote.ReplayResolver{Store: quoteStore},
 			replay.WorkerConfig{
@@ -292,6 +304,10 @@ func run() error {
 		// subtree carries its own RequireAuth so no route can be added public
 		// by accident (docs/PROFILE.md, "Privacy").
 		r.Mount("/profile", profileSvc.Routes(authSvc.RequireAuth))
+		// The layouts asset, public and cacheable like the dictionaries: the
+		// heatmap needs geometry before it needs data, and a guest reading a
+		// public page one day will too.
+		r.Mount("/layouts", layouts.Routes(logger))
 		// Quotes need no session at all — not even an optional one. Nothing on
 		// this subtree varies by who is asking, so it is mounted bare rather
 		// than behind OptionalAuth like the boards.

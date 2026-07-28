@@ -7,6 +7,7 @@ package runs_test
 // except where a test says so explicitly.
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/typemore/typemore-server/internal/replay"
 )
 
 type profileSummaryResp struct {
@@ -387,4 +390,144 @@ func TestRunsListLiftsTheQuoteId(t *testing.T) {
 	row := list["runs"].([]any)[0].(map[string]any)
 	assert.Equal(t, vector.Quote.ID.String(), row["quoteId"],
 		"run_quote_id lifts the setup's quote reference")
+}
+
+// --- the keyboard heatmap projection (docs/PROFILE.md, "Keyboard") ----------
+
+type keyboardResp struct {
+	Layout string `json:"layout"`
+	Keys   []struct {
+		KeyID         string  `json:"keyId"`
+		Count         int64   `json:"count"`
+		ErrorRate     float64 `json:"errorRate"`
+		AvgIntervalMs float64 `json:"avgIntervalMs"`
+		Intervals     int64   `json:"intervals"`
+	} `json:"keys"`
+}
+
+func (r keyboardResp) key(id string) (int, bool) {
+	for i := range r.Keys {
+		if r.Keys[i].KeyID == id {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// An accepted run builds the projection inside the verdict transaction: keys
+// appear mapped through the layouts asset, the planted typo shows as an error
+// on its physical key, and the aggregates never require reading a log again.
+func TestKeyboardProjectionBuildsFromAcceptedRun(t *testing.T) {
+	h := newHarness(t)
+	h.login("kbd@example.com", "correct horse battery", "kbduser")
+
+	// A fresh account: qwerty default, no keys, honest empty.
+	empty := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	assert.Equal(t, "qwerty", empty.Layout)
+	assert.Empty(t, empty.Keys)
+
+	requireStatus(t, h.post("/api/v1/runs", goldenPayload(t, "words-consistency-chars")),
+		http.StatusAccepted)
+	h.replayOnce(t)
+
+	kb := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	assert.Equal(t, "qwerty", kb.Layout, "german maps through qwerty")
+	require.NotEmpty(t, kb.Keys)
+
+	// The vector's commits are Space presses.
+	i, ok := kb.key("Space")
+	require.True(t, ok, "the commits must observe as Space presses")
+	assert.EqualValues(t, 6, kb.Keys[i].Count, "six committed words, six Space presses")
+	assert.Zero(t, kb.Keys[i].ErrorRate)
+
+	// The planted typo is a 'q' at a position that wanted something else: the
+	// physical KeyQ carries an error.
+	q, ok := kb.key("KeyQ")
+	require.True(t, ok, "the planted typo lands on KeyQ")
+	assert.Positive(t, kb.Keys[q].ErrorRate)
+
+	// Intervals were observed and averaged into a human range.
+	var sawInterval bool
+	for _, k := range kb.Keys {
+		require.GreaterOrEqual(t, k.ErrorRate, 0.0)
+		require.LessOrEqual(t, k.ErrorRate, 1.0)
+		if k.Intervals > 0 {
+			sawInterval = true
+			assert.Positive(t, k.AvgIntervalMs)
+			assert.Less(t, k.AvgIntervalMs, 2000.0)
+		}
+	}
+	assert.True(t, sawInterval)
+}
+
+// The stamp makes the incremental update exactly-once: a bundle-arm revalidate
+// re-judges the run (that IS the backfill mechanism) without double-counting a
+// single press.
+func TestKeyboardProjectionIsExactlyOnceAcrossRevalidate(t *testing.T) {
+	h := newHarness(t)
+	h.login("kbd-once@example.com", "correct horse battery", "kbdonce")
+
+	requireStatus(t, h.post("/api/v1/runs", goldenPayload(t, "words-clean")), http.StatusAccepted)
+	h.replayOnce(t)
+	before := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	require.NotEmpty(t, before.Keys)
+
+	// Simulate history judged by an older bundle — exactly the backfill shape —
+	// and run the revalidate pass that re-replays it.
+	_, err := h.pool.Exec(context.Background(), `UPDATE runs SET bundle_sha = 'deadbeef'`)
+	require.NoError(t, err)
+	h.revalidateOnce(t, replay.DefaultPolicy())
+
+	after := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	assert.Equal(t, before, after, "a re-judged accepted run must not count twice")
+}
+
+// A demotion reverses the run's contribution — same observations, opposite
+// sign — and a re-promotion restores it. The stamp travels with the state.
+func TestKeyboardProjectionReversesOnDemotion(t *testing.T) {
+	h := newHarness(t)
+	h.login("kbd-demote@example.com", "correct horse battery", "kbddemote")
+
+	requireStatus(t, h.post("/api/v1/runs", goldenPayload(t, "words-clean")), http.StatusAccepted)
+	h.replayOnce(t)
+	before := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	require.NotEmpty(t, before.Keys)
+
+	// A zero threshold flags every run (suspicion >= threshold), demoting it.
+	harsh := replay.DefaultPolicy()
+	harsh.Version = 99
+	harsh.ReviewThreshold = 0
+	h.revalidateOnce(t, harsh)
+
+	demoted := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	for _, k := range demoted.Keys {
+		assert.Zero(t, k.Count, "key %s must be reversed to zero", k.KeyID)
+		assert.Zero(t, k.Intervals, "key %s must be reversed to zero", k.KeyID)
+	}
+
+	// The default policy re-accepts it; the contribution returns.
+	restore := replay.DefaultPolicy()
+	restore.Version = 100
+	h.revalidateOnce(t, restore)
+	restored := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
+	assert.Equal(t, before, restored, "re-promotion restores the exact contribution")
+}
+
+// The public layouts asset: both layouts, physical key ids, served cacheable.
+func TestLayoutsAssetIsServed(t *testing.T) {
+	h := newHarness(t)
+	resp := h.get("/api/v1/layouts")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body := decodeInto[struct {
+		Layouts []struct {
+			Name string `json:"name"`
+			Keys []struct {
+				ID    string   `json:"id"`
+				Chars []string `json:"chars"`
+			} `json:"keys"`
+		} `json:"layouts"`
+	}](t, resp)
+	require.Len(t, body.Layouts, 2)
+	names := []string{body.Layouts[0].Name, body.Layouts[1].Name}
+	assert.ElementsMatch(t, []string{"qwerty", "jcuken"}, names)
 }

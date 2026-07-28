@@ -25,10 +25,13 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/typemore/typemore-server/internal/keyboard"
+	keyboardpg "github.com/typemore/typemore-server/internal/keyboard/pgstore"
 	"github.com/typemore/typemore-server/internal/perf"
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/migrate"
 	profilepg "github.com/typemore/typemore-server/internal/profile/pgstore"
+	"github.com/typemore/typemore-server/internal/replay"
 )
 
 const zone9 = "zone 9 (profile aggregates)"
@@ -424,4 +427,116 @@ func TestLoadProfileBudgets(t *testing.T) {
 			_, err := store.PBs(ctx, f.user)
 			return err
 		})
+}
+
+// --- the keyboard heatmap (docs/PROFILE.md, "Keyboard") ---------------------
+
+const sqlKeyboard = `
+SELECT key_id, presses, errors, interval_sum_ms, interval_count
+FROM user_keyboard_profile
+WHERE user_id = $1
+ORDER BY key_id`
+
+// seedKeyboard populates user_keyboard_profile: ~46 keys for the profile user
+// and for a slice of the background population — without the background rows
+// the whole table would be one user's four dozen rows and a seq scan would be
+// the planner's correct answer.
+func seedKeyboard(t *testing.T, f *loadFixture) {
+	t.Helper()
+	ctx := context.Background()
+	var n int64
+	require.NoError(t, f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_keyboard_profile`).Scan(&n))
+	if n > 0 {
+		return
+	}
+	_, err := f.pool.Exec(ctx, `
+		INSERT INTO user_keyboard_profile (user_id, key_id, presses, errors, interval_sum_ms, interval_count)
+		SELECT u.id, k.key_id, 1000, 20, 150000, 900
+		FROM (SELECT id FROM users LIMIT 5000) u
+		CROSS JOIN (SELECT 'Key' || chr(65 + g) AS key_id FROM generate_series(0, 25) g
+		            UNION ALL SELECT 'Space' UNION ALL SELECT 'other') k`)
+	require.NoError(t, err)
+	_, err = f.pool.Exec(ctx, `
+		INSERT INTO user_keyboard_profile (user_id, key_id, presses, errors, interval_sum_ms, interval_count)
+		SELECT $1, 'Key' || chr(65 + g), 5000, 100, 700000, 4500
+		FROM generate_series(0, 25) g
+		ON CONFLICT (user_id, key_id) DO NOTHING`, f.user)
+	require.NoError(t, err)
+	_, err = f.pool.Exec(ctx, `ANALYZE user_keyboard_profile`)
+	require.NoError(t, err)
+}
+
+// The heatmap read must be one PK-prefix index scan of the user's four dozen
+// rows — never a scan of everyone's.
+func TestLoadProfileKeyboardPlan(t *testing.T) {
+	f := fixture(t)
+	seedKeyboard(t, f)
+
+	plan, err := perf.Explain(context.Background(), f.pool, sqlKeyboard, f.user)
+	require.NoError(t, err)
+	perf.AssertPlan(t, plan, perf.PlanAssertion{
+		Zone:        zone9,
+		Query:       "keyboard",
+		WantAny:     []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"},
+		NoSeqScanOn: []string{"user_keyboard_profile", "runs"},
+	})
+}
+
+// The endpoint budget (read side) and the projection's write cost — the upsert
+// that joins every verdict transaction, measured as one add + one reversal per
+// iteration so the fixture ends where it began.
+func TestLoadProfileKeyboardBudgets(t *testing.T) {
+	f := fixture(t)
+	seedKeyboard(t, f)
+	ctx := context.Background()
+
+	med := measure(t, 15, func() error {
+		_, _, err := f.store.Keyboard(ctx, f.user)
+		return err
+	})
+	perf.Budget{
+		Zone: zone9, Workload: "GET /profile/keyboard", Limit: 500 * time.Millisecond,
+		Rationale: "one PK-prefix scan of ~46 rows plus the dominant-language group over the user's index entries; measured median ~150 ms ×3",
+	}.Assert(t, med)
+
+	// The projection write: a representative per-run contribution (46 keys),
+	// added and then reversed inside transactions on a run of the seeded user.
+	layouts, err := keyboard.Load()
+	require.NoError(t, err)
+	projector := keyboardpg.New(layouts)
+	var runID uuid.UUID
+	require.NoError(t, f.pool.QueryRow(ctx, `
+		SELECT id FROM runs
+		WHERE user_id = $1 AND status = 'accepted' AND NOT keyboard_projected
+		LIMIT 1`, f.user).Scan(&runID))
+	observations := make([]replay.CharObservation, 0, 46)
+	for c := 'a'; c <= 'z'; c++ {
+		observations = append(observations, replay.CharObservation{
+			Char: string(c), Presses: 12, Errors: 1, IntervalSumMs: 1400, IntervalCount: 11,
+		})
+	}
+	observations = append(observations, replay.CharObservation{Char: " ", Presses: 9, IntervalSumMs: 900, IntervalCount: 9})
+
+	project := func(accepted bool) error {
+		tx, err := f.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := projector.ProjectKeyboard(ctx, tx, runID, accepted, observations); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	med = measure(t, 15, func() error {
+		if err := project(true); err != nil { // add + stamp
+			return err
+		}
+		return project(false) // reverse + unstamp
+	})
+	perf.Budget{
+		Zone: zone9, Workload: "keyboard projection per verdict (add+reverse)", Limit: 50 * time.Millisecond,
+		Rationale: "two ~46-row PK upserts plus the stamp, the cost every verdict transaction carries; measured median ~6 ms ×4, doubled here because the probe does both directions",
+	}.Assert(t, med)
 }

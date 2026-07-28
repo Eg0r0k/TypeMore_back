@@ -217,8 +217,12 @@ func (p Policy) Decide(run PendingRun, res Result, replayErr error) Decision {
 
 	// From here the log replayed cleanly, so the server's numbers are the
 	// authoritative ones and are stored whatever the decision turns out to be.
+	// The keyboard observations travel the same way: whatever the status, the
+	// projector needs them — to add an accepted contribution, or to reverse a
+	// stamped one this decision just demoted.
 	base.ServerMetrics = res.Metrics
 	base.ServerScore = res.Score
+	base.CharObservations = res.CharObservations
 
 	// The policy block is attached to every valid decision — accepted included.
 	// An accepted run KEEPS its flags and its suspicion so moderation can audit

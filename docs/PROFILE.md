@@ -31,6 +31,10 @@ get `401`. Errors are `{"error":"<code>","message":"..."}`.
 | GET | `/api/v1/profile/histogram` | Accepted-test counts per 10-wpm bucket |
 | GET | `/api/v1/profile/timeseries?from=&to=` | Per-day `{timeTypingMs, avgWpm, avgAcc}` + the trend stat |
 | GET | `/api/v1/profile/pbs` | Best leaderboard entry per bucket the caller holds |
+| GET | `/api/v1/profile/keyboard` | The keyboard heatmap's per-key aggregates |
+
+`GET /api/v1/layouts` (public, cacheable) serves the layouts asset itself —
+geometry, fingers, and the symbol lists — for the heatmap's drawing.
 
 ### Aggregation rules (stated once, asserted by tests)
 
@@ -150,6 +154,48 @@ and vice versa, `source` never absent on a quote PB:
 Deliberately read from the raw entries table, not the ban-filtered
 `leaderboard_rows`: these are the caller's own bests on a session-scoped
 surface, and hiding a player's own history from them serves nobody.
+
+### `GET /profile/keyboard`
+
+The keyboard heatmap's data: per PHYSICAL key (`KeyboardEvent.code`
+vocabulary), lifetime press count, error rate and mean inter-key interval.
+
+```json
+{ "layout": "qwerty",
+  "keys": [ { "keyId": "KeyF", "count": 5321, "errorRate": 0.021,
+              "avgIntervalMs": 152.4, "intervals": 4980 } ] }
+```
+
+- `layout` is the DEFAULT the UI should open on: the layout of the caller's
+  most-played dictionary language (`qwerty` for a fresh account). The toggle
+  is free — aggregates are keyed by physical key, so both layouts render the
+  same portrait.
+- `intervals` is the observation count behind `avgIntervalMs`, so the UI can
+  refuse to color a key from three presses instead of faking confidence.
+- The rows come from **`user_keyboard_profile`** (migration `00016`): per-user
+  per-key aggregates maintained **incrementally inside the replay worker's
+  verdict transaction**, from per-character observations the core extracts
+  while the log is already parsed in goja (`charObservationsOf`,
+  `shared/core/keyboard.ts`). Aggregates NEVER require replaying a log at
+  request time — that is the projection's entire reason to exist.
+- Characters map onto keys through the **layouts asset**
+  (`internal/keyboard/layouts/` — data, not code, and the single source for
+  every consumer; its README names the anticheat bigram heuristics as the
+  next one). A run's language picks the layout (ru → ЙЦУКЕН, else qwerty);
+  unmapped characters bucket to the reserved key `other`, never disappear.
+- **Exactly-once accounting**: a run's contribution is added when its verdict
+  lands accepted and the `runs.keyboard_projected` stamp is off, and reversed
+  (floored at zero) when a stamped run is re-judged to anything else. So
+  `make revalidate` — which already re-replays every stale run — IS the
+  backfill mechanism: after a bundle change it walks all history, and the
+  projection fills in exactly once per accepted run.
+- **Upgrade path**: key ids are already `KeyboardEvent.code`s. When the
+  projection starts consuming log-v2 telemetry, a v2 run's observations group
+  by the codes the log carries and the char mapping stops being consulted for
+  v2 runs; v1 runs keep the char basis forever. Nothing about the table moves.
+- **Privacy**: own profile only, like everything here — and when public
+  profiles arrive, the keyboard heatmap stays **private-by-default with its
+  own opt-in**: per-key error and timing profiles are effectively biometric.
 
 ## The runs list, extended for the profile table
 

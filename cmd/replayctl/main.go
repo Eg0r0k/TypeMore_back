@@ -34,6 +34,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/typemore/typemore-server/internal/keyboard"
+	keyboardpg "github.com/typemore/typemore-server/internal/keyboard/pgstore"
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/platform"
 	"github.com/typemore/typemore-server/internal/platform/db"
@@ -321,8 +323,15 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 	// projector the server does: a run demoted here leaves its board in the same
 	// transaction (docs/LEADERBOARDS.md, "Maintenance").
 	board := leaderboardpg.New(pool, cfg.LeaderboardRequireVerifiedEmail)
+	// …and the keyboard projector: revalidate's full pass IS the heatmap's
+	// backfill mechanism — the exactly-once stamp makes walking all history
+	// safe (docs/PROFILE.md, "Keyboard").
+	layouts, err := keyboard.Load()
+	if err != nil {
+		return err
+	}
 	worker := replay.NewWorker(
-		replaypg.New(pool, board),
+		replaypg.New(pool, board).WithKeyboard(keyboardpg.New(layouts)),
 		reg,
 		quote.ReplayResolver{Store: quotepg.New(pool)},
 		replay.WorkerConfig{

@@ -1,0 +1,534 @@
+{
+  "name": "jcuken",
+  "label": "ЙЦУКЕН",
+  "keys": [
+    {
+      "id": "Backquote",
+      "row": 0,
+      "col": 0,
+      "finger": "pinky",
+      "hand": "left",
+      "chars": [
+        "ё",
+        "Ё"
+      ]
+    },
+    {
+      "id": "Digit1",
+      "row": 0,
+      "col": 1,
+      "finger": "pinky",
+      "hand": "left",
+      "chars": [
+        "1",
+        "!"
+      ]
+    },
+    {
+      "id": "Digit2",
+      "row": 0,
+      "col": 2,
+      "finger": "ring",
+      "hand": "left",
+      "chars": [
+        "2",
+        "\""
+      ]
+    },
+    {
+      "id": "Digit3",
+      "row": 0,
+      "col": 3,
+      "finger": "middle",
+      "hand": "left",
+      "chars": [
+        "3",
+        "№"
+      ]
+    },
+    {
+      "id": "Digit4",
+      "row": 0,
+      "col": 4,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "4",
+        ";"
+      ]
+    },
+    {
+      "id": "Digit5",
+      "row": 0,
+      "col": 5,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "5",
+        "%"
+      ]
+    },
+    {
+      "id": "Digit6",
+      "row": 0,
+      "col": 6,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "6",
+        ":"
+      ]
+    },
+    {
+      "id": "Digit7",
+      "row": 0,
+      "col": 7,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "7",
+        "?"
+      ]
+    },
+    {
+      "id": "Digit8",
+      "row": 0,
+      "col": 8,
+      "finger": "middle",
+      "hand": "right",
+      "chars": [
+        "8",
+        "*"
+      ]
+    },
+    {
+      "id": "Digit9",
+      "row": 0,
+      "col": 9,
+      "finger": "ring",
+      "hand": "right",
+      "chars": [
+        "9",
+        "("
+      ]
+    },
+    {
+      "id": "Digit0",
+      "row": 0,
+      "col": 10,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "0",
+        ")"
+      ]
+    },
+    {
+      "id": "Minus",
+      "row": 0,
+      "col": 11,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "-",
+        "_"
+      ]
+    },
+    {
+      "id": "Equal",
+      "row": 0,
+      "col": 12,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "=",
+        "+"
+      ]
+    },
+    {
+      "id": "KeyQ",
+      "row": 1,
+      "col": 0,
+      "finger": "pinky",
+      "hand": "left",
+      "chars": [
+        "й",
+        "Й"
+      ]
+    },
+    {
+      "id": "KeyW",
+      "row": 1,
+      "col": 1,
+      "finger": "ring",
+      "hand": "left",
+      "chars": [
+        "ц",
+        "Ц"
+      ]
+    },
+    {
+      "id": "KeyE",
+      "row": 1,
+      "col": 2,
+      "finger": "middle",
+      "hand": "left",
+      "chars": [
+        "у",
+        "У"
+      ]
+    },
+    {
+      "id": "KeyR",
+      "row": 1,
+      "col": 3,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "к",
+        "К"
+      ]
+    },
+    {
+      "id": "KeyT",
+      "row": 1,
+      "col": 4,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "е",
+        "Е"
+      ]
+    },
+    {
+      "id": "KeyY",
+      "row": 1,
+      "col": 5,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "н",
+        "Н"
+      ]
+    },
+    {
+      "id": "KeyU",
+      "row": 1,
+      "col": 6,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "г",
+        "Г"
+      ]
+    },
+    {
+      "id": "KeyI",
+      "row": 1,
+      "col": 7,
+      "finger": "middle",
+      "hand": "right",
+      "chars": [
+        "ш",
+        "Ш"
+      ]
+    },
+    {
+      "id": "KeyO",
+      "row": 1,
+      "col": 8,
+      "finger": "ring",
+      "hand": "right",
+      "chars": [
+        "щ",
+        "Щ"
+      ]
+    },
+    {
+      "id": "KeyP",
+      "row": 1,
+      "col": 9,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "з",
+        "З"
+      ]
+    },
+    {
+      "id": "BracketLeft",
+      "row": 1,
+      "col": 10,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "х",
+        "Х"
+      ]
+    },
+    {
+      "id": "BracketRight",
+      "row": 1,
+      "col": 11,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "ъ",
+        "Ъ"
+      ]
+    },
+    {
+      "id": "Backslash",
+      "row": 1,
+      "col": 12,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "\\",
+        "/"
+      ]
+    },
+    {
+      "id": "KeyA",
+      "row": 2,
+      "col": 0,
+      "finger": "pinky",
+      "hand": "left",
+      "chars": [
+        "ф",
+        "Ф"
+      ]
+    },
+    {
+      "id": "KeyS",
+      "row": 2,
+      "col": 1,
+      "finger": "ring",
+      "hand": "left",
+      "chars": [
+        "ы",
+        "Ы"
+      ]
+    },
+    {
+      "id": "KeyD",
+      "row": 2,
+      "col": 2,
+      "finger": "middle",
+      "hand": "left",
+      "chars": [
+        "в",
+        "В"
+      ]
+    },
+    {
+      "id": "KeyF",
+      "row": 2,
+      "col": 3,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "а",
+        "А"
+      ]
+    },
+    {
+      "id": "KeyG",
+      "row": 2,
+      "col": 4,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "п",
+        "П"
+      ]
+    },
+    {
+      "id": "KeyH",
+      "row": 2,
+      "col": 5,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "р",
+        "Р"
+      ]
+    },
+    {
+      "id": "KeyJ",
+      "row": 2,
+      "col": 6,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "о",
+        "О"
+      ]
+    },
+    {
+      "id": "KeyK",
+      "row": 2,
+      "col": 7,
+      "finger": "middle",
+      "hand": "right",
+      "chars": [
+        "л",
+        "Л"
+      ]
+    },
+    {
+      "id": "KeyL",
+      "row": 2,
+      "col": 8,
+      "finger": "ring",
+      "hand": "right",
+      "chars": [
+        "д",
+        "Д"
+      ]
+    },
+    {
+      "id": "Semicolon",
+      "row": 2,
+      "col": 9,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "ж",
+        "Ж"
+      ]
+    },
+    {
+      "id": "Quote",
+      "row": 2,
+      "col": 10,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        "э",
+        "Э"
+      ]
+    },
+    {
+      "id": "KeyZ",
+      "row": 3,
+      "col": 0,
+      "finger": "pinky",
+      "hand": "left",
+      "chars": [
+        "я",
+        "Я"
+      ]
+    },
+    {
+      "id": "KeyX",
+      "row": 3,
+      "col": 1,
+      "finger": "ring",
+      "hand": "left",
+      "chars": [
+        "ч",
+        "Ч"
+      ]
+    },
+    {
+      "id": "KeyC",
+      "row": 3,
+      "col": 2,
+      "finger": "middle",
+      "hand": "left",
+      "chars": [
+        "с",
+        "С"
+      ]
+    },
+    {
+      "id": "KeyV",
+      "row": 3,
+      "col": 3,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "м",
+        "М"
+      ]
+    },
+    {
+      "id": "KeyB",
+      "row": 3,
+      "col": 4,
+      "finger": "index",
+      "hand": "left",
+      "chars": [
+        "и",
+        "И"
+      ]
+    },
+    {
+      "id": "KeyN",
+      "row": 3,
+      "col": 5,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "т",
+        "Т"
+      ]
+    },
+    {
+      "id": "KeyM",
+      "row": 3,
+      "col": 6,
+      "finger": "index",
+      "hand": "right",
+      "chars": [
+        "ь",
+        "Ь"
+      ]
+    },
+    {
+      "id": "Comma",
+      "row": 3,
+      "col": 7,
+      "finger": "middle",
+      "hand": "right",
+      "chars": [
+        "б",
+        "Б"
+      ]
+    },
+    {
+      "id": "Period",
+      "row": 3,
+      "col": 8,
+      "finger": "ring",
+      "hand": "right",
+      "chars": [
+        "ю",
+        "Ю"
+      ]
+    },
+    {
+      "id": "Slash",
+      "row": 3,
+      "col": 9,
+      "finger": "pinky",
+      "hand": "right",
+      "chars": [
+        ".",
+        ","
+      ]
+    },
+    {
+      "id": "Space",
+      "row": 4,
+      "col": 0,
+      "finger": "thumb",
+      "hand": "right",
+      "chars": [
+        " "
+      ],
+      "width": 6
+    }
+  ]
+}

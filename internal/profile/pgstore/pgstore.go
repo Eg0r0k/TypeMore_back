@@ -8,10 +8,12 @@ package pgstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
@@ -174,4 +176,31 @@ func (s *Store) PBs(ctx context.Context, userID uuid.UUID) ([]profile.PB, error)
 		}
 	}
 	return out, nil
+}
+
+// Keyboard returns the user_keyboard_profile rows and the dominant language.
+func (s *Store) Keyboard(ctx context.Context, userID uuid.UUID) ([]profile.KeyboardKey, string, error) {
+	rows, err := s.q.GetProfileKeyboard(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	lang, err := s.q.GetProfileDominantLang(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			lang = "" // a fresh account has no dominant language yet
+		} else {
+			return nil, "", err
+		}
+	}
+	out := make([]profile.KeyboardKey, len(rows))
+	for i, r := range rows {
+		out[i] = profile.KeyboardKey{
+			KeyID:         r.KeyID,
+			Presses:       r.Presses,
+			Errors:        r.Errors,
+			IntervalSumMs: r.IntervalSumMs,
+			IntervalCount: r.IntervalCount,
+		}
+	}
+	return out, lang, nil
 }

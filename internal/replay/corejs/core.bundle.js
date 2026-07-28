@@ -80,6 +80,7 @@ var TypeMoreCore = (() => {
     EVENT_LOG_VERSION: () => EVENT_LOG_VERSION,
     EVENT_LOG_VERSION_TELEMETRY: () => EVENT_LOG_VERSION_TELEMETRY,
     GameCore: () => GameCore,
+    KEY_INTERVAL_CAP_MS: () => KEY_INTERVAL_CAP_MS,
     MINSPEED_GRACE_MS: () => MINSPEED_GRACE_MS,
     MINSPEED_MULTIPLIERS: () => MINSPEED_MULTIPLIERS,
     MOD_MULTIPLIERS: () => MOD_MULTIPLIERS,
@@ -95,6 +96,7 @@ var TypeMoreCore = (() => {
     asMs: () => asMs,
     asSeq: () => asSeq,
     bufferOf: () => bufferOf,
+    charObservationsOf: () => charObservationsOf,
     comboMultiplier: () => comboMultiplier,
     commitEvent: () => commitEvent,
     computeMetrics: () => computeMetrics,
@@ -1349,6 +1351,61 @@ var TypeMoreCore = (() => {
       this._events.length = 0;
     }
   };
+
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/keyboard.ts
+  var KEY_INTERVAL_CAP_MS = 2e3;
+  function charObservationsOf(ctx, events) {
+    var _a;
+    let state = initialStateOf(ctx);
+    const byChar = /* @__PURE__ */ new Map();
+    const observe = (char, wrong, intervalMs) => {
+      let row = byChar.get(char);
+      if (row === void 0) {
+        row = { presses: 0, errors: 0, sum: 0, n: 0 };
+        byChar.set(char, row);
+      }
+      row.presses++;
+      if (wrong) row.errors++;
+      if (intervalMs !== null && intervalMs >= 0 && intervalMs <= KEY_INTERVAL_CAP_MS) {
+        row.sum += intervalMs;
+        row.n++;
+      }
+    };
+    const stateEvents = events.some(isTelemetryEvent) ? events.filter((e) => !isTelemetryEvent(e)) : events;
+    let prevT = null;
+    for (const event of sortEvents(stateEvents)) {
+      state = settle(ctx, state, event.t);
+      if (state.phase === "finished") break;
+      if (event.kind === "insert") {
+        const target = (_a = ctx.words[state.wordIndex]) != null ? _a : "";
+        const startPos = bufferOf(state, state.wordIndex).length;
+        for (let k = 0; k < event.text.length; k++) {
+          const pos = startPos + k;
+          const wrong = !(pos < target.length && target[pos] === event.text[k]);
+          observe(event.text[k], wrong, k === 0 && prevT !== null ? event.t - prevT : null);
+        }
+      }
+      const before = state.wordIndex;
+      const result = reduce(ctx, state, event);
+      if (result.isErr()) break;
+      state = result.value;
+      if (event.kind === "insert") {
+        prevT = event.t;
+      } else if (event.kind === "commit" && state.wordIndex > before) {
+        observe(" ", false, prevT !== null ? event.t - prevT : null);
+        prevT = event.t;
+      } else {
+        prevT = null;
+      }
+    }
+    return [...byChar.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([char, row]) => ({
+      char,
+      presses: row.presses,
+      errors: row.errors,
+      intervalSumMs: row.sum,
+      intervalCount: row.n
+    }));
+  }
 
   // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/stats.ts
   function analyzeLog(ctx, events) {

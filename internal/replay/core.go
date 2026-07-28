@@ -90,6 +90,9 @@ type Core struct {
 	validateLog   goja.Callable
 	scoreOfLog    goja.Callable
 	scoreV2OfLog  goja.Callable
+	// charObservationsOf feeds the user_keyboard_profile projection: per typed
+	// character — presses, errors, inter-key intervals (docs/PROFILE.md).
+	charObservationsOf goja.Callable
 
 	// Host intrinsics used to move plain JSON across the boundary.
 	jsonParse     goja.Callable
@@ -149,6 +152,7 @@ func NewCore(timeout time.Duration) (*Core, error) {
 		{&c.validateLog, "validateLog"},
 		{&c.scoreOfLog, "scoreOfLog"},
 		{&c.scoreV2OfLog, "scoreV2OfLog"},
+		{&c.charObservationsOf, "charObservationsOf"},
 	} {
 		if err := bind(b.dst, b.name); err != nil {
 			return nil, err
@@ -384,6 +388,20 @@ type Result struct {
 	Metrics json.RawMessage `json:"-"`
 	// Score is the server-recomputed ScoreResult; nil when the verdict is invalid.
 	Score json.RawMessage `json:"-"`
+	// CharObservations is the keyboard projection's input, extracted by the
+	// core from the same replay (nil when the verdict is invalid — a refused
+	// log's keystrokes are not evidence of anything).
+	CharObservations []CharObservation `json:"-"`
+}
+
+// CharObservation mirrors the core's CharObservation (shared/core/keyboard.ts):
+// one typed character's aggregates over a single run.
+type CharObservation struct {
+	Char          string  `json:"char"`
+	Presses       int64   `json:"presses"`
+	Errors        int64   `json:"errors"`
+	IntervalSumMs float64 `json:"intervalSumMs"`
+	IntervalCount int64   `json:"intervalCount"`
 }
 
 // setupParts is the only piece of the submitted setup the pipeline has to look
@@ -489,7 +507,71 @@ func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
 		return Result{}, err
 	}
 	report.Score = score
+
+	// The keyboard observations for the user_keyboard_profile projection —
+	// extracted HERE, while the log is already parsed in this runtime, so the
+	// aggregates never require replaying a log anywhere else. Valid logs only:
+	// an invalid log returned above, and its keystrokes are not evidence of
+	// anything.
+	observations, err := c.charObservations(ctx, input, dictionary)
+	if err != nil {
+		return Result{}, err
+	}
+	report.CharObservations = observations
 	return report, nil
+}
+
+// charObservations calls the core's charObservationsOf over the same words and
+// events the verdict was computed from, and decodes the per-character rows.
+func (c *Core) charObservations(ctx context.Context, input *goja.Object, dictionary goja.Value) ([]CharObservation, error) {
+	snapshot, ok := input.Get("configSnapshot").(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: configSnapshot is not an object")
+	}
+	seedContext := c.rt.NewObject()
+	if err := errors.Join(
+		seedContext.Set("seed", input.Get("seed")),
+		seedContext.Set("dictVersion", input.Get("dictVersion")),
+		seedContext.Set("generation", snapshot.Get("generation")),
+	); err != nil {
+		return nil, fmt.Errorf("replay: build seed context: %w", err)
+	}
+	generated, err := c.call(ctx, c.generateWords, dictionary, seedContext)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.unwrapResult(ctx, generated)
+	if err != nil {
+		return nil, err
+	}
+	genObj, ok := value.(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: generateWords returned a non-object")
+	}
+	logObj, ok := input.Get("log").(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: log is not an object")
+	}
+	coreCtx := c.rt.NewObject()
+	if err := errors.Join(
+		coreCtx.Set("config", snapshot.Get("config")),
+		coreCtx.Set("words", genObj.Get("words")),
+	); err != nil {
+		return nil, fmt.Errorf("replay: build observation context: %w", err)
+	}
+	rows, err := c.call(ctx, c.charObservationsOf, coreCtx, logObj.Get("events"))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.stringifyJSON(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	var out []CharObservation
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("replay: decode char observations: %w", err)
+	}
+	return out, nil
 }
 
 // validate runs validateLog and lifts its report into Go, keeping the metrics

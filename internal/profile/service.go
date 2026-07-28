@@ -37,17 +37,23 @@ type BucketInfo struct {
 // cannot silently hide a player's own PB.
 type BucketParser func(key string) (BucketInfo, bool)
 
+// LayoutNamer maps a dictionary language onto the layout the heatmap should
+// default to. The rule lives in internal/keyboard beside the asset; the
+// composition root injects it so this domain stays layout-agnostic.
+type LayoutNamer func(lang string) string
+
 // Service serves the session-scoped profile read model.
 type Service struct {
-	store  Store
-	userID UserIDFunc
-	bucket BucketParser
-	log    *slog.Logger
+	store     Store
+	userID    UserIDFunc
+	bucket    BucketParser
+	layoutFor LayoutNamer
+	log       *slog.Logger
 }
 
 // NewService wires the profile service.
-func NewService(store Store, userID UserIDFunc, bucket BucketParser, log *slog.Logger) *Service {
-	return &Service{store: store, userID: userID, bucket: bucket, log: log}
+func NewService(store Store, userID UserIDFunc, bucket BucketParser, layoutFor LayoutNamer, log *slog.Logger) *Service {
+	return &Service{store: store, userID: userID, bucket: bucket, layoutFor: layoutFor, log: log}
 }
 
 // --- shared HTTP helpers (mirroring the sibling domains', kept private) -----

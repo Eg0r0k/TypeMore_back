@@ -162,3 +162,21 @@ SELECT bucket_key, run_id, score, wpm::float8 AS wpm, raw::float8 AS raw,
 FROM leaderboard_entries
 WHERE user_id = $1
 ORDER BY achieved_at DESC;
+
+-- name: GetProfileKeyboard :many
+-- The keyboard heatmap read: the projection's rows, verbatim — aggregates the
+-- worker maintains at verdict time, never derived from logs at request time.
+SELECT key_id, presses, errors, interval_sum_ms, interval_count
+FROM user_keyboard_profile
+WHERE user_id = $1
+ORDER BY key_id;
+
+-- name: GetProfileDominantLang :one
+-- The user's most-played dictionary language — the heatmap's default layout
+-- comes from it. Ties break alphabetically so the answer is stable.
+SELECT lang
+FROM runs
+WHERE user_id = $1
+GROUP BY lang
+ORDER BY count(*) DESC, lang
+LIMIT 1;

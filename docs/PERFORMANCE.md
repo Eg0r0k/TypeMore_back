@@ -138,6 +138,8 @@ Three properties of this rig shape every figure:
 | 9 | GET /profile/histogram | 215 ms median | 600 ms | PASS (36%) |
 | 9 | GET /profile/timeseries (1y) + slope | 374 ms median | 700 ms | PASS (53%) |
 | 9 | GET /profile/pbs | 1.1 ms median | 25 ms | PASS (4%) |
+| 9 | GET /profile/keyboard | 122 ms median | 500 ms | PASS (24%) |
+| 9 | keyboard projection per verdict (add+reverse) | 8.8 ms median | 50 ms | PASS (18%) |
 | 9 | runs-list deep keyset page (row 50 000) *(after 00015)* | **0.8 ms** *(was 66.9)* | index seek, no sort | PASS |
 | 9 | every profile aggregate's plan | bitmap/index-driven, no spill | no seq scan of runs, no external sort | PASS |
 
@@ -1044,6 +1046,8 @@ correct answer and the check would pin nothing.
 | GET /profile/histogram | **215 ms** | 600 ms | PASS (36%) |
 | GET /profile/timeseries (1 y, incl. slope) | **374 ms** | 700 ms | PASS (53%) |
 | GET /profile/pbs | **1.1 ms** | 25 ms | PASS (4%) |
+| GET /profile/keyboard | **122 ms** | 500 ms | PASS (24%) |
+| keyboard projection per verdict (add + reverse) | **8.8 ms** | 50 ms | PASS (18%) |
 
 Budgets are measured medians with ~2–3× headroom — generous enough for CI
 noise, tight enough that an accidental table scan (~seconds at 1M rows) fails
@@ -1071,6 +1075,16 @@ these budgets, the first move is a covering expression index, not a cache
   merge. The stat now regresses over the per-DAY buckets (≤ 366 points, the
   same series the chart plots), which is both the honest granularity for a
   daily chart's headline and a sort that fits in a page.
+
+The keyboard rows deserve their own note. The READ is a PK-prefix scan of the
+user's ~46 aggregate rows plus the dominant-language group over their index
+entries — the projection's whole point is that no request ever replays a log.
+The WRITE is the cost every verdict transaction now carries: one ~46-row
+upsert plus the exactly-once stamp, measured at ~4 ms per direction on the
+100k fixture (the probe pays both add and reverse per iteration, hence the
+doubled budget). That is the price of "accepted" and "counted in the heatmap"
+being one atomic fact, and it is an order of magnitude below the verdict's own
+replay cost.
 
 `GET /profile/summary` issues its six component aggregates concurrently
 (errgroup over the pool): four of them each walk the same ~100k index entries,

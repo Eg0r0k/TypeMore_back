@@ -55,6 +55,13 @@ type Decision struct {
 	Attempts int16
 	// LastError is the operator-facing failure detail; empty clears the column.
 	LastError string
+	// CharObservations feeds the keyboard projection (docs/PROFILE.md): the
+	// per-character rows the core extracted from THIS replay. Present whenever
+	// the log replayed cleanly — whatever the status — because the projector
+	// needs them both to add an accepted run's contribution and to reverse a
+	// previously-projected run that was just demoted. Nil when the log could
+	// not be replayed or was invalid.
+	CharObservations []CharObservation
 }
 
 // Queue is the worker's persistence contract, declared here at the consumer.

@@ -86,6 +86,16 @@ type PB struct {
 	AchievedAt  time.Time
 }
 
+// KeyboardKey is one physical key's lifetime aggregates from the
+// user_keyboard_profile projection (docs/PROFILE.md, "Keyboard").
+type KeyboardKey struct {
+	KeyID         string
+	Presses       int64
+	Errors        int64
+	IntervalSumMs float64
+	IntervalCount int64
+}
+
 // Store is the profile read model, implemented by pgstore. Every method is
 // scoped to one user; today is the caller's UTC date for the streak boundary.
 type Store interface {
@@ -96,4 +106,8 @@ type Store interface {
 	// slope of wpm over cumulative hours typed in that range (docs/PROFILE.md).
 	Timeseries(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]TimeseriesDay, float64, error)
 	PBs(ctx context.Context, userID uuid.UUID) ([]PB, error)
+	// Keyboard returns the projection's rows plus the user's dominant
+	// dictionary language ("" for a fresh account) — the heatmap's default
+	// layout is derived from it.
+	Keyboard(ctx context.Context, userID uuid.UUID) ([]KeyboardKey, string, error)
 }

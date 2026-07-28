@@ -27,6 +27,7 @@ import (
 
 	"github.com/typemore/typemore-server/internal/auth"
 	authpg "github.com/typemore/typemore-server/internal/auth/pgstore"
+	"github.com/typemore/typemore-server/internal/keyboard"
 	"github.com/typemore/typemore-server/internal/leaderboard"
 	leaderboardpg "github.com/typemore/typemore-server/internal/leaderboard/pgstore"
 	"github.com/typemore/typemore-server/internal/moderation"
@@ -174,8 +175,11 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 		return u.ID, ok
 	}, logger)
 
-	// Profile wired exactly as cmd/server does it, bucket parser adapter
-	// included, so this suite exercises the same decoration production serves.
+	// Profile wired exactly as cmd/server does it, bucket parser adapter and
+	// layout namer included, so this suite exercises the same decoration
+	// production serves.
+	layouts, err := keyboard.Load()
+	require.NoError(t, err)
 	profileSvc := profile.NewService(profilepg.New(pool),
 		func(c context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(c)
@@ -200,7 +204,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 				info.WordCount = &dim
 			}
 			return info, true
-		}, logger)
+		}, layouts.LayoutFor, logger)
 
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) {
@@ -208,6 +212,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
 		r.Mount("/runs", runsSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
 		r.Mount("/profile", profileSvc.Routes(authSvc.RequireAuth))
+		r.Mount("/layouts", layouts.Routes(logger))
 		// /me needs a session; the auth middleware is applied inside the group
 		// so the two public routes stay public, as in cmd/server.
 		r.Group(func(r chi.Router) {
