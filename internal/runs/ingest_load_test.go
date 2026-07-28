@@ -220,7 +220,16 @@ func TestLoadIngestOversizedBodyRejectedEarly(t *testing.T) {
 		nallocs uint64
 		samples int
 	}
-	rungs := []rung{{size: 4 << 20}, {size: 8 << 20}, {size: 16 << 20}}
+	// Cap-RELATIVE rungs, so the fixture cannot rot under a future cap raise
+	// the way the absolute 4/8/16 MiB ladder silently did when 2 MiB became
+	// 6.5 (every rung must exceed the cap, or the assert below checks a body
+	// the server happily accepts). The 4× spread between the first and last
+	// rung is what the scaling assert at the bottom measures.
+	rungs := []rung{
+		{size: perf.MaxBodyBytes * 5 / 4},
+		{size: perf.MaxBodyBytes * 5 / 2},
+		{size: perf.MaxBodyBytes * 5},
+	}
 
 	for i := range rungs {
 		body := oversizeBody(t, rungs[i].size)
@@ -266,7 +275,7 @@ func TestLoadIngestOversizedBodyRejectedEarly(t *testing.T) {
 	// before MaxBytesReader trips. Twice the cap is the line between "stopped at
 	// the limit" and "read the whole thing"; anything near the body size is the
 	// amplification an attacker would pay nothing for.
-	perf.AssertBytes(t, zone5, "heap growth rejecting an 8 MiB body",
+	perf.AssertBytes(t, zone5, "heap growth rejecting a 2.5×-cap body",
 		rungs[1].peak, 2*perf.MaxBodyBytes,
 		"the size cap must bound the buffer, not just the accepted length")
 
@@ -275,7 +284,7 @@ func TestLoadIngestOversizedBodyRejectedEarly(t *testing.T) {
 	// size by doubling — holding 2 MiB costs roughly 8 MiB of superseded buffers
 	// — and that constant is the whole point: it is a function of the CAP, so an
 	// attacker cannot buy more of it by sending more.
-	perf.AssertBytes(t, zone5, "bytes allocated rejecting an 8 MiB body",
+	perf.AssertBytes(t, zone5, "bytes allocated rejecting a 2.5×-cap body",
 		rungs[1].total, 8*perf.MaxBodyBytes,
 		"rejection must cost a constant multiple of the cap, never a function of the body")
 
@@ -284,7 +293,7 @@ func TestLoadIngestOversizedBodyRejectedEarly(t *testing.T) {
 	// straddles the limit; a linear response would show up as ~4×.
 	small, large := rungs[0], rungs[len(rungs)-1]
 	ratio := float64(large.total) / float64(small.total)
-	perf.Report(t, zone5, "cost scaling from 4 MiB to 16 MiB sent",
+	perf.Report(t, zone5, "cost scaling from 1.25×-cap to 5×-cap sent",
 		fmt.Sprintf("allocated %s → %s = %.2f× for %.1f× the body",
 			perf.MiB(small.total), perf.MiB(large.total), ratio,
 			float64(large.sent)/float64(small.sent)))

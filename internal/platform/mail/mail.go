@@ -80,10 +80,12 @@ func (s *SMTPSender) compose(msg Message) []byte {
 	return []byte(b.String())
 }
 
-// LogSender does not send anything; it logs the message (including the body,
-// which carries the verification/reset link) at info level. It is the default
-// when no SMTP host is configured, so a developer can grab the link from the
-// server logs without running a mail server.
+// LogSender does not send anything; it logs that a message WOULD have been
+// sent — recipient and subject only, never the body. The body carries the
+// verification/reset link, i.e. a live credential, and "no SMTP configured"
+// is not a promise of a developer laptop: it is exactly the state of a first
+// deploy. A developer who needs the link locally should point SMTPHost at a
+// capture tool (mailpit et al.) instead of fishing credentials out of stdout.
 type LogSender struct {
 	log *slog.Logger
 }
@@ -93,9 +95,11 @@ func NewLogSender(log *slog.Logger) *LogSender {
 	return &LogSender{log: log}
 }
 
-// Send logs the message.
+// Send logs the message envelope. The body is deliberately withheld: it
+// contains a live verification/reset token, and process logs outlive any
+// intention anyone had for them.
 func (s *LogSender) Send(ctx context.Context, msg Message) error {
 	s.log.InfoContext(ctx, "email (not sent: no SMTP configured)",
-		"to", msg.To, "subject", msg.Subject, "body", msg.Body)
+		"to", msg.To, "subject", msg.Subject, "bodyBytes", len(msg.Body))
 	return nil
 }
