@@ -6,9 +6,10 @@
 -- name: CreateRun :one
 INSERT INTO runs (
     user_id, mode, duration_ms, word_count, lang, seed, dict_hash,
-    setup, client_metrics, client_score, score_version, log, log_bytes
+    setup, client_metrics, client_score, score_version, log, log_bytes,
+    restarts_since_last_submit
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 )
 RETURNING id, status, created_at;
 
@@ -20,7 +21,7 @@ RETURNING id, status, created_at;
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, created_at
+       log_bytes, restarts_since_last_submit, created_at
 FROM runs
 WHERE user_id = $1
 ORDER BY created_at DESC, id DESC
@@ -33,7 +34,7 @@ LIMIT $2;
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, created_at
+       log_bytes, restarts_since_last_submit, created_at
 FROM runs
 WHERE user_id = $1
   AND (created_at < $2 OR (created_at = $2 AND id < $3))
@@ -45,7 +46,7 @@ LIMIT $4;
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, created_at
+       log_bytes, restarts_since_last_submit, created_at
 FROM runs
 WHERE id = $1 AND user_id = $2;
 

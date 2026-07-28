@@ -361,6 +361,57 @@ func TestIngestSeedOutOfRange(t *testing.T) {
 	assert.Equal(t, "seed_out_of_range", decodeInto[errResp](t, resp).Error)
 }
 
+// --- restartsSinceLastSubmit: optional, bounded, stored, echoed ---
+
+func TestIngestRestartsSinceLastSubmit(t *testing.T) {
+	h := newHarness(t)
+	h.login("restarts@example.com", "password-123", "Restarts")
+
+	// Present and in range: stored per run and echoed on the summary.
+	body := validRun()
+	body["restartsSinceLastSubmit"] = 7
+	resp := h.post("/api/v1/runs", body)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	id := decodeInto[ingestResp](t, resp).ID
+
+	var stored int32
+	require.NoError(t, h.pool.QueryRow(context.Background(),
+		`SELECT restarts_since_last_submit FROM runs WHERE id=$1`, uuid.MustParse(id)).
+		Scan(&stored))
+	assert.Equal(t, int32(7), stored)
+
+	detail := h.get("/api/v1/runs/" + id)
+	require.Equal(t, http.StatusOK, detail.StatusCode)
+	assert.Contains(t, string(readBody(t, detail)), `"restartsSinceLastSubmit":7`)
+
+	// Absent: a pre-field client — stored as zero, the only honest default.
+	resp = h.post("/api/v1/runs", validRun())
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	legacy := decodeInto[ingestResp](t, resp).ID
+	require.NoError(t, h.pool.QueryRow(context.Background(),
+		`SELECT restarts_since_last_submit FROM runs WHERE id=$1`, uuid.MustParse(legacy)).
+		Scan(&stored))
+	assert.Zero(t, stored)
+
+	// The structural cap, both ends: 10 000 is legal, a step past it is not,
+	// and a negative count is a client that is broken or lying.
+	atCap := validRun()
+	atCap["restartsSinceLastSubmit"] = 10_000
+	requireStatus(t, h.post("/api/v1/runs", atCap), http.StatusAccepted)
+
+	over := validRun()
+	over["restartsSinceLastSubmit"] = 10_001
+	resp = h.post("/api/v1/runs", over)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "invalid_restarts", decodeInto[errResp](t, resp).Error)
+
+	negative := validRun()
+	negative["restartsSinceLastSubmit"] = -1
+	resp = h.post("/api/v1/runs", negative)
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "invalid_restarts", decodeInto[errResp](t, resp).Error)
+}
+
 // --- word-count mode lands too (exercises the other dimension) ---
 
 func TestIngestWordMode(t *testing.T) {

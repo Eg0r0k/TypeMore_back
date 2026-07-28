@@ -150,30 +150,31 @@ type Quote struct {
 }
 
 type Run struct {
-	ID            uuid.UUID
-	UserID        uuid.UUID
-	Mode          string
-	DurationMs    *int32
-	WordCount     *int32
-	Lang          string
-	Seed          int64
-	DictHash      string
-	Setup         json.RawMessage
-	ClientMetrics json.RawMessage
-	ClientScore   json.RawMessage
-	ScoreVersion  int16
-	Status        string
-	Log           []byte
-	LogBytes      int32
-	CreatedAt     time.Time
-	ServerMetrics []byte
-	ServerScore   []byte
-	Validation    []byte
-	BundleSha     *string
-	ValidatedAt   *time.Time
-	Attempts      int16
-	LastError     *string
-	PolicyVersion *int16
+	ID                      uuid.UUID
+	UserID                  uuid.UUID
+	Mode                    string
+	DurationMs              *int32
+	WordCount               *int32
+	Lang                    string
+	Seed                    int64
+	DictHash                string
+	Setup                   json.RawMessage
+	ClientMetrics           json.RawMessage
+	ClientScore             json.RawMessage
+	ScoreVersion            int16
+	Status                  string
+	Log                     []byte
+	LogBytes                int32
+	CreatedAt               time.Time
+	ServerMetrics           []byte
+	ServerScore             []byte
+	Validation              []byte
+	BundleSha               *string
+	ValidatedAt             *time.Time
+	Attempts                int16
+	LastError               *string
+	PolicyVersion           *int16
+	RestartsSinceLastSubmit int32
 }
 
 type Session struct {

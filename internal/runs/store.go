@@ -37,6 +37,11 @@ type CreateRunParams struct {
 	ScoreVersion  int16
 	Log           []byte
 	LogBytes      int32
+	// RestartsSinceLastSubmit is the client-reported count of tests started and
+	// abandoned since its previous submission (docs/RUNS.md). Bounded 0..10 000
+	// by validation and the runs_restarts_range CHECK; accepted on trust, like
+	// the declared view-only mods — a restarted run leaves no evidence to verify.
+	RestartsSinceLastSubmit int32
 }
 
 // Run is the persisted outcome of CreateRun: the server-assigned id, the landed
@@ -71,7 +76,10 @@ type Summary struct {
 	Validation    json.RawMessage
 	ValidatedAt   *time.Time
 	LogBytes      int32
-	CreatedAt     time.Time
+	// RestartsSinceLastSubmit: see CreateRunParams. Zero for every run that
+	// predates the column — the only claim history can make.
+	RestartsSinceLastSubmit int32
+	CreatedAt               time.Time
 }
 
 // Cursor is a keyset pagination position: the (CreatedAt, ID) of the last row a

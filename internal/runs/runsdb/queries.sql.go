@@ -17,27 +17,29 @@ const createRun = `-- name: CreateRun :one
 
 INSERT INTO runs (
     user_id, mode, duration_ms, word_count, lang, seed, dict_hash,
-    setup, client_metrics, client_score, score_version, log, log_bytes
+    setup, client_metrics, client_score, score_version, log, log_bytes,
+    restarts_since_last_submit
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 )
 RETURNING id, status, created_at
 `
 
 type CreateRunParams struct {
-	UserID        uuid.UUID
-	Mode          string
-	DurationMs    *int32
-	WordCount     *int32
-	Lang          string
-	Seed          int64
-	DictHash      string
-	Setup         json.RawMessage
-	ClientMetrics json.RawMessage
-	ClientScore   json.RawMessage
-	ScoreVersion  int16
-	Log           []byte
-	LogBytes      int32
+	UserID                  uuid.UUID
+	Mode                    string
+	DurationMs              *int32
+	WordCount               *int32
+	Lang                    string
+	Seed                    int64
+	DictHash                string
+	Setup                   json.RawMessage
+	ClientMetrics           json.RawMessage
+	ClientScore             json.RawMessage
+	ScoreVersion            int16
+	Log                     []byte
+	LogBytes                int32
+	RestartsSinceLastSubmit int32
 }
 
 type CreateRunRow struct {
@@ -65,6 +67,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (CreateRun
 		arg.ScoreVersion,
 		arg.Log,
 		arg.LogBytes,
+		arg.RestartsSinceLastSubmit,
 	)
 	var i CreateRunRow
 	err := row.Scan(&i.ID, &i.Status, &i.CreatedAt)
@@ -163,7 +166,7 @@ const getRun = `-- name: GetRun :one
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, created_at
+       log_bytes, restarts_since_last_submit, created_at
 FROM runs
 WHERE id = $1 AND user_id = $2
 `
@@ -174,24 +177,25 @@ type GetRunParams struct {
 }
 
 type GetRunRow struct {
-	ID            uuid.UUID
-	Mode          string
-	DurationMs    *int32
-	WordCount     *int32
-	Lang          string
-	Seed          int64
-	DictHash      string
-	Setup         json.RawMessage
-	ClientMetrics json.RawMessage
-	ClientScore   json.RawMessage
-	ScoreVersion  int16
-	Status        string
-	ServerMetrics []byte
-	ServerScore   []byte
-	Validation    []byte
-	ValidatedAt   *time.Time
-	LogBytes      int32
-	CreatedAt     time.Time
+	ID                      uuid.UUID
+	Mode                    string
+	DurationMs              *int32
+	WordCount               *int32
+	Lang                    string
+	Seed                    int64
+	DictHash                string
+	Setup                   json.RawMessage
+	ClientMetrics           json.RawMessage
+	ClientScore             json.RawMessage
+	ScoreVersion            int16
+	Status                  string
+	ServerMetrics           []byte
+	ServerScore             []byte
+	Validation              []byte
+	ValidatedAt             *time.Time
+	LogBytes                int32
+	RestartsSinceLastSubmit int32
+	CreatedAt               time.Time
 }
 
 // One run's summary (no log payload), scoped to its owner.
@@ -216,6 +220,7 @@ func (q *Queries) GetRun(ctx context.Context, arg GetRunParams) (GetRunRow, erro
 		&i.Validation,
 		&i.ValidatedAt,
 		&i.LogBytes,
+		&i.RestartsSinceLastSubmit,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -243,7 +248,7 @@ const listRunsAfter = `-- name: ListRunsAfter :many
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, created_at
+       log_bytes, restarts_since_last_submit, created_at
 FROM runs
 WHERE user_id = $1
   AND (created_at < $2 OR (created_at = $2 AND id < $3))
@@ -259,24 +264,25 @@ type ListRunsAfterParams struct {
 }
 
 type ListRunsAfterRow struct {
-	ID            uuid.UUID
-	Mode          string
-	DurationMs    *int32
-	WordCount     *int32
-	Lang          string
-	Seed          int64
-	DictHash      string
-	Setup         json.RawMessage
-	ClientMetrics json.RawMessage
-	ClientScore   json.RawMessage
-	ScoreVersion  int16
-	Status        string
-	ServerMetrics []byte
-	ServerScore   []byte
-	Validation    []byte
-	ValidatedAt   *time.Time
-	LogBytes      int32
-	CreatedAt     time.Time
+	ID                      uuid.UUID
+	Mode                    string
+	DurationMs              *int32
+	WordCount               *int32
+	Lang                    string
+	Seed                    int64
+	DictHash                string
+	Setup                   json.RawMessage
+	ClientMetrics           json.RawMessage
+	ClientScore             json.RawMessage
+	ScoreVersion            int16
+	Status                  string
+	ServerMetrics           []byte
+	ServerScore             []byte
+	Validation              []byte
+	ValidatedAt             *time.Time
+	LogBytes                int32
+	RestartsSinceLastSubmit int32
+	CreatedAt               time.Time
 }
 
 // Next page after the (created_at, id) cursor. The row-value comparison written
@@ -314,6 +320,7 @@ func (q *Queries) ListRunsAfter(ctx context.Context, arg ListRunsAfterParams) ([
 			&i.Validation,
 			&i.ValidatedAt,
 			&i.LogBytes,
+			&i.RestartsSinceLastSubmit,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -330,7 +337,7 @@ const listRunsFirst = `-- name: ListRunsFirst :many
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, created_at
+       log_bytes, restarts_since_last_submit, created_at
 FROM runs
 WHERE user_id = $1
 ORDER BY created_at DESC, id DESC
@@ -343,24 +350,25 @@ type ListRunsFirstParams struct {
 }
 
 type ListRunsFirstRow struct {
-	ID            uuid.UUID
-	Mode          string
-	DurationMs    *int32
-	WordCount     *int32
-	Lang          string
-	Seed          int64
-	DictHash      string
-	Setup         json.RawMessage
-	ClientMetrics json.RawMessage
-	ClientScore   json.RawMessage
-	ScoreVersion  int16
-	Status        string
-	ServerMetrics []byte
-	ServerScore   []byte
-	Validation    []byte
-	ValidatedAt   *time.Time
-	LogBytes      int32
-	CreatedAt     time.Time
+	ID                      uuid.UUID
+	Mode                    string
+	DurationMs              *int32
+	WordCount               *int32
+	Lang                    string
+	Seed                    int64
+	DictHash                string
+	Setup                   json.RawMessage
+	ClientMetrics           json.RawMessage
+	ClientScore             json.RawMessage
+	ScoreVersion            int16
+	Status                  string
+	ServerMetrics           []byte
+	ServerScore             []byte
+	Validation              []byte
+	ValidatedAt             *time.Time
+	LogBytes                int32
+	RestartsSinceLastSubmit int32
+	CreatedAt               time.Time
 }
 
 // First page of a user's runs, newest first. Keyset pagination continues via
@@ -394,6 +402,7 @@ func (q *Queries) ListRunsFirst(ctx context.Context, arg ListRunsFirstParams) ([
 			&i.Validation,
 			&i.ValidatedAt,
 			&i.LogBytes,
+			&i.RestartsSinceLastSubmit,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

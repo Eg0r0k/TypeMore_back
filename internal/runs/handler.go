@@ -152,7 +152,11 @@ type summaryView struct {
 	Validation    json.RawMessage `json:"validation,omitempty"`
 	ValidatedAt   *time.Time      `json:"validatedAt,omitempty"`
 	LogBytes      int32           `json:"logBytes"`
-	CreatedAt     time.Time       `json:"createdAt"`
+	// Client-reported restarts between the previous submission and this run —
+	// zero for rows that predate the field. Always present: 0 is a real answer
+	// ("no restarts"), not an absence.
+	RestartsSinceLastSubmit int32     `json:"restartsSinceLastSubmit"`
+	CreatedAt               time.Time `json:"createdAt"`
 }
 
 // toSummaryView converts the domain Summary to its JSON view. The two structs

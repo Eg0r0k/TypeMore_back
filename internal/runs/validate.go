@@ -48,6 +48,12 @@ const (
 	maxModeLen     = 32
 	maxLangLen     = 32
 	maxDictHashLen = 64
+
+	// maxRestarts caps restartsSinceLastSubmit. The count is client-reported
+	// and unverifiable (a restarted run leaves no log to check), so like the
+	// declared view-only mods it is accepted on trust — the cap bounds abuse of
+	// the profile's tests-started arithmetic, it does not judge plausibility.
+	maxRestarts = int32(10_000)
 )
 
 // KnownScoreVersions enumerates the ScoreResult formula versions this server
@@ -101,6 +107,7 @@ const (
 	codeInvalidTextSource       = "invalid_text_source"
 	codeQuoteTextSubmitted      = "quote_text_submitted"
 	codeLogTooLarge             = "log_too_large"
+	codeInvalidRestarts         = "invalid_restarts"
 )
 
 // ingestRequest is the POST /runs body. The opaque snapshots and the log are
@@ -119,6 +126,10 @@ type ingestRequest struct {
 	ClientMetrics json.RawMessage `json:"clientMetrics"`
 	ClientScore   json.RawMessage `json:"clientScore"`
 	ScoreVersion  *int            `json:"scoreVersion"`
+	// RestartsSinceLastSubmit is optional: a client that predates the field
+	// simply never restarted as far as the profile can tell, and 0 is the only
+	// honest default. When present it must sit in [0, maxRestarts].
+	RestartsSinceLastSubmit *int32 `json:"restartsSinceLastSubmit"`
 }
 
 // Text-source kinds. A run's text either comes from its seed (the seeded,
@@ -228,6 +239,19 @@ func validateIngest(userID uuid.UUID, req *ingestRequest) (CreateRunParams, *api
 		return CreateRunParams{}, verr
 	}
 
+	// Restart counter: optional, and bounded when present. Negative counts and
+	// absurd ones are a client that is broken or lying — both get a distinct 422
+	// rather than a silent clamp, for the same reason a submitted quote text is
+	// refused rather than dropped.
+	restarts := int32(0)
+	if req.RestartsSinceLastSubmit != nil {
+		restarts = *req.RestartsSinceLastSubmit
+		if restarts < 0 || restarts > maxRestarts {
+			return CreateRunParams{}, apiErrUnprocessable(codeInvalidRestarts,
+				fmt.Sprintf("restartsSinceLastSubmit must be an integer in [0, %d]", maxRestarts))
+		}
+	}
+
 	// Log envelope: version, event count, strictly increasing non-negative seq.
 	if verr := validateLog(req.Log); verr != nil {
 		return CreateRunParams{}, verr
@@ -239,19 +263,20 @@ func validateIngest(userID uuid.UUID, req *ingestRequest) (CreateRunParams, *api
 	}
 
 	return CreateRunParams{
-		UserID:        userID,
-		Mode:          req.Mode,
-		DurationMs:    req.DurationMs,
-		WordCount:     req.WordCount,
-		Lang:          req.Lang,
-		Seed:          *req.Seed,
-		DictHash:      req.DictHash,
-		Setup:         req.Setup,
-		ClientMetrics: req.ClientMetrics,
-		ClientScore:   req.ClientScore,
-		ScoreVersion:  int16(*req.ScoreVersion),
-		Log:           gz,
-		LogBytes:      int32(len(req.Log)),
+		UserID:                  userID,
+		Mode:                    req.Mode,
+		DurationMs:              req.DurationMs,
+		WordCount:               req.WordCount,
+		Lang:                    req.Lang,
+		Seed:                    *req.Seed,
+		DictHash:                req.DictHash,
+		Setup:                   req.Setup,
+		ClientMetrics:           req.ClientMetrics,
+		ClientScore:             req.ClientScore,
+		ScoreVersion:            int16(*req.ScoreVersion),
+		Log:                     gz,
+		LogBytes:                int32(len(req.Log)),
+		RestartsSinceLastSubmit: restarts,
 	}, nil
 }
 

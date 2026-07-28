@@ -51,6 +51,7 @@ The bucket fields are lifted top-level to populate indexed columns; `setup`,
   "seed": 2864901,
   "dictHash": "a1b2c3d4",
   "scoreVersion": 2,
+  "restartsSinceLastSubmit": 3,
   "setup":         { "...": "full CoreConfig+GenerationConfig snapshot" },
   "clientMetrics": { "wpm": 80, "raw": 85, "acc": 0.97 },
   "clientScore":   { "version": 2, "total": 1234 },
@@ -61,6 +62,23 @@ The bucket fields are lifted top-level to populate indexed columns; `setup`,
 Exactly one of `durationMs` / `wordCount` is set (time vs. word modes) — unless
 the run is a **quote run**, which carries neither; see *Text source* below. The
 response is `202 { "id": "<uuid>", "status": "pending" }`.
+
+### `restartsSinceLastSubmit`
+
+How many tests the player started and abandoned since their **previous
+submission**. A restarted run is never submitted — it has no log, no score, no
+row — so without this count the profile's "tests started" could only equal
+"tests completed", which is a lie for anyone who restarts. The client counts
+restarts locally and reports the number on the NEXT run it submits; profile
+aggregation reads `tests_started = count(completed) + sum(restarts)`.
+
+Optional (a client that predates the field submits none, meaning 0), integer in
+`[0, 10 000]` — out of range is `422 invalid_restarts`, enforced twice
+(validator + the `runs_restarts_range` CHECK, migration `00013`). The count is
+client-reported and **unverifiable by design**: a restarted run leaves nothing
+to replay, so — like the declared view-only mods — it is accepted on trust. It
+feeds profile statistics only; nothing ranked reads it. Every row written
+before the column exists carries `0`, the only claim history can make.
 
 ### Text source: seeded vs. quote
 
@@ -147,6 +165,7 @@ than from a word list. Two consequences worth stating:
               "seed": 2864901, "dictHash": "a1b2c3d4",
               "setup": {…}, "clientMetrics": {…}, "clientScore": {…},
               "scoreVersion": 1, "status": "pending", "logBytes": 512,
+              "restartsSinceLastSubmit": 0,
               "createdAt": "2026-07-23T21:00:00Z" } ],
   "nextCursor": "<opaque>"
 }
@@ -176,6 +195,7 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 | `textSource` | `kind` ∈ {`seeded`, `quote`}; a `quote` needs a UUID `quoteId` and a `quoteHash` | `422 invalid_text_source` |
 | `textSource.text` | must be absent | `422 quote_text_submitted` |
 | Dimensions | seeded: exactly one of `durationMs` (1…3 600 000) / `wordCount` (1…10 000). quote: neither | `422 invalid_dimensions` |
+| `restartsSinceLastSubmit` | optional; integer in `[0, 10 000]` when present | `422 invalid_restarts` |
 | `mode` / `lang` / `dictHash` | present, ≤ 32/32/64 chars | `400 bad_request` |
 | `setup` / `clientMetrics` / `clientScore` / `log` | present | `400 bad_request` |
 
@@ -326,6 +346,7 @@ runs
   status        text DEFAULT 'pending'  CHECK ∈ {pending,accepted,flagged,rejected}
   log           bytea          -- gzip of the raw EventLog JSON (immutable)
   log_bytes     int            -- uncompressed size
+  restarts_since_last_submit int NOT NULL DEFAULT 0  CHECK 0 … 10 000  -- see above
   created_at    timestamptz
   idx(user_id, created_at DESC)                    -- own-runs feed
   idx(status, created_at) WHERE status='pending'   -- future worker queue scan
