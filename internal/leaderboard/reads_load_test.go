@@ -276,6 +276,18 @@ WHERE bucket_key = $1
 ORDER BY sort_key DESC, achieved_at ASC, user_id ASC
 LIMIT $5`
 
+const sqlPageBefore = `-- name: ListLeaderboardPageBefore :many
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+       achieved_at, quote_source
+FROM leaderboard_rows
+WHERE bucket_key = $1
+  AND sort_key >= leaderboard_sort_key($2, $3)
+  AND (sort_key > leaderboard_sort_key($2, $3)
+       OR achieved_at < $3::timestamptz
+       OR (achieved_at = $3::timestamptz AND user_id < $4::uuid))
+ORDER BY sort_key ASC, achieved_at DESC, user_id DESC
+LIMIT $5`
+
 const sqlRankAbove = `-- name: CountLeaderboardAbove :one
 SELECT count(*)::bigint
 FROM leaderboard_ranked
@@ -330,6 +342,29 @@ func TestLoadPlanBoardPageAfter(t *testing.T) {
 	// SEEK or a filter the scan has to walk up to: the node list is identical
 	// either way, and only the row counts tell them apart.
 	perf.Report(t, zone3, "deep-page plan (raw)", "\n"+plan.Raw)
+}
+
+// TestLoadPlanBoardPageBefore pins the upward continuation to the same shape
+// as the downward one: a start-condition seek on leaderboard_sort_idx (run
+// BACKWARD — a btree walks either way, which is the whole reason around=me
+// needed no second index), never a sort, never a scan of the entries table.
+// Asserted at depth, where a filter-shaped regression would have the most to
+// walk past.
+func TestLoadPlanBoardPageBefore(t *testing.T) {
+	f := loadFixture(t)
+	pos := f.positionAt(t, min(deepPageIndex*pageLimit, f.visibleHot(t)-1))
+
+	plan, err := perf.Explain(context.Background(), f.pool, sqlPageBefore,
+		f.hot.Key(), pos.cursor.Score, pos.cursor.AchievedAt, pos.cursor.UserID, int32(pageLimit))
+	require.NoError(t, err)
+	perf.AssertPlan(t, plan, perf.PlanAssertion{
+		Zone:        zone3,
+		Query:       fmt.Sprintf("ListLeaderboardPageBefore (row %d)", pos.offset),
+		WantAny:     []string{"Index Scan", "Index Only Scan", "Bitmap Index Scan"},
+		NoSeqScanOn: []string{"leaderboard_entries", "runs"},
+		NoSort:      true,
+	})
+	perf.Report(t, zone3, "page-before plan (raw)", "\n"+plan.Raw)
 }
 
 // TestLoadPlanBoardRankAbove checks the count at both ends of the curve. A

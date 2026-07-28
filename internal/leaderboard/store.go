@@ -64,6 +64,10 @@ type Store interface {
 	// Page returns up to limit entries of a bucket's ranking, continuing after
 	// the given keyset position when non-nil. Rank is not set by the store.
 	Page(ctx context.Context, b Bucket, after *Cursor, limit int32) ([]Entry, error)
+	// PageBefore returns up to limit entries strictly OUTRANKING the given
+	// position, in ranking order (the row nearest the position last) — the
+	// upward continuation. Rank is not set by the store.
+	PageBefore(ctx context.Context, b Bucket, before Cursor, limit int32) ([]Entry, error)
 	// RankAbove counts the visible entries that outrank a position — the rank of
 	// the row at that position is this plus one.
 	RankAbove(ctx context.Context, b Bucket, at Cursor) (int64, error)

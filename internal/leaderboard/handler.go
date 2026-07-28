@@ -116,12 +116,22 @@ func toEntryView(e Entry) entryView {
 }
 
 type pageResponse struct {
-	Bucket     string      `json:"bucket"`
-	Entries    []entryView `json:"entries"`
-	NextCursor string      `json:"nextCursor,omitempty"`
+	Bucket  string      `json:"bucket"`
+	Entries []entryView `json:"entries"`
+	// PrevCursor continues UPWARD (rows outranking the first one here), via
+	// `?before=`. Present only when the first row is not rank 1.
+	PrevCursor string `json:"prevCursor,omitempty"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 // handlePage returns one page of a bucket's ranking, keyset-paginated.
+//
+// Three shapes of ask, decided by the query string:
+//
+//	(nothing)     page one, from rank 1
+//	?cursor=      the downward continuation
+//	?before=      the upward continuation (rows outranking the position)
+//	?around=me    the window centred on the caller's own row
 //
 // The rank of the first row on a continuation page is COUNTED rather than
 // carried in the cursor: a rank that was true when the token was minted is a
@@ -133,6 +143,29 @@ func (s *Service) handlePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := httpx.ParseLimit(r.URL.Query().Get("limit"), defaultLimit, maxLimit)
+
+	// The three asks name mutually exclusive positions; a request combining
+	// them is asking for two different pages at once.
+	asks := 0
+	for _, p := range []string{"cursor", "before", "around"} {
+		if r.URL.Query().Get(p) != "" {
+			asks++
+		}
+	}
+	if asks > 1 {
+		s.writeError(w, r, apiErrConflictingAsks)
+		return
+	}
+
+	if r.URL.Query().Get("around") != "" {
+		s.handleAround(w, r, bucket, limit)
+		return
+	}
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		s.handleBefore(w, r, bucket, raw, limit)
+		return
+	}
+
 	var after *Cursor
 	firstRank := int64(1)
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
@@ -161,22 +194,149 @@ func (s *Service) handlePage(w http.ResponseWriter, r *http.Request) {
 
 	next := ""
 	if len(rows) > limit {
-		last := rows[limit-1]
 		rows = rows[:limit]
-		next = encodeCursor(Cursor{
-			Score: last.Score, AchievedAt: last.AchievedAt, UserID: last.UserID,
-		})
+		next = cursorOf(rows[limit-1])
 	}
 
+	s.writeJSON(w, http.StatusOK, s.pageView(bucket, rows, firstRank, next))
+}
+
+// handleAround serves `?around=me`: the window centred on the caller's own
+// row. 401 without a session; 204 when the caller holds no visible slot here —
+// the same two answers `/me` gives, because it is the same question with
+// neighbours attached.
+//
+// The window is the caller's row, up to half the limit above it (fewer only at
+// the top of the board — the spare capacity goes below), and the remainder
+// below. Both sides come off leaderboard_sort_idx as start-condition scans:
+// the rows above are the same seek as the downward continuation, run backward.
+func (s *Service) handleAround(w http.ResponseWriter, r *http.Request, bucket Bucket, limit int) {
+	if r.URL.Query().Get("around") != "me" {
+		// The only window anyone has asked for is "me"; an unknown anchor is a
+		// bad request, not an empty page.
+		s.writeError(w, r, apiErrBadAround)
+		return
+	}
+	userID, ok := s.userID(r.Context())
+	if !ok {
+		s.writeError(w, r, apiErrUnauthorized)
+		return
+	}
+
+	me, err := s.store.EntryFor(r.Context(), bucket, userID)
+	if errors.Is(err, ErrNoEntry) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	// Half above, half below — and what one side cannot fill (the caller near
+	// rank 1, or near the bottom), the other side absorbs, so the window stays
+	// `limit` rows whenever the board has that many. The rank bounds the rows
+	// above exactly, so no probe is needed there.
+	wantAbove := (limit - 1) / 2
+	if above := int(me.Rank - 1); wantAbove > above {
+		wantAbove = above
+	}
+	wantBelow := limit - 1 - wantAbove
+	below, err := s.store.Page(r.Context(), bucket, ptr(cursorFor(me)), int32(wantBelow+1))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	next := ""
+	if len(below) > wantBelow {
+		below = below[:wantBelow]
+		if wantBelow > 0 {
+			next = cursorOf(below[wantBelow-1])
+		} else {
+			next = cursorOf(me)
+		}
+	} else if spare := min(limit-1-len(below), int(me.Rank-1)); spare > wantAbove {
+		// The board ran out below; spend the spare capacity above.
+		wantAbove = spare
+	}
+
+	above := []Entry{}
+	if wantAbove > 0 {
+		above, err = s.store.PageBefore(r.Context(), bucket, cursorFor(me), int32(wantAbove))
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+	}
+
+	rows := make([]Entry, 0, len(above)+1+len(below))
+	rows = append(rows, above...)
+	rows = append(rows, me)
+	rows = append(rows, below...)
+
+	firstRank := me.Rank - int64(len(above))
+	prev := ""
+	if firstRank > 1 {
+		prev = cursorOf(rows[0])
+	}
+
+	view := s.pageView(bucket, rows, firstRank, next)
+	view.PrevCursor = prev
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// handleBefore serves `?before=`: the rows strictly outranking a position,
+// nearest last, so a client prepends the page verbatim.
+func (s *Service) handleBefore(w http.ResponseWriter, r *http.Request, bucket Bucket, raw string, limit int) {
+	cur, err := decodeCursor(raw)
+	if err != nil {
+		s.writeError(w, r, apiErrBadCursor)
+		return
+	}
+
+	rows, err := s.store.PageBefore(r.Context(), bucket, cur, int32(limit))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	// The rank of the position, counted fresh; everything returned sits in the
+	// len(rows) slots directly above it.
+	above, err := s.store.RankAbove(r.Context(), bucket, cur)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	firstRank := above + 1 - int64(len(rows))
+
+	prev := ""
+	if len(rows) > 0 && firstRank > 1 {
+		prev = cursorOf(rows[0])
+	}
+
+	view := s.pageView(bucket, rows, firstRank, "")
+	view.PrevCursor = prev
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// pageView ranks the rows from firstRank on and wraps them in the wire shape.
+func (s *Service) pageView(bucket Bucket, rows []Entry, firstRank int64, next string) pageResponse {
 	views := make([]entryView, len(rows))
 	for i := range rows {
 		rows[i].Rank = firstRank + int64(i)
 		views[i] = toEntryView(rows[i])
 	}
-	s.writeJSON(w, http.StatusOK, pageResponse{
-		Bucket: bucket.Key(), Entries: views, NextCursor: next,
-	})
+	return pageResponse{Bucket: bucket.Key(), Entries: views, NextCursor: next}
 }
+
+// cursorFor is the keyset position OF an entry; cursorOf is its wire token.
+func cursorFor(e Entry) Cursor {
+	return Cursor{Score: e.Score, AchievedAt: e.AchievedAt, UserID: e.UserID}
+}
+
+func cursorOf(e Entry) string { return encodeCursor(cursorFor(e)) }
+
+func ptr[T any](v T) *T { return &v }
 
 type meResponse struct {
 	Bucket string    `json:"bucket"`

@@ -26,6 +26,13 @@ var (
 		"no such leaderboard")
 	apiErrBadCursor = newAPIError(http.StatusBadRequest, "bad_request",
 		"invalid cursor")
+	// `cursor`, `before` and `around` name mutually exclusive positions in the
+	// ranking; a request carrying two is asking for two different pages.
+	apiErrConflictingAsks = newAPIError(http.StatusBadRequest, "bad_request",
+		"cursor, before and around are mutually exclusive")
+	// The only supported window anchor is `me`.
+	apiErrBadAround = newAPIError(http.StatusBadRequest, "bad_request",
+		"around must be \"me\"")
 	apiErrUnauthorized = newAPIError(http.StatusUnauthorized, "unauthorized",
 		"authentication required")
 	apiErrInternal = newAPIError(http.StatusInternalServerError, "internal",

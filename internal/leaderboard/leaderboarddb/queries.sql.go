@@ -298,6 +298,90 @@ func (q *Queries) ListLeaderboardPageAfter(ctx context.Context, arg ListLeaderbo
 	return items, nil
 }
 
+const listLeaderboardPageBefore = `-- name: ListLeaderboardPageBefore :many
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+       achieved_at, quote_source
+FROM leaderboard_rows
+WHERE bucket_key = $1
+  AND sort_key >= leaderboard_sort_key($2, $3)
+  AND (sort_key > leaderboard_sort_key($2, $3)
+       OR achieved_at < $3::timestamptz
+       OR (achieved_at = $3::timestamptz AND user_id < $4::uuid))
+ORDER BY sort_key ASC, achieved_at DESC, user_id DESC
+LIMIT $5
+`
+
+type ListLeaderboardPageBeforeParams struct {
+	BucketKey  string
+	Score      int64
+	AchievedAt time.Time
+	UserID     uuid.UUID
+	RowLimit   int32
+}
+
+type ListLeaderboardPageBeforeRow struct {
+	UserID      uuid.UUID
+	DisplayName string
+	RunID       uuid.UUID
+	Score       int64
+	Wpm         float64
+	Raw         float64
+	Acc         float64
+	Grade       string
+	Mods        json.RawMessage
+	AchievedAt  time.Time
+	QuoteSource *string
+}
+
+// The keyset continuation UPWARD: the rows strictly outranking a position,
+// nearest first — the other half of "load more continues in both directions
+// from the around=me window".
+//
+// Same predicate as CountLeaderboardAbove (they answer about the same set:
+// what outranks this position), but selecting rows and scanning the ranking
+// order REVERSED. leaderboard_sort_idx serves it as a backward index scan —
+// a btree walks either way — so this is the same start-condition seek as the
+// downward continuation, not a filter, and needs no second index. The caller
+// re-reverses the slice; SQL's job is only to make LIMIT take the rows
+// NEAREST the position rather than rank 1's neighbours.
+func (q *Queries) ListLeaderboardPageBefore(ctx context.Context, arg ListLeaderboardPageBeforeParams) ([]ListLeaderboardPageBeforeRow, error) {
+	rows, err := q.db.Query(ctx, listLeaderboardPageBefore,
+		arg.BucketKey,
+		arg.Score,
+		arg.AchievedAt,
+		arg.UserID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLeaderboardPageBeforeRow{}
+	for rows.Next() {
+		var i ListLeaderboardPageBeforeRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.DisplayName,
+			&i.RunID,
+			&i.Score,
+			&i.Wpm,
+			&i.Raw,
+			&i.Acc,
+			&i.Grade,
+			&i.Mods,
+			&i.AchievedAt,
+			&i.QuoteSource,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLeaderboardPageFirst = `-- name: ListLeaderboardPageFirst :many
 SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
        achieved_at, quote_source

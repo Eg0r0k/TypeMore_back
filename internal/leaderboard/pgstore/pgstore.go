@@ -270,6 +270,28 @@ func (s *Store) Page(ctx context.Context, b leaderboard.Bucket, after *leaderboa
 	return out, nil
 }
 
+// PageBefore returns up to limit entries strictly outranking the position, in
+// ranking order. SQL hands them back nearest-first (that is what makes LIMIT
+// take the position's neighbours instead of rank 1's), so the slice is
+// reversed here once rather than by every caller.
+func (s *Store) PageBefore(ctx context.Context, b leaderboard.Bucket, before leaderboard.Cursor, limit int32) ([]leaderboard.Entry, error) {
+	rows, err := s.q.ListLeaderboardPageBefore(ctx, leaderboarddb.ListLeaderboardPageBeforeParams{
+		BucketKey:  b.Key(),
+		Score:      before.Score,
+		AchievedAt: before.AchievedAt,
+		UserID:     before.UserID,
+		RowLimit:   limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]leaderboard.Entry, len(rows))
+	for i := range rows {
+		out[len(rows)-1-i] = beforeRowToEntry(rows[i])
+	}
+	return out, nil
+}
+
 // RankAbove counts the visible entries that outrank a position.
 func (s *Store) RankAbove(ctx context.Context, b leaderboard.Bucket, at leaderboard.Cursor) (int64, error) {
 	return s.q.CountLeaderboardAbove(ctx, leaderboarddb.CountLeaderboardAboveParams{
@@ -316,6 +338,14 @@ func firstRowToEntry(r leaderboarddb.ListLeaderboardPageFirstRow) leaderboard.En
 }
 
 func afterRowToEntry(r leaderboarddb.ListLeaderboardPageAfterRow) leaderboard.Entry {
+	return leaderboard.Entry{
+		UserID: r.UserID, DisplayName: r.DisplayName, RunID: r.RunID,
+		Score: r.Score, WPM: r.Wpm, Raw: r.Raw, Acc: r.Acc, Grade: r.Grade,
+		Mods: r.Mods, AchievedAt: r.AchievedAt, Source: text(r.QuoteSource),
+	}
+}
+
+func beforeRowToEntry(r leaderboarddb.ListLeaderboardPageBeforeRow) leaderboard.Entry {
 	return leaderboard.Entry{
 		UserID: r.UserID, DisplayName: r.DisplayName, RunID: r.RunID,
 		Score: r.Score, WPM: r.Wpm, Raw: r.Raw, Acc: r.Acc, Grade: r.Grade,

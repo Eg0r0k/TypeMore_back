@@ -194,6 +194,29 @@ WHERE bucket_key = @bucket_key
 ORDER BY sort_key DESC, achieved_at ASC, user_id ASC
 LIMIT @row_limit;
 
+-- name: ListLeaderboardPageBefore :many
+-- The keyset continuation UPWARD: the rows strictly outranking a position,
+-- nearest first — the other half of "load more continues in both directions
+-- from the around=me window".
+--
+-- Same predicate as CountLeaderboardAbove (they answer about the same set:
+-- what outranks this position), but selecting rows and scanning the ranking
+-- order REVERSED. leaderboard_sort_idx serves it as a backward index scan —
+-- a btree walks either way — so this is the same start-condition seek as the
+-- downward continuation, not a filter, and needs no second index. The caller
+-- re-reverses the slice; SQL's job is only to make LIMIT take the rows
+-- NEAREST the position rather than rank 1's neighbours.
+SELECT user_id, display_name, run_id, score, wpm, raw, acc, grade, mods,
+       achieved_at, quote_source
+FROM leaderboard_rows
+WHERE bucket_key = @bucket_key
+  AND sort_key >= leaderboard_sort_key(@score, @achieved_at)
+  AND (sort_key > leaderboard_sort_key(@score, @achieved_at)
+       OR achieved_at < @achieved_at::timestamptz
+       OR (achieved_at = @achieved_at::timestamptz AND user_id < @user_id::uuid))
+ORDER BY sort_key ASC, achieved_at DESC, user_id DESC
+LIMIT @row_limit;
+
 -- name: CountLeaderboardAbove :one
 -- How many visible entries outrank this position. Rank = that + 1, which is what
 -- makes the rank on a cursor page exact instead of a guess carried in the token.

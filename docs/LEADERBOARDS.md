@@ -464,6 +464,45 @@ because the directions are mixed.
 token was true when the token was minted and is a lie by the time anyone follows
 it; the count is one indexed range scan and is exact.
 
+#### `?around=me` — the window on your own row
+
+```
+GET /api/v1/leaderboards/{bucket}?around=me&limit=50
+```
+
+The page a "jump to my row" lands on: the caller's entry with its neighbours —
+half the limit above, the rest below, and whichever side the board cannot fill
+(a caller at rank 1, or at the bottom) spent on the other, so the window is
+`limit` rows whenever the board holds that many. The response is the ordinary
+page shape plus **`prevCursor`**, the upward continuation token, present
+exactly when the window's first row is not rank 1. Needs a session like `/me`,
+and answers like it: `401` signed out, **`204`** when the caller holds no
+visible slot to centre on (a banned caller included — the same non-answer as
+everywhere else). `around`, `cursor` and `before` are mutually exclusive
+(`400`): each names one position in the ranking.
+
+```
+GET /api/v1/leaderboards/{bucket}?before=<cursor>&limit=50
+```
+
+The upward continuation itself, public like the downward one: the rows
+strictly outranking the position, nearest the position LAST, so a client
+prepends the page verbatim. It carries its own `prevCursor` until the page
+reaches rank 1. Ranks on both are counted fresh, exactly like `?cursor=`.
+
+**Cost.** Both sides of the window are start-condition seeks on
+`leaderboard_sort_idx` — the rows above are the same seek as the downward
+continuation with the btree walked BACKWARD, which is why no second index
+exists for this. `TestLoadPlanBoardPageBefore` pins that plan (no seq scan of
+the entries table, no sort) the same way the downward page's is pinned, and
+`TestAroundWindowAndContinuationsTileTheBoard` holds the seam contract: the
+window plus its continuations reproduce the whole board with no duplicate and
+no missing row.
+
+There is deliberately **no "next update in" timer** anywhere near this: the
+projection is written inside the replay worker's own transaction, so the board
+is live by construction and has no refresh cycle a client could count down to.
+
 ### `GET /api/v1/leaderboards/{bucket}/me`
 
 `200` with `{ "bucket": …, "entry": { "rank": 7, … } }`, or **`204`** when the
@@ -768,5 +807,6 @@ database, or ranking latency showing up in traces — not a diagram.
   rather than with the schema; see `GET /api/v1/leaderboards`.
 - **The admin surface that issues bans.** The table and the read filter are here;
   the moderation UI is BACKEND.md §11.
-- **Pagination beyond keyset** (jump to page N, "around my rank"). Both need an
-  offset or a windowed rank query; neither is asked for yet.
+- **Jump to page N.** It needs an offset scan, and nobody has asked for it.
+  "Around my rank" left this list: `?around=me` serves it as two keyset seeks
+  on the existing index (see the endpoint above).
