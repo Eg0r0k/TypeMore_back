@@ -1,4 +1,3 @@
-"use strict";
 var TypeMoreCore = (() => {
   var __defProp = Object.defineProperty;
   var __defProps = Object.defineProperties;
@@ -72,7 +71,7 @@ var TypeMoreCore = (() => {
     }, "return" in obj && method("return"), it;
   };
 
-  // src/shared/core/index.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/index.ts
   var index_exports = {};
   __export(index_exports, {
     CODE_MAX_EXTRA_CHARS: () => CODE_MAX_EXTRA_CHARS,
@@ -99,6 +98,7 @@ var TypeMoreCore = (() => {
     comboMultiplier: () => comboMultiplier,
     commitEvent: () => commitEvent,
     computeMetrics: () => computeMetrics,
+    consistencyOf: () => consistencyOf,
     deleteEvent: () => deleteEvent,
     dictVersion: () => dictVersion,
     emitsRawTokens: () => emitsRawTokens,
@@ -147,7 +147,7 @@ var TypeMoreCore = (() => {
     wpmOverTime: () => wpmOverTime
   });
 
-  // src/shared/core/events.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/events.ts
   var asSeq = (n) => n;
   var asMs = (n) => n;
   var isTelemetryEvent = (event) => event.kind === "down" || event.kind === "up";
@@ -674,7 +674,7 @@ var TypeMoreCore = (() => {
   };
   var fromThrowable = Result.fromThrowable;
 
-  // src/shared/core/words.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/words.ts
   function mulberry32(seed) {
     let a = seed >>> 0;
     return () => {
@@ -804,7 +804,7 @@ var TypeMoreCore = (() => {
     return ok({ words, context, dictName: dict.name });
   }
 
-  // src/shared/core/game-core.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/game-core.ts
   var DEFAULT_MAX_EXTRA_CHARS = 20;
   var CODE_MAX_EXTRA_CHARS = 40;
   function initialState() {
@@ -1350,7 +1350,7 @@ var TypeMoreCore = (() => {
     }
   };
 
-  // src/shared/core/stats.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/stats.ts
   function analyzeLog(ctx, events) {
     var _a;
     let state = initialStateOf(ctx);
@@ -1446,30 +1446,50 @@ var TypeMoreCore = (() => {
     }
     return { chars: { correct, incorrect, extra, missed }, spaces: separatorsOf(ctx, state) };
   }
-  function burstWpms(ctx, analysis) {
+  function kogasa(cov) {
+    return 1 - Math.tanh(cov + cov ** 3 / 3 + cov ** 5 / 5);
+  }
+  function consistencyOf(rawPerSecond) {
+    if (rawPerSecond.length === 0) return 0;
+    let sum = 0;
+    for (const r of rawPerSecond) sum += r;
+    const mean = sum / rawPerSecond.length;
+    if (mean === 0) return 0;
+    let sq = 0;
+    for (const r of rawPerSecond) sq += (r - mean) ** 2;
+    const value = kogasa(Math.sqrt(sq / rawPerSecond.length) / mean);
+    return Number.isNaN(value) ? 0 : value;
+  }
+  function rawPerSecondOf(analysis, endMs) {
     var _a;
+    const startedAt = analysis.finalState.startedAt;
+    if (startedAt === null) return [];
+    const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
+    const seconds = Math.ceil(Math.max(0, (end - startedAt) / 1e3));
+    if (seconds <= 0) return [];
+    const { keyTimes } = analysis;
+    const counts = new Float64Array(seconds + 1);
+    for (let k = 0; k < keyTimes.length; k++) {
+      const offset = keyTimes[k] - startedAt;
+      if (offset < 0) continue;
+      const bucket = Math.floor(offset / 1e3) + 1;
+      if (bucket <= seconds) counts[bucket]++;
+    }
     const out = [];
-    const input = analysis.finalState.input;
-    for (let i = 0; i < analysis.wordFirstT.length; i++) {
-      const first = analysis.wordFirstT[i];
-      const last = analysis.wordLastT[i];
-      if (first === void 0 || last === void 0) continue;
-      const durationMs = last - first;
-      const chars = ((_a = input[i]) != null ? _a : "").length;
-      if (durationMs <= 0 || chars === 0) continue;
-      out.push(chars / 5 / (durationMs / 6e4));
+    const fullRateMin = 1e3 / 6e4;
+    for (let s = 1; s < seconds; s++) out.push(counts[s] / 5 / fullRateMin);
+    const bucketEnd = startedAt + seconds * 1e3;
+    const checkpoint = Math.min(bucketEnd, end);
+    if (checkpoint < bucketEnd) {
+      const rateStart = Math.max(startedAt, checkpoint - 1e3);
+      let rawInWindow = 0;
+      for (let k = 0; k < keyTimes.length; k++) if (keyTimes[k] >= rateStart) rawInWindow++;
+      const rateMin = (checkpoint - rateStart) / 6e4;
+      out.push(rateMin > 0 ? rawInWindow / 5 / rateMin : 0);
+    } else {
+      out.push(counts[seconds] / 5 / fullRateMin);
     }
     return out;
-  }
-  function kogasa(cov) {
-    return 100 * (1 - Math.tanh(cov + cov ** 3 / 3 + cov ** 5 / 5));
-  }
-  function consistency(bursts) {
-    if (bursts.length === 0) return 0;
-    const mean = bursts.reduce((sum, b) => sum + b, 0) / bursts.length;
-    if (mean === 0) return 0;
-    const variance = bursts.reduce((sum, b) => sum + (b - mean) ** 2, 0) / bursts.length;
-    return kogasa(Math.sqrt(variance) / mean);
   }
   function computeMetrics(ctx, events, endMs) {
     return metricsFrom(ctx, analyzeLog(ctx, events), endMs);
@@ -1487,7 +1507,7 @@ var TypeMoreCore = (() => {
       wpm: minutes > 0 ? netChars / 5 / minutes : 0,
       raw: minutes > 0 ? rawChars / 5 / minutes : 0,
       accuracy: analysis.totalKeys === 0 ? 0 : analysis.correctKeys / analysis.totalKeys,
-      consistency: consistency(burstWpms(ctx, analysis)),
+      consistency: consistencyOf(rawPerSecondOf(analysis, endMs)),
       chars,
       spaces,
       durationSec
@@ -1638,7 +1658,7 @@ var TypeMoreCore = (() => {
     return afkOf(ctx, core.events, (_c = (_b = (_a = core.state.finishedAt) != null ? _a : nowMs) != null ? _b : core.state.startedAt) != null ? _c : asMs(0));
   }
 
-  // src/shared/core/mods.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/mods.ts
   var MOD_MULTIPLIER_CAP = 4;
   var MOD_MULTIPLIERS = {
     punctuation: 1.1,
@@ -1684,7 +1704,7 @@ var TypeMoreCore = (() => {
     return Math.min(product, MOD_MULTIPLIER_CAP);
   }
 
-  // src/shared/core/score.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/score.ts
   var SCORE_VERSION = 1;
   var SCORE_VERSION_2 = 2;
   var POINTS_PER_KEYSTROKE = 10;
@@ -1861,14 +1881,14 @@ var TypeMoreCore = (() => {
     return finalizeScoreV2(state.base, state.comboPeak, metrics, ctx.config.mode, modMultiplier);
   }
 
-  // src/shared/core/timer.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/timer.ts
   var TICK_INTERVAL_MS = 1e3;
   function nextTickDelay(elapsedMs, tickIndex, durationMs) {
     const targetElapsed = Math.min(tickIndex * TICK_INTERVAL_MS, durationMs);
     return Math.max(0, targetElapsed - elapsedMs);
   }
 
-  // src/shared/core/validate.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/validate.ts
   var DEFAULT_THRESHOLDS = {
     minKeyIntervalMs: 15,
     uniformToleranceMs: 2,
@@ -2045,7 +2065,7 @@ var TypeMoreCore = (() => {
     return ok({ verdict: "valid", flags, metrics });
   }
 
-  // src/shared/core/parse.ts
+  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/parse.ts
   var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
   var isValidSeq = (value) => typeof value === "number" && Number.isInteger(value) && value >= 1;
   var isValidT = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;

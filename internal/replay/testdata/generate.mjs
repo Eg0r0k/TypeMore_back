@@ -772,6 +772,69 @@ function emit(name, description, expect, payload, extra = {}) {
   )
 }
 
+// ── 14. consistency + chars: the enriched server metrics, pinned ─────────────
+// The core redefined `Metrics.consistency` (per-second raw WPM through kogasa
+// on [0, 1] — monkeytype's definition, replacing the per-word-burst curve) and
+// its chars breakdown (correct/incorrect/extra/missed) is a profile-facing
+// number now. Every other vector pins only what the CLIENT reports (wpm, raw,
+// acc, score); this one also pins the server-only fields: the expectation
+// block carries the exact values V8 computed, and the Go test demands goja
+// reproduce them. The run is built to make every count non-zero and the
+// variance non-trivial: per-word cadence swings from 45 to 200 ms, one word is
+// committed short (missed), one carries an uncorrected wrong character
+// (incorrect), one is over-typed (extra).
+{
+  const config = coreConfig()
+  const generation = generationConfig({ length: 6 })
+  const seed = 20260729
+  const s = session({ config, generation, declaration: noMods, seed, jitterSeed: 43 })
+  const cadence = [45, 200, 60, 150, 45, 120]
+  for (let i = 0; i < generation.length; i++) {
+    const word = [...s.words[i]]
+    const dt = cadence[i % cadence.length]
+    if (i === 1) {
+      // Committed short: the tail the commit skips is `missed`.
+      const typed = Math.max(1, Math.ceil(word.length / 2))
+      for (let c = 0; c < typed; c++) s.type(word[c], dt)
+      if (typed >= word.length) throw new Error('vector 14: the short word was not short')
+    } else if (i === 2) {
+      // One wrong character, left uncorrected: `incorrect`.
+      for (let c = 0; c < word.length; c++) s.type(c === 1 ? 'q' : word[c], dt)
+      if (word[1] === 'q') throw new Error('vector 14: the planted typo matched the target')
+    } else if (i === 3) {
+      // Over-typed beyond the target: `extra`.
+      for (const ch of word) s.type(ch, dt)
+      s.type('x', dt)
+      s.type('x', dt)
+    } else {
+      for (const ch of word) s.type(ch, dt)
+    }
+    s.commit()
+  }
+  const finished = s.finish()
+  const m = finished.metrics
+  if (!(m.consistency > 0 && m.consistency < 1)) {
+    throw new Error(`vector 14: consistency ${m.consistency} is not strictly inside (0, 1)`)
+  }
+  for (const field of ['correct', 'incorrect', 'extra', 'missed']) {
+    if (!(m.chars[field] > 0)) throw new Error(`vector 14: chars.${field} is zero — the mix is broken`)
+  }
+  emit(
+    'words-consistency-chars',
+    'A run whose cadence swings word to word and whose chars mix is complete (a word committed short, ' +
+      'an uncorrected typo, two over-typed extras). The expectation pins the SERVER-only metrics — ' +
+      'consistency (per-second raw WPM through kogasa, on [0, 1]) and the full chars breakdown — ' +
+      'exactly as V8 computed them, so goja must reproduce the enriched fields bit for bit.',
+    {
+      status: 'accepted',
+      verdict: 'valid',
+      flags: [],
+      metrics: { consistency: m.consistency, chars: m.chars, spaces: m.spaces }
+    },
+    payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 })
+  )
+}
+
 mkdirSync(outDir, { recursive: true })
 for (const vector of vectors) {
   writeFileSync(join(outDir, `${vector.name}.json`), `${JSON.stringify(vector, null, 2)}\n`, 'utf8')

@@ -1,0 +1,375 @@
+{
+  "name": "words-consistency-chars",
+  "description": "A run whose cadence swings word to word and whose chars mix is complete (a word committed short, an uncorrected typo, two over-typed extras). The expectation pins the SERVER-only metrics — consistency (per-second raw WPM through kogasa, on [0, 1]) and the full chars breakdown — exactly as V8 computed them, so goja must reproduce the enriched fields bit for bit.",
+  "expect": {
+    "status": "accepted",
+    "verdict": "valid",
+    "flags": [],
+    "metrics": {
+      "consistency": 0.7994330592532908,
+      "chars": {
+        "correct": 43,
+        "incorrect": 1,
+        "extra": 2,
+        "missed": 3
+      },
+      "spaces": 5
+    }
+  },
+  "payload": {
+    "mode": "words",
+    "wordCount": 6,
+    "lang": "german",
+    "seed": 20260729,
+    "dictHash": "804728e8",
+    "scoreVersion": 2,
+    "setup": {
+      "config": {
+        "mode": "words",
+        "durationMs": 60000,
+        "maxExtraChars": 20,
+        "difficulty": "normal",
+        "nospace": false,
+        "minWpm": 0
+      },
+      "generation": {
+        "mode": "words",
+        "length": 6,
+        "punctuation": false,
+        "numbers": false,
+        "randomCase": false,
+        "reverse": false
+      },
+      "declaration": {
+        "blind": false,
+        "fading": false,
+        "flashlight": false
+      }
+    },
+    "clientMetrics": {
+      "wpm": 113.8114997036159,
+      "raw": 120.92471843509188,
+      "acc": 0.9347826086956522
+    },
+    "clientScore": {
+      "version": 2,
+      "total": 535,
+      "base": 430,
+      "comboPeak": 20,
+      "accMultiplier": 0.8738185255198488,
+      "timeBonus": 1.4226437462951986,
+      "modMultiplier": 1
+    },
+    "log": {
+      "version": 1,
+      "events": [
+        {
+          "kind": "insert",
+          "seq": 1,
+          "t": 45,
+          "text": "F"
+        },
+        {
+          "kind": "insert",
+          "seq": 2,
+          "t": 90,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 3,
+          "t": 135,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 4,
+          "t": 180,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 5,
+          "t": 225,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 6,
+          "t": 270,
+          "text": "l"
+        },
+        {
+          "kind": "insert",
+          "seq": 7,
+          "t": 315,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 8,
+          "t": 397
+        },
+        {
+          "kind": "insert",
+          "seq": 9,
+          "t": 597,
+          "text": "S"
+        },
+        {
+          "kind": "insert",
+          "seq": 10,
+          "t": 797,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 11,
+          "t": 997,
+          "text": "r"
+        },
+        {
+          "kind": "commit",
+          "seq": 12,
+          "t": 1073
+        },
+        {
+          "kind": "insert",
+          "seq": 13,
+          "t": 1133,
+          "text": "T"
+        },
+        {
+          "kind": "insert",
+          "seq": 14,
+          "t": 1193,
+          "text": "q"
+        },
+        {
+          "kind": "insert",
+          "seq": 15,
+          "t": 1253,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 16,
+          "t": 1313,
+          "text": "t"
+        },
+        {
+          "kind": "insert",
+          "seq": 17,
+          "t": 1373,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 18,
+          "t": 1433,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 19,
+          "t": 1493,
+          "text": "f"
+        },
+        {
+          "kind": "insert",
+          "seq": 20,
+          "t": 1553,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 21,
+          "t": 1613,
+          "text": "s"
+        },
+        {
+          "kind": "insert",
+          "seq": 22,
+          "t": 1673,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 23,
+          "t": 1733,
+          "text": "h"
+        },
+        {
+          "kind": "commit",
+          "seq": 24,
+          "t": 1816
+        },
+        {
+          "kind": "insert",
+          "seq": 25,
+          "t": 1966,
+          "text": "P"
+        },
+        {
+          "kind": "insert",
+          "seq": 26,
+          "t": 2116,
+          "text": "f"
+        },
+        {
+          "kind": "insert",
+          "seq": 27,
+          "t": 2266,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 28,
+          "t": 2416,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 29,
+          "t": 2566,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 30,
+          "t": 2716,
+          "text": "k"
+        },
+        {
+          "kind": "insert",
+          "seq": 31,
+          "t": 2866,
+          "text": "u"
+        },
+        {
+          "kind": "insert",
+          "seq": 32,
+          "t": 3016,
+          "text": "c"
+        },
+        {
+          "kind": "insert",
+          "seq": 33,
+          "t": 3166,
+          "text": "h"
+        },
+        {
+          "kind": "insert",
+          "seq": 34,
+          "t": 3316,
+          "text": "e"
+        },
+        {
+          "kind": "insert",
+          "seq": 35,
+          "t": 3466,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 36,
+          "t": 3616,
+          "text": "x"
+        },
+        {
+          "kind": "insert",
+          "seq": 37,
+          "t": 3766,
+          "text": "x"
+        },
+        {
+          "kind": "commit",
+          "seq": 38,
+          "t": 3849
+        },
+        {
+          "kind": "insert",
+          "seq": 39,
+          "t": 3894,
+          "text": "M"
+        },
+        {
+          "kind": "insert",
+          "seq": 40,
+          "t": 3939,
+          "text": "i"
+        },
+        {
+          "kind": "insert",
+          "seq": 41,
+          "t": 3984,
+          "text": "n"
+        },
+        {
+          "kind": "insert",
+          "seq": 42,
+          "t": 4029,
+          "text": "z"
+        },
+        {
+          "kind": "insert",
+          "seq": 43,
+          "t": 4074,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 44,
+          "t": 4137
+        },
+        {
+          "kind": "insert",
+          "seq": 45,
+          "t": 4257,
+          "text": "K"
+        },
+        {
+          "kind": "insert",
+          "seq": 46,
+          "t": 4377,
+          "text": "a"
+        },
+        {
+          "kind": "insert",
+          "seq": 47,
+          "t": 4497,
+          "text": "r"
+        },
+        {
+          "kind": "insert",
+          "seq": 48,
+          "t": 4617,
+          "text": "o"
+        },
+        {
+          "kind": "insert",
+          "seq": 49,
+          "t": 4737,
+          "text": "t"
+        },
+        {
+          "kind": "insert",
+          "seq": 50,
+          "t": 4857,
+          "text": "t"
+        },
+        {
+          "kind": "insert",
+          "seq": 51,
+          "t": 4977,
+          "text": "e"
+        },
+        {
+          "kind": "commit",
+          "seq": 52,
+          "t": 5106
+        }
+      ]
+    }
+  }
+}

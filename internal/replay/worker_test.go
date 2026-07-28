@@ -33,6 +33,19 @@ type vector struct {
 		Status  string   `json:"status"`
 		Verdict string   `json:"verdict"`
 		Flags   []string `json:"flags"`
+		// Metrics pins the SERVER-only metric fields (the client never reports
+		// them): consistency and the chars breakdown. Set on the vector that
+		// exists for exactly that — see testdata/README.md.
+		Metrics *struct {
+			Consistency float64 `json:"consistency"`
+			Chars       struct {
+				Correct   int `json:"correct"`
+				Incorrect int `json:"incorrect"`
+				Extra     int `json:"extra"`
+				Missed    int `json:"missed"`
+			} `json:"chars"`
+			Spaces int `json:"spaces"`
+		} `json:"metrics"`
 	} `json:"expect"`
 	Payload            vectorPayload `json:"payload"`
 	RejectedDispatches int           `json:"rejectedDispatches"`
@@ -329,6 +342,30 @@ func TestGoldenVectorsReplayBitExact(t *testing.T) {
 			assert.Equal(t, clientMetrics["wpm"], serverMetrics["wpm"], "metrics.wpm")
 			assert.Equal(t, clientMetrics["raw"], serverMetrics["raw"], "metrics.raw")
 			assert.Equal(t, clientMetrics["acc"], serverMetrics["accuracy"], "metrics.accuracy")
+
+			// The server-only fields, where a vector pins them: consistency and
+			// the chars breakdown come from V8 (the generator) and must come out
+			// of goja identical — chars are integers, and consistency's one
+			// transcendental (tanh) agrees bit for bit between the engines, so
+			// no epsilon here either.
+			if want := v.Expect.Metrics; want != nil {
+				var got struct {
+					Consistency float64 `json:"consistency"`
+					Chars       struct {
+						Correct   int `json:"correct"`
+						Incorrect int `json:"incorrect"`
+						Extra     int `json:"extra"`
+						Missed    int `json:"missed"`
+					} `json:"chars"`
+					Spaces int `json:"spaces"`
+				}
+				require.NoError(t, json.Unmarshal(d.ServerMetrics, &got))
+				assert.Equal(t, want.Consistency, got.Consistency, "metrics.consistency")
+				assert.Equal(t, want.Chars, got.Chars, "metrics.chars")
+				assert.Equal(t, want.Spaces, got.Spaces, "metrics.spaces")
+				assert.Greater(t, got.Consistency, 0.0)
+				assert.Less(t, got.Consistency, 1.0)
+			}
 		})
 	}
 }
@@ -342,6 +379,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 
 	var sawTime, sawWords, sawMods, sawRejectedBackspace, sawV1, sawV2, sawTypos bool
 	var sawWeakFlagAccepted, sawBotFlagged, sawNospace, sawNewlineDict, sawQuote bool
+	var sawMetricsPinned bool
 	for _, v := range vectors {
 		switch v.Payload.Mode {
 		case "time":
@@ -405,6 +443,18 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 		if v.Expect.Status == StatusFlagged {
 			sawBotFlagged = true
 		}
+		// The server-only metrics pin must stay meaningful: strictly inside
+		// (0, 1) for consistency, and every chars count non-zero — a regenerated
+		// vector whose mix collapsed would pin nothing.
+		if m := v.Expect.Metrics; m != nil {
+			sawMetricsPinned = true
+			assert.Greater(t, m.Consistency, 0.0, "%s: pinned consistency must be non-trivial", v.Name)
+			assert.Less(t, m.Consistency, 1.0, "%s: pinned consistency must be non-trivial", v.Name)
+			assert.Positive(t, m.Chars.Correct, "%s: chars.correct", v.Name)
+			assert.Positive(t, m.Chars.Incorrect, "%s: chars.incorrect", v.Name)
+			assert.Positive(t, m.Chars.Extra, "%s: chars.extra", v.Name)
+			assert.Positive(t, m.Chars.Missed, "%s: chars.missed", v.Name)
+		}
 
 		// The quote case, asserted rather than merely counted. Every clause here
 		// is a contract the ingestion path enforces, so a regenerated vector
@@ -442,6 +492,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	assert.True(t, sawNospace, "no nospace-with-space-presses vector: the NospaceCommit guard is unpinned")
 	assert.True(t, sawNewlineDict, "no '\\n'-dictionary vector: the separator rule is unpinned")
 	assert.True(t, sawQuote, "no quote vector: the fixed-text path is unpinned")
+	assert.True(t, sawMetricsPinned, "no vector pinning the server-only metrics (consistency + chars)")
 
 	// Log v2 telemetry: a vector that carries down/up events, and its stripped
 	// v1 twin with THE SAME numbers — the compatibility proof in vector form.

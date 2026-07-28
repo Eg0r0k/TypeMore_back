@@ -508,6 +508,97 @@ func TestRevalidateClaimsRunsJudgedByAnotherBundle(t *testing.T) {
 	}
 }
 
+// The backfill contract of the consistency/chars re-vendor: `make revalidate`
+// walks history forward without moving a single verdict — the only change a
+// backfilled row may show is its server_metrics carrying the enriched fields
+// (consistency redefined onto [0, 1]; the chars breakdown). This test plants
+// exactly the historical shape — runs judged by an older bundle whose stored
+// consistency is the legacy per-word curve on [0, 100] — and asserts the
+// verdict columns byte for byte while the metric document is corrected.
+func TestRevalidateBackfillKeepsVerdictsAndEnrichesMetrics(t *testing.T) {
+	pool := newPool(t)
+	user := seedUser(t, pool)
+	ctx := context.Background()
+
+	ids := []uuid.UUID{
+		insertPending(t, pool, user, loadVector(t, "words-clean")),
+		insertPending(t, pool, user, loadVector(t, "words-consistency-chars")),
+		// A flagged verdict that must survive the backfill unmoved too.
+		insertPending(t, pool, user, loadVector(t, "words-bot-cadence")),
+	}
+
+	w := newTestWorker(t, replaypg.New(pool, nil), replay.WorkerConfig{BatchSize: 10})
+	core, err := replay.NewCore(replay.DefaultReplayTimeout)
+	require.NoError(t, err)
+	n, err := w.RunBatch(ctx, core, discardLogger())
+	require.NoError(t, err)
+	require.Equal(t, len(ids), n)
+
+	type charCounts struct {
+		Correct   int `json:"correct"`
+		Incorrect int `json:"incorrect"`
+		Extra     int `json:"extra"`
+		Missed    int `json:"missed"`
+	}
+	type metricsDoc struct {
+		Wpm         float64     `json:"wpm"`
+		Raw         float64     `json:"raw"`
+		Accuracy    float64     `json:"accuracy"`
+		Consistency *float64    `json:"consistency"`
+		Chars       *charCounts `json:"chars"`
+	}
+
+	before := map[uuid.UUID]runRow{}
+	for _, id := range ids {
+		row := fetchRun(t, pool, id)
+		before[id] = row
+		// Rewrite the row into the historical shape: an older bundle's sha, and
+		// the legacy consistency scale — so the backfill has something to fix.
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(row.ServerMetrics, &m))
+		m["consistency"] = 73.5
+		legacy, err := json.Marshal(m)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx,
+			`UPDATE runs SET bundle_sha = 'deadbeef', server_metrics = $2 WHERE id = $1`, id, legacy)
+		require.NoError(t, err)
+	}
+
+	n, err = w.RevalidateBatch(ctx, core, discardLogger())
+	require.NoError(t, err)
+	require.Equal(t, len(ids), n, "every run judged by the old bundle backfills")
+
+	for _, id := range ids {
+		was := before[id]
+		row := fetchRun(t, pool, id)
+
+		// Verdicts must not change: not the status, not the verdict document,
+		// not the score it was compared on.
+		assert.Equal(t, was.Status, row.Status, "backfill moved a status")
+		assert.JSONEq(t, string(was.Validation), string(row.Validation),
+			"backfill moved the validation document")
+		assert.JSONEq(t, string(was.ServerScore), string(row.ServerScore),
+			"backfill moved the server score")
+
+		// Metrics may only be enriched: wpm/raw/accuracy and chars identical to
+		// the last bit; consistency back on the [0, 1] definition.
+		var wasM, nowM metricsDoc
+		require.NoError(t, json.Unmarshal(was.ServerMetrics, &wasM))
+		require.NoError(t, json.Unmarshal(row.ServerMetrics, &nowM))
+		assert.Equal(t, wasM.Wpm, nowM.Wpm, "backfill moved wpm")
+		assert.Equal(t, wasM.Raw, nowM.Raw, "backfill moved raw")
+		assert.Equal(t, wasM.Accuracy, nowM.Accuracy, "backfill moved accuracy")
+		require.NotNil(t, nowM.Chars, "backfilled metrics lost the chars breakdown")
+		assert.Equal(t, wasM.Chars, nowM.Chars, "backfill moved the chars breakdown")
+		require.NotNil(t, nowM.Consistency, "backfilled metrics lost consistency")
+		assert.GreaterOrEqual(t, *nowM.Consistency, 0.0)
+		assert.LessOrEqual(t, *nowM.Consistency, 1.0)
+
+		require.NotNil(t, row.BundleSha)
+		assert.Equal(t, replay.BundleSHA(), *row.BundleSha)
+	}
+}
+
 // The policy decides the status, and revalidation is what applies a policy
 // change to history: the same three runs land accepted / accepted / flagged.
 func TestRevalidateAppliesTheCurrentPolicy(t *testing.T) {
