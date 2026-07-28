@@ -46,7 +46,13 @@ LIMIT $2;
 -- name: ListRunsAfter :many
 -- Next page after the (created_at, id) cursor. The row-value comparison written
 -- out longhand keeps sqlc's type inference happy and matches the composite
--- (created_at DESC, id DESC) ordering exactly.
+-- (created_at DESC, id DESC) ordering exactly. The redundant-looking
+-- `created_at <= $2` conjunct is the SEEK: the planner cannot derive a start
+-- condition from the OR form alone, so without it the cursor is a filter the
+-- index scan walks up to — linear in depth, measured at 66 ms by row 50 000 on
+-- the zone-9 fixture. With it, the scan starts at the cursor and the OR only
+-- trims the tie boundary (migration 00015 carries the matching 3-column
+-- index, which is also what retires the id-tiebreak Incremental Sort).
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
@@ -59,6 +65,7 @@ SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
            'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE user_id = $1
+  AND created_at <= $2
   AND (created_at < $2 OR (created_at = $2 AND id < $3))
 ORDER BY created_at DESC, id DESC
 LIMIT $4;

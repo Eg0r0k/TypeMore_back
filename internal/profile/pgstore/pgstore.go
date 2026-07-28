@@ -7,11 +7,13 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/typemore/typemore-server/internal/profile"
 	"github.com/typemore/typemore-server/internal/profile/profiledb"
@@ -29,37 +31,37 @@ func New(pool *pgxpool.Pool) *Store {
 	return &Store{q: profiledb.New(pool)}
 }
 
-// Summary assembles GET /profile/summary from its component aggregates. The
-// queries run on separate snapshots (plain pool reads, no transaction): a run
-// accepted between two of them can skew a counter by one for one request,
-// which statistics can afford — a transaction here would serialize the whole
-// profile page behind one connection for no observable gain.
+// Summary assembles GET /profile/summary from its component aggregates,
+// issued CONCURRENTLY on separate pool connections: the four heavy ones each
+// walk the same ~N index entries of the user's history, so running them
+// serially would charge the page ~4× the cost of its slowest query (measured:
+// 1.1 s serial vs ~0.3 s concurrent on the zone-9 fixture). Separate
+// snapshots, not one transaction: a run accepted between two of them can skew
+// a counter by one for one request, which statistics can afford — a
+// transaction would put the whole page back on one connection.
 func (s *Store) Summary(ctx context.Context, userID uuid.UUID, today time.Time) (profile.Summary, error) {
-	user, err := s.q.GetProfileUser(ctx, userID)
-	if err != nil {
-		return profile.Summary{}, err
-	}
-	counts, err := s.q.GetProfileCounts(ctx, userID)
-	if err != nil {
-		return profile.Summary{}, err
-	}
-	stats, err := s.q.GetProfileMetricStats(ctx, userID)
-	if err != nil {
-		return profile.Summary{}, err
-	}
-	last10, err := s.q.GetProfileLast10(ctx, userID)
-	if err != nil {
-		return profile.Summary{}, err
-	}
-	streaks, err := s.q.GetProfileStreaks(ctx, profiledb.GetProfileStreaksParams{
-		UserID: userID,
-		Today:  today,
+	var (
+		user      profiledb.GetProfileUserRow
+		counts    profiledb.GetProfileCountsRow
+		stats     profiledb.GetProfileMetricStatsRow
+		last10    profiledb.GetProfileLast10Row
+		streaks   profiledb.GetProfileStreaksRow
+		languages json.RawMessage
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) { user, err = s.q.GetProfileUser(gctx, userID); return })
+	g.Go(func() (err error) { counts, err = s.q.GetProfileCounts(gctx, userID); return })
+	g.Go(func() (err error) { stats, err = s.q.GetProfileMetricStats(gctx, userID); return })
+	g.Go(func() (err error) { last10, err = s.q.GetProfileLast10(gctx, userID); return })
+	g.Go(func() (err error) {
+		streaks, err = s.q.GetProfileStreaks(gctx, profiledb.GetProfileStreaksParams{
+			UserID: userID,
+			Today:  today,
+		})
+		return
 	})
-	if err != nil {
-		return profile.Summary{}, err
-	}
-	languages, err := s.q.GetProfileLanguages(ctx, userID)
-	if err != nil {
+	g.Go(func() (err error) { languages, err = s.q.GetProfileLanguages(gctx, userID); return })
+	if err := g.Wait(); err != nil {
 		return profile.Summary{}, err
 	}
 

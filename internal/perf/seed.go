@@ -327,3 +327,212 @@ func Truncate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	return nil
 }
+
+// ProfileSeedSpec describes the profile zone's population: ONE account with a
+// deep history — the 100k-run user the profile aggregates must stay fast for —
+// laid over whatever background population is already in the database (the
+// background is what makes "no seq scan of runs" a real assertion rather than
+// a tautology on a single-user table).
+type ProfileSeedSpec struct {
+	// Runs is the profile user's total submissions.
+	Runs int
+	// Days is the history depth: created_at is spread across this many days
+	// ending now, so the calendar, the streaks and the range filters all have
+	// real shape to chew on.
+	Days int
+	// FlaggedFraction / RejectedFraction mirror the population-wide seed: the
+	// metric aggregates must FILTER these out, so the fixture must contain them.
+	FlaggedFraction  float64
+	RejectedFraction float64
+	// PBBuckets is how many leaderboard_entries rows the user holds — the PB
+	// cards read. Bounded by the ranked shapes × languages, like reality.
+	PBBuckets int
+	// Seed makes the population reproducible.
+	Seed uint64
+}
+
+// DefaultProfileSeed is the profile-zone population: a 100k-run account, two
+// years deep — an order of magnitude past any real typist (100k runs is ~140
+// runs a day, every day, for two years).
+func DefaultProfileSeed() ProfileSeedSpec {
+	return ProfileSeedSpec{
+		Runs:             100_000,
+		Days:             730,
+		FlaggedFraction:  0.05,
+		RejectedFraction: 0.01,
+		PBBuckets:        36,
+		Seed:             0xFACADE,
+	}
+}
+
+// ProfileSeedResult reports what SeedProfileUser produced.
+type ProfileSeedResult struct {
+	UserID    uuid.UUID
+	TotalRuns int
+	Accepted  int
+	Restarts  int64
+	Elapsed   time.Duration
+}
+
+// SeedProfileUser writes one user with spec.Runs submissions carrying FULL
+// server metric documents (durationSec, consistency, chars, spaces — the
+// fields the profile aggregates actually read; the population-wide Seed writes
+// only wpm/raw/accuracy because the board projection reads nothing else), plus
+// the user's leaderboard_entries rows for the PB cards. COPY throughout,
+// ANALYZE at the end.
+func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSpec) (ProfileSeedResult, error) {
+	started := time.Now()
+	rng := rand.New(rand.NewPCG(spec.Seed, 0xD00D))
+	res := ProfileSeedResult{UserID: uuid.New()}
+
+	name := "profileperf"
+	if err := copyRows(ctx, pool, "users", []string{"id", "display_name"},
+		[][]any{{res.UserID, name}}); err != nil {
+		return res, err
+	}
+	if err := copyRows(ctx, pool, "auth_identities",
+		[]string{"id", "user_id", "provider", "provider_subject", "email", "email_verified"},
+		[][]any{{uuid.New(), res.UserID, "email", name + "@perf.local", name + "@perf.local", true}}); err != nil {
+		return res, err
+	}
+
+	runCols := []string{
+		"id", "user_id", "mode", "duration_ms", "word_count", "lang", "seed",
+		"dict_hash", "setup", "client_metrics", "client_score", "score_version",
+		"status", "log", "log_bytes", "created_at",
+		"server_metrics", "server_score", "validation", "bundle_sha",
+		"policy_version", "validated_at", "restarts_since_last_submit",
+	}
+	setup := MustJSON(BuildSetup(SetupSpec{Mode: "time", DurationMs: 60_000}))
+	clientMetrics := []byte(`{"wpm":100,"raw":100,"acc":1}`)
+	clientScore := []byte(`{"version":2,"total":1000}`)
+	validation := []byte(`{"verdict":"valid","flags":[],"policy":{"version":1,"suspicion":0,"threshold":1}}`)
+	log := Gzip([]byte(`{"version":1,"events":[{"kind":"insert","seq":1,"t":10,"text":"a"}]}`))
+
+	base := time.Now().UTC().Add(-time.Duration(spec.Days) * 24 * time.Hour)
+	var rows [][]any
+	flush := func() error {
+		if len(rows) == 0 {
+			return nil
+		}
+		if err := copyRows(ctx, pool, "runs", runCols, rows); err != nil {
+			return err
+		}
+		res.TotalRuns += len(rows)
+		rows = rows[:0]
+		return nil
+	}
+
+	langs := []string{"en", "ru-RU", "german", "code_css"}
+	for i := 0; i < spec.Runs; i++ {
+		status := "accepted"
+		switch r := rng.Float64(); {
+		case r < spec.RejectedFraction:
+			status = "rejected"
+		case r < spec.RejectedFraction+spec.FlaggedFraction:
+			status = "flagged"
+		}
+		shape := rankedShapes[rng.IntN(len(rankedShapes))]
+		var durationMs, wordCount *int32
+		dim := shape.dim
+		if shape.mode == "time" {
+			durationMs = &dim
+		} else {
+			wordCount = &dim
+		}
+		at := base.Add(time.Duration(rng.Int64N(int64(spec.Days) * 24 * int64(time.Hour))))
+		restarts := int32(rng.IntN(6))
+		res.Restarts += int64(restarts)
+
+		var serverMetrics, serverScore []byte
+		if status != "rejected" {
+			wpm := 40 + rng.Float64()*120
+			acc := 0.85 + rng.Float64()*0.15
+			durationSec := 15 + rng.Float64()*105
+			correct := int(wpm * 5 * durationSec / 60)
+			serverMetrics = []byte(fmt.Sprintf(
+				`{"wpm":%.6f,"raw":%.6f,"accuracy":%.6f,"consistency":%.6f,`+
+					`"chars":{"correct":%d,"incorrect":%d,"extra":%d,"missed":%d},`+
+					`"spaces":%d,"durationSec":%.3f}`,
+				wpm, wpm+2, acc, 0.3+rng.Float64()*0.65,
+				correct, rng.IntN(20), rng.IntN(6), rng.IntN(6),
+				correct/6, durationSec))
+			serverScore = []byte(fmt.Sprintf(`{"version":2,"total":%d}`, rng.IntN(9000)+100))
+		}
+		if status == "accepted" {
+			res.Accepted++
+		}
+		rows = append(rows, []any{
+			uuid.New(), res.UserID, shape.mode, durationMs, wordCount,
+			langs[rng.IntN(len(langs))], int64(rng.Uint32()), "804728e8",
+			setup, clientMetrics, clientScore, int16(2), status, log, int32(64),
+			at, serverMetrics, serverScore, validation, "perfbundle", int16(1),
+			at, restarts,
+		})
+		if len(rows) >= 50_000 {
+			if err := flush(); err != nil {
+				return res, err
+			}
+		}
+	}
+	if err := flush(); err != nil {
+		return res, err
+	}
+
+	// The PB cards: one entries row per bucket, exactly the snapshot shape the
+	// projection writes. Direct COPY — projecting 100k synthetic runs is zone
+	// 4's business, not this fixture's.
+	var pbRows [][]any
+	for i := 0; i < spec.PBBuckets; i++ {
+		shape := rankedShapes[i%len(rankedShapes)]
+		lang := seedLangs[(i/len(rankedShapes))%len(seedLangs)]
+		b := Bucket{Mode: shape.mode, Lang: lang}
+		dim := shape.dim
+		if shape.mode == "time" {
+			b.DurationMs = &dim
+		} else {
+			b.WordCount = &dim
+		}
+		pbRows = append(pbRows, []any{
+			b.Key(), res.UserID, uuid.New(), int64(rng.IntN(9000) + 100),
+			40 + rng.Float64()*120, 42 + rng.Float64()*120, 0.9 + rng.Float64()*0.1,
+			"S", []byte(`{"punctuation":false}`), base.Add(time.Duration(i) * 24 * time.Hour),
+		})
+	}
+	// The entries FK references runs(id); the fixture's PB run ids are
+	// synthetic, so plant matching skeleton runs first.
+	var pbRunRows [][]any
+	for _, row := range pbRows {
+		d := int32(60_000)
+		// An accepted run always carries its server metrics in production, so
+		// the skeletons do too — an accepted row with NULL metrics is a shape
+		// the aggregates are entitled never to see.
+		m := []byte(fmt.Sprintf(
+			`{"wpm":%.4f,"raw":%.4f,"accuracy":0.97,"consistency":0.8,`+
+				`"chars":{"correct":300,"incorrect":6,"extra":2,"missed":1},`+
+				`"spaces":58,"durationSec":60}`,
+			row[4], row[5]))
+		sc := []byte(fmt.Sprintf(`{"version":2,"total":%d}`, row[3]))
+		pbRunRows = append(pbRunRows, []any{
+			row[2], res.UserID, "time", &d, nil, "en", int64(rng.Uint32()),
+			"804728e8", setup, clientMetrics, clientScore, int16(2), "accepted",
+			log, int32(64), row[9], m, sc, validation, "perfbundle", int16(1),
+			row[9], int32(0),
+		})
+	}
+	if err := copyRows(ctx, pool, "runs", runCols, pbRunRows); err != nil {
+		return res, err
+	}
+	res.TotalRuns += len(pbRunRows)
+	if err := copyRows(ctx, pool, "leaderboard_entries",
+		[]string{"bucket_key", "user_id", "run_id", "score", "wpm", "raw", "acc",
+			"grade", "mods", "achieved_at"}, pbRows); err != nil {
+		return res, err
+	}
+
+	if _, err := pool.Exec(ctx, `ANALYZE users, auth_identities, runs, leaderboard_entries`); err != nil {
+		return res, fmt.Errorf("perf: analyze: %w", err)
+	}
+	res.Elapsed = time.Since(started)
+	return res, nil
+}

@@ -133,6 +133,13 @@ Three properties of this rig shape every figure:
 | 8 | 20 simultaneous match ends | 101 ms | 5 s | PASS (2%) |
 | 8 | unrelated request p99 during burst | 28 ms | 50 ms | PASS |
 | 8 | …its degradation vs baseline | **4.30×** (6.5 → 28 ms) | ≤ 3× | **MISSED 1.4×** |
+| 9 | GET /profile/summary, 100k-run user | 243 ms median | 800 ms | PASS (30%) |
+| 9 | GET /profile/activity (366d) | 164 ms median | 500 ms | PASS (33%) |
+| 9 | GET /profile/histogram | 215 ms median | 600 ms | PASS (36%) |
+| 9 | GET /profile/timeseries (1y) + slope | 374 ms median | 700 ms | PASS (53%) |
+| 9 | GET /profile/pbs | 1.1 ms median | 25 ms | PASS (4%) |
+| 9 | runs-list deep keyset page (row 50 000) *(after 00015)* | **0.8 ms** *(was 66.9)* | index seek, no sort | PASS |
+| 9 | every profile aggregate's plan | bitmap/index-driven, no spill | no seq scan of runs, no external sort | PASS |
 
 **8 budget rows missed, 0 hidden** (11 when this document was written; zone 3's pagination pair is fixed, see below). Two fixes have since been implemented: the
 zone 4 defect below (a defect in code shipped in the previous phase) and zone 2's
@@ -1017,6 +1024,60 @@ would cut connection hold time ~5× for the same data — but only pays once the
 semaphore is in place.
 
 ---
+
+## Zone 9 — profile aggregates
+
+The profile arc's owner requirement, verbatim: seed a 100k-run user; assert
+summary/activity/histogram/timeseries/pbs each stay index-driven (plan
+assertions, no seq scan / no external sort) and under budget; the runs-list
+page stays keyset. Suite: `internal/profile/profile_load_test.go`
+(`go test -tags=load ./internal/profile/`), fixture = the full ~1M-run zone-3/4
+background population **plus** one account with 100 036 runs (94 111 accepted)
+spread over 730 days — the background is what makes "no seq scan of runs" a
+real assertion; against a table the user IS, a seq scan would be the planner's
+correct answer and the check would pin nothing.
+
+| workload | measured (median, warm) | budget | verdict |
+|---|---|---|---|
+| GET /profile/summary | **243 ms** | 800 ms | PASS (30%) |
+| GET /profile/activity (366 d) | **164 ms** | 500 ms | PASS (33%) |
+| GET /profile/histogram | **215 ms** | 600 ms | PASS (36%) |
+| GET /profile/timeseries (1 y, incl. slope) | **374 ms** | 700 ms | PASS (53%) |
+| GET /profile/pbs | **1.1 ms** | 25 ms | PASS (4%) |
+
+Budgets are measured medians with ~2–3× headroom — generous enough for CI
+noise, tight enough that an accidental table scan (~seconds at 1M rows) fails
+loudly. Every aggregate's plan is pinned: bitmap/index-driven off
+`runs (user_id, …)`, no sequential scan of `runs` (or `leaderboard_entries`
+for the PBs), no sort that spills. The dominant cost is per-row `jsonb`
+extraction over the user's ~100k entries; if a real profile ever outgrows
+these budgets, the first move is a covering expression index, not a cache
+(docs/PROFILE.md, "Performance posture").
+
+### What the plan check caught, and the two fixes it forced
+
+- **The runs-list cursor was a filter, not a seek.** The feed orders by
+  `(created_at DESC, id DESC)` but `runs_user_created_idx` stopped at
+  `(user_id, created_at)`: every page carried an Incremental Sort for the id
+  tiebreak, and the longhand OR cursor predicate made the scan WALK to its
+  position — 66.9 ms by row 50 000, linear in depth. The same failure shape
+  zone 3 fixed for the boards in 00011, one table over. Fix: migration 00015
+  replaces the index with `(user_id, created_at DESC, id DESC)` and the query
+  gains a redundant-looking `created_at <= cursor` conjunct the planner CAN
+  turn into a start condition. Deep page after: **0.8 ms**, `Limit` +
+  `Index Scan`, depth-independent.
+- **The trend slope's window sum spilled.** regr_slope over a per-RUN
+  cumulative-hours series sorts ~94k rows inside 4 MB `work_mem` — external
+  merge. The stat now regresses over the per-DAY buckets (≤ 366 points, the
+  same series the chart plots), which is both the honest granularity for a
+  daily chart's headline and a sort that fits in a page.
+
+`GET /profile/summary` issues its six component aggregates concurrently
+(errgroup over the pool): four of them each walk the same ~100k index entries,
+and serially the page cost 1.1 s — the sum of its parts. Concurrent, it costs
+its slowest part (~250 ms). Separate snapshots, deliberately: a run accepted
+between two sub-queries skews a counter by one for one request, which
+statistics can afford.
 
 ## Incidental finding — the vendored bundle is stale on this dev box
 

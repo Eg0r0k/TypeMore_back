@@ -405,12 +405,15 @@ func (q *Queries) GetProfileUser(ctx context.Context, id uuid.UUID) (GetProfileU
 }
 
 const getProfileWpmPerHour = `-- name: GetProfileWpmPerHour :one
-WITH pts AS (SELECT (server_metrics ->> 'wpm')::float8 AS wpm,
-                    sum((server_metrics ->> 'durationSec')::float8)
-                        OVER (ORDER BY created_at, id) / 3600.0 AS hours
-             FROM runs
-             WHERE user_id = $1 AND status = 'accepted'
-               AND created_at >= $2 AND created_at < $3)
+WITH days AS (SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
+                     avg((server_metrics ->> 'wpm')::float8)          AS wpm,
+                     sum((server_metrics ->> 'durationSec')::float8)  AS secs
+              FROM runs
+              WHERE user_id = $1 AND status = 'accepted'
+                AND created_at >= $2 AND created_at < $3
+              GROUP BY 1),
+     pts AS (SELECT wpm, sum(secs) OVER (ORDER BY day) / 3600.0 AS hours
+             FROM days)
 SELECT coalesce(regr_slope(wpm, hours), 0)::float8 AS wpm_per_hour
 FROM pts
 `
@@ -422,11 +425,15 @@ type GetProfileWpmPerHourParams struct {
 }
 
 // The header stat "speed change per hour spent typing": an ordinary
-// least-squares slope (regr_slope) of y = a run's wpm over x = the cumulative
-// hours of accepted typing inside the range, measured AT that run (its own
-// duration included). Runs arrive in index order (user_id, created_at), so the
-// running sum needs no sort. NULL (fewer than two points, or zero variance in
-// x) collapses to 0 — the "no trend yet" answer.
+// least-squares slope (regr_slope) of y = a day's average wpm over x = the
+// cumulative hours of accepted typing inside the range at that day's end. The
+// points are the DAY buckets, not the raw runs, for two reasons that agree:
+// the chart the stat headlines is a daily series (a trend line through
+// different points than the chart plots would be a different claim), and a
+// windowed running sum over 100k raw rows is a sort that spills to disk at
+// scale, while ≤366 day points sort in a page (the zone-9 plan check is what
+// caught it). NULL (fewer than two days, or zero variance in x) collapses to
+// 0 — the "no trend yet" answer.
 func (q *Queries) GetProfileWpmPerHour(ctx context.Context, arg GetProfileWpmPerHourParams) (float64, error) {
 	row := q.db.QueryRow(ctx, getProfileWpmPerHour, arg.UserID, arg.CreatedAt, arg.CreatedAt_2)
 	var wpm_per_hour float64
