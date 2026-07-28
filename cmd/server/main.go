@@ -32,6 +32,8 @@ import (
 	"github.com/typemore/typemore-server/internal/platform/db"
 	"github.com/typemore/typemore-server/internal/platform/mail"
 	"github.com/typemore/typemore-server/internal/platform/turnstile"
+	"github.com/typemore/typemore-server/internal/profile"
+	profilepg "github.com/typemore/typemore-server/internal/profile/pgstore"
 	"github.com/typemore/typemore-server/internal/quote"
 	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
@@ -133,6 +135,39 @@ func run() error {
 		func(ctx context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(ctx)
 			return u.ID, ok
+		}, logger)
+
+	// Profile: the caller's own statistics (docs/PROFILE.md), on-demand SQL
+	// over runs plus a read of the PB slots the leaderboard projection already
+	// maintains. Session-scoped — v1 has no public-profile surface at all. The
+	// bucket parser is the leaderboard domain's own (the key format has one
+	// producer and one parser), adapted here so the profile package does not
+	// import its sibling.
+	profileStore := profilepg.New(pool)
+	profileSvc := profile.NewService(profileStore,
+		func(ctx context.Context) (uuid.UUID, bool) {
+			u, ok := auth.UserFrom(ctx)
+			return u.ID, ok
+		},
+		func(key string) (profile.BucketInfo, bool) {
+			b, err := leaderboard.ParseBucketKey(key)
+			if err != nil {
+				return profile.BucketInfo{}, false
+			}
+			info := profile.BucketInfo{Mode: b.Mode, Lang: b.Lang, TextSource: b.TextSource}
+			if b.QuoteID != uuid.Nil {
+				id := b.QuoteID
+				info.QuoteID = &id
+				return info, true
+			}
+			dim := b.Dimension
+			switch b.Mode {
+			case leaderboard.ModeTime:
+				info.DurationMs = &dim
+			case leaderboard.ModeWords:
+				info.WordCount = &dim
+			}
+			return info, true
 		}, logger)
 
 	// Quotes: the fixed-text corpus (SCORING_CONCEPT §6, docs/QUOTES.md). Read
@@ -253,6 +288,10 @@ func run() error {
 		// requiring one, which is what lets /{bucket}/me answer "your rank" on
 		// an otherwise anonymous surface.
 		r.With(authSvc.OptionalAuth).Mount("/leaderboards", boardSvc.Routes())
+		// Profile: session-scoped, the caller's own statistics only — the
+		// subtree carries its own RequireAuth so no route can be added public
+		// by accident (docs/PROFILE.md, "Privacy").
+		r.Mount("/profile", profileSvc.Routes(authSvc.RequireAuth))
 		// Quotes need no session at all — not even an optional one. Nothing on
 		// this subtree varies by who is asking, so it is mounted bare rather
 		// than behind OptionalAuth like the boards.

@@ -18,10 +18,26 @@ RETURNING id, status, created_at;
 -- ListRunsAfter using the (created_at, id) of the last row. The replay columns
 -- (server_metrics/server_score/validation/validated_at) are NULL until the
 -- worker has judged the run.
+--
+-- The trailing `derived` document carries the profile table's cells, lifted
+-- server-side so the client renders rows without parsing the whole
+-- setup/metrics documents: the SQL grade of the SERVER accuracy (run_grade —
+-- the fenced mirror of the core's gradeOf), the consistency and chars slices
+-- of server_metrics (absent until judged), and the run_quote_id / run_mods
+-- selections of the setup snapshot the leaderboard projection already uses.
+-- One jsonb document rather than five columns so nullability stays a property
+-- of the data (jsonb_strip_nulls) instead of five hand-annotated scan types.
+-- Additive: every pre-existing column is untouched.
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at
+       log_bytes, restarts_since_last_submit, created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
+           'consistency', (server_metrics ->> 'consistency')::float8,
+           'chars',       server_metrics -> 'chars',
+           'quoteId',     run_quote_id(setup),
+           'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE user_id = $1
 ORDER BY created_at DESC, id DESC
@@ -34,7 +50,13 @@ LIMIT $2;
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at
+       log_bytes, restarts_since_last_submit, created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
+           'consistency', (server_metrics ->> 'consistency')::float8,
+           'chars',       server_metrics -> 'chars',
+           'quoteId',     run_quote_id(setup),
+           'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE user_id = $1
   AND (created_at < $2 OR (created_at = $2 AND id < $3))
@@ -46,7 +68,13 @@ LIMIT $4;
 SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
        setup, client_metrics, client_score, score_version, status,
        server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at
+       log_bytes, restarts_since_last_submit, created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
+           'consistency', (server_metrics ->> 'consistency')::float8,
+           'chars',       server_metrics -> 'chars',
+           'quoteId',     run_quote_id(setup),
+           'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE id = $1 AND user_id = $2;
 

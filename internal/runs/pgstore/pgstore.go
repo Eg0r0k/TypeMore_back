@@ -6,6 +6,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
@@ -154,7 +155,7 @@ func (s *Store) PublicReplayLog(ctx context.Context, id uuid.UUID) ([]byte, erro
 // types, so each gets a tiny converter into the shared runs.Summary.
 
 func firstRowToSummary(r runsdb.ListRunsFirstRow) runs.Summary {
-	return runs.Summary{
+	out := runs.Summary{
 		ID:                      r.ID,
 		Mode:                    r.Mode,
 		DurationMs:              r.DurationMs,
@@ -175,10 +176,12 @@ func firstRowToSummary(r runsdb.ListRunsFirstRow) runs.Summary {
 		RestartsSinceLastSubmit: r.RestartsSinceLastSubmit,
 		CreatedAt:               r.CreatedAt,
 	}
+	applyDerived(&out, r.Derived)
+	return out
 }
 
 func afterRowToSummary(r runsdb.ListRunsAfterRow) runs.Summary {
-	return runs.Summary{
+	out := runs.Summary{
 		ID:                      r.ID,
 		Mode:                    r.Mode,
 		DurationMs:              r.DurationMs,
@@ -199,10 +202,12 @@ func afterRowToSummary(r runsdb.ListRunsAfterRow) runs.Summary {
 		RestartsSinceLastSubmit: r.RestartsSinceLastSubmit,
 		CreatedAt:               r.CreatedAt,
 	}
+	applyDerived(&out, r.Derived)
+	return out
 }
 
 func getRowToSummary(r runsdb.GetRunRow) runs.Summary {
-	return runs.Summary{
+	out := runs.Summary{
 		ID:                      r.ID,
 		Mode:                    r.Mode,
 		DurationMs:              r.DurationMs,
@@ -223,4 +228,25 @@ func getRowToSummary(r runsdb.GetRunRow) runs.Summary {
 		RestartsSinceLastSubmit: r.RestartsSinceLastSubmit,
 		CreatedAt:               r.CreatedAt,
 	}
+	applyDerived(&out, r.Derived)
+	return out
+}
+
+// applyDerived unpacks the SQL-side `derived` cells document onto the flat
+// summary fields. A decode failure leaves the summary usable without its
+// derived cells rather than failing the whole page — the raw documents are
+// still on the row.
+func applyDerived(out *runs.Summary, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var cells runs.DerivedCells
+	if err := json.Unmarshal(raw, &cells); err != nil {
+		return
+	}
+	out.Grade = cells.Grade
+	out.Consistency = cells.Consistency
+	out.Chars = cells.Chars
+	out.QuoteID = cells.QuoteID
+	out.Mods = cells.Mods
 }

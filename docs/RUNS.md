@@ -175,6 +175,12 @@ than from a word list. Two consequences worth stating:
 `?cursor=`. It is absent on the last page. `limit` defaults to 20, clamped to
 100. The log payload is never included in summaries.
 
+Summaries additionally carry the profile table's **derived cells** — `grade`,
+`consistency`, `chars` (absent until judged), `quoteId` (quote runs only) and
+`mods` (always) — lifted in SQL from the documents the row already stores, so
+the profile page renders without parsing them. Additive; see
+[`PROFILE.md`](PROFILE.md).
+
 ## Structural validation (this phase only)
 
 Validation is **fast and game-agnostic** — it never replays the log, recomputes
