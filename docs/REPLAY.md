@@ -134,8 +134,9 @@ and is flagged.
 
 `validateLog` emits scored plausibility flags (`shared/core/validate.ts`):
 `multi-grapheme-insert`, `paste`, `min-interval`, `uniform-intervals`,
-`zero-variance`, `superhuman-burst`, `afk-heavy`, `trailing-afk`. Each carries a
-severity in `[0, 1]` and a human detail string.
+`zero-variance`, `superhuman-burst`, `afk-heavy`, `trailing-afk`, and — on log
+v2 only — `unpaired-keyup`. Each carries a severity in `[0, 1]` and a human
+detail string.
 
 **These are signals, not verdicts.** The policy is what turns them into a
 status, and it exists because the obvious rule does not work.
@@ -171,6 +172,7 @@ signal deserve at its worst". Defaults live in `internal/replay/policy.go`;
 | `min-interval` | 0.30 | Intervals under 15 ms. **The false-positive generator.** One or two in a hundred is rollover; a log where most intervals are impossible also trips `superhuman-burst`, and the two together clear the bar. |
 | `afk-heavy` | 0.02 | See below. |
 | `trailing-afk` | 0.02 | See below. |
+| `unpaired-keyup` | 0.00 | Telemetry. See below. |
 
 **Review threshold: `1.00`** — one maximally severe strong flag, or a believable
 combination of weaker ones. On real data the worst run scores `0.027`, two
@@ -191,6 +193,29 @@ tips a little further.
 
 A maximally idle run (`afk-heavy` 1.0 + `trailing-afk` 1.0) scores `0.04`
 against a `1.00` threshold — pinned by `TestAfkFlagsDoNotReachReview`.
+
+### Why telemetry is worth exactly nothing
+
+Log v2 carries keyboard telemetry, and the phase decision for it is **a
+structural layer only**: the log's own grammar is enforced, and nothing is
+scored. `unpaired-keyup` — a key release with no preceding press — is the one
+flag the core raises off that layer, and its weight is `0.00`.
+
+Not "small like AFK", but exactly zero, and for a different reason. An unpaired
+release is what an honest player produces all day: alt-tab with a key held, a
+layout switch mid-word, a window that loses focus, a key held across the start of
+the log. AFK gets a token weight because it is at least a real (if useless)
+signal; this is not a signal yet. There is **no calibration data for v2 at all**,
+so any weight on it would be a guess, and a guess here lands on real players.
+
+The flag is still raised, still stored on every decision, and still visible to
+moderation — it is telemetry, not silence. Judging it starts by removing the code
+from `TelemetryOnlyFlags` deliberately, with population numbers from `make
+calibrate` to justify the weight. Until then the zero is pinned by
+`TestTelemetryFlagsAreCollectedNotJudged`, and
+`TestUnpairedKeyupsAreAcceptedAtAnyCount` replays a real log with 1, 5 and 50
+unpaired releases: identical score, identical metrics, identical suspicion,
+accepted with the flag kept.
 
 ### Combination rules
 

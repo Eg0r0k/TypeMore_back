@@ -16,7 +16,12 @@ import (
 // forward. It is stored on every decision beside bundle_sha: the bundle says
 // which code produced the numbers, the policy says which rules turned them into
 // a status, and the two move independently.
-const CurrentPolicyVersion int16 = 1
+//
+// v2: the log-v2 telemetry flags became judicially inert by contract rather than
+// by coincidence — see TelemetryOnlyFlags. Runs judged under v1 carried the same
+// arithmetic, but nothing stopped a later edit from putting a weight on them, so
+// the version moves to mark the runs judged under a policy that pins the zero.
+const CurrentPolicyVersion int16 = 2
 
 // Flag codes emitted by the core's validateLog (shared/core/validate.ts). Listed
 // here so the weights table below is exhaustive by construction — an unknown
@@ -35,6 +40,21 @@ const (
 	// a key held across the log start produces one honestly.
 	FlagUnpairedKeyup = "unpaired-keyup"
 )
+
+// TelemetryOnlyFlags are the codes derived from log v2's keyboard telemetry.
+// They are COLLECTED and stored on every decision, and they are worth exactly
+// nothing: the phase decision for log v2 is a structural layer only, with scored
+// heuristics deferred until there is calibration data from a real population to
+// weight them against.
+//
+// The zero is not an accident of the table, it is the contract. An unpaired
+// keyup is something honest players produce all day — alt-tab with a key held,
+// a layout switch mid-word, a window that lost focus — and there is no v2
+// calibration data at all, so any weight on it would be a guess that lands on
+// real players. Judging telemetry starts by removing a code from this list,
+// deliberately, with the numbers to justify it; until then every code here is
+// pinned to zero by TestTelemetryFlagsAreCollectedNotJudged.
+var TelemetryOnlyFlags = []string{FlagUnpairedKeyup}
 
 // DefaultFlagWeights is THE weights table: how much one unit of a flag's
 // severity counts toward sending a run to review. Suspicion is
@@ -84,10 +104,9 @@ var DefaultFlagWeights = map[string]float64{
 	FlagMinInterval:         0.30,
 	FlagAfkHeavy:            0.02,
 	FlagTrailingAfk:         0.02,
-	// Zero on purpose: this phase COLLECTS telemetry; the hold/overlap
-	// plausibility heuristics that would make it a signal are a later phase,
-	// weighted only once there is calibration data (`make calibrate`) to weight
-	// them against. Listed so the table stays exhaustive over the core's flags.
+	// Zero by contract, not by tuning — see TelemetryOnlyFlags. Listed here so
+	// the table stays exhaustive over the core's flags and the code does not
+	// surface as unknown, which is what a missing entry would mean.
 	FlagUnpairedKeyup: 0.00,
 }
 
