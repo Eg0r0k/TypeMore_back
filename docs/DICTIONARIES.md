@@ -59,14 +59,23 @@ write `rightToleft`, and serving two names for one flag would have silently
 dropped text direction on every newly imported RTL language.
 
 **A dictionary must be able to play the documented game.** `MaxWordCount` is
-10 000 words and the ingestion event cap is 120 000 (`docs/RUNS.md`), and
-whether a full-length run fits under that cap is a property of the dictionary —
-one insert per grapheme plus one commit per word, so a corpus of long tokens
-costs more events for the same word count. Ten upstream files are over it
-(`english_legal` needs 360 619 events) and were **not** imported.
-`TestEveryPublishedDictionaryCanPlayAFullLengthRun` is what enforces that, and
-the answer when it fails is to leave the dictionary out, never to raise the
-cap.
+10 000 words, and the ingestion event cap depends on the log's wire version
+(`docs/RUNS.md`): **120 000** for log v1, **480 000** for log v2. The version is
+chosen per run by the client's capability detection and both are accepted
+forever, so a published dictionary has to fit under **both**. A v2 capture is
+roughly 3× its state events — one down/up pair per physical keystroke, plus
+Shift pairs — which is why the second cap is not simply larger for the same
+runs.
+
+Whether a full-length run fits is a property of the dictionary: one insert per
+grapheme plus one commit per word, so a corpus of long tokens costs more events
+for the same word count. Ten upstream files are over the v1 cap
+(`english_legal` needs 360 619 events) and were **not** imported; the worst
+published dictionary under v2 is `code_abap_1k` at 417 710 events, about 15 %
+under its cap. `TestEveryPublishedDictionaryCanPlayAFullLengthRun` and
+`TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2` enforce the two,
+and the answer when either fails is to leave the dictionary out, never to raise
+the cap.
 
 Adding one is a **vendored file plus a binary rebuild** — see "Adding a
 language" below. There is no runtime loading path and deliberately so: a

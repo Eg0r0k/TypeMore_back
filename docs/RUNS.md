@@ -221,7 +221,7 @@ The gzip log round-trips **byte-for-byte**: `log` is captured as raw bytes,
 gzip-compressed (stdlib, best-speed), and stored; `log_bytes` records the
 uncompressed size. `GET …?log=1` returns exactly the bytes that were sent.
 
-### Caps: why 6.5 MiB and 120 000, and what they cost
+### Caps: why 6.5 MiB and 120 000 (and 25 MiB and 480 000), and what they cost
 
 The pair used to be **2 MiB / 50 000 events**, and the two could not both be
 obeyed. 50 000 events marshal to ~2.5 MiB, so `MaxBytesReader` bounded every
