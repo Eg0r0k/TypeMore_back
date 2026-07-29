@@ -147,6 +147,40 @@ type serverMetricsDoc struct {
 	Accuracy float64 `json:"accuracy"`
 }
 
+// Decider turns a replay outcome into a run's new state. It holds the judge the
+// worker consults, and the resolved column value that judge's version stores as.
+//
+// Build one with NewDecider. See Decide for the decision table, and for which
+// parts of it a judge can and cannot influence.
+type Decider struct {
+	judge policy.Judge
+	// version is judge.Version() mapped onto the smallint column, resolved ONCE
+	// in NewDecider. A judge whose version cannot be stored is a startup
+	// failure, not a surprise on some run at three in the morning.
+	version int16
+}
+
+// NewDecider binds a judge to the decision path, rejecting one whose version
+// cannot be recorded on a run. A nil judge is the open default, policy.Noop.
+func NewDecider(j policy.Judge) (Decider, error) {
+	if j == nil {
+		j = policy.Noop{}
+	}
+	version, err := policy.ParseVersion(j.Version())
+	if err != nil {
+		return Decider{}, err
+	}
+	return Decider{judge: j, version: version}, nil
+}
+
+// Judge returns the judge this decider consults. Used by the composition root
+// to report what is running; the decision path is the only thing that calls it.
+func (p Decider) Judge() policy.Judge { return p.judge }
+
+// isZero reports whether this decider was never built. The worker replaces one
+// with the open default rather than dereferencing a nil judge.
+func (p Decider) isZero() bool { return p.judge == nil }
+
 // Decide maps a replay outcome onto the run's new state.
 //
 // It is pure and total: every input produces a decision, which is what keeps a
@@ -181,36 +215,6 @@ type serverMetricsDoc struct {
 // wrong, and it is asserted rather than asserted-in-a-comment:
 // TestHardVerdictsDoNotDependOnTheJudge runs the tamper matrix against judges
 // from "review nothing, ever" to "review everything" and gets the same verdicts.
-type Decider struct {
-	judge policy.Judge
-	// version is judge.Version() mapped onto the smallint column, resolved ONCE
-	// in NewDecider. A judge whose version cannot be stored is a startup
-	// failure, not a surprise on some run at three in the morning.
-	version int16
-}
-
-// NewDecider binds a judge to the decision path, rejecting one whose version
-// cannot be recorded on a run.
-func NewDecider(j policy.Judge) (Decider, error) {
-	if j == nil {
-		j = policy.Noop{}
-	}
-	version, err := policy.ParseVersion(j.Version())
-	if err != nil {
-		return Decider{}, err
-	}
-	return Decider{judge: j, version: version}, nil
-}
-
-// Judge returns the judge this decider consults. Used by the composition root
-// to report what is running; the decision path is the only thing that calls it.
-func (p Decider) Judge() policy.Judge { return p.judge }
-
-// isZero reports whether this decider was never built. The worker replaces one
-// with the open default rather than dereferencing a nil judge.
-func (p Decider) isZero() bool { return p.judge == nil }
-
-// Decide maps a replay outcome onto the run's new state.
 func (p Decider) Decide(run PendingRun, res Result, replayErr error) Decision {
 	base := Decision{BundleSHA: bundleSHA, PolicyVersion: p.version, Attempts: run.Attempts}
 
