@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +41,7 @@ import (
 	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
+	"github.com/typemore/typemore-server/internal/replay/policy"
 	"github.com/typemore/typemore-server/internal/runs"
 	runspg "github.com/typemore/typemore-server/internal/runs/pgstore"
 	"github.com/typemore/typemore-server/internal/ws"
@@ -220,10 +222,39 @@ func run() error {
 	//
 	// The review policy is resolved up front: a typo in a weight override must
 	// stop the process, not leave a check quietly disarmed.
-	policy, err := replay.DefaultPolicy().WithOverrides(
-		cfg.ReplayFlagWeights, cfg.ReplayReviewThreshold, cfg.ReplaySustainedBurstSec)
+	//
+	// Which policy exists at all is a BUILD-time fact. Without -tags anticheat
+	// this returns policy.Noop and the binary contains no weight, no threshold
+	// and no rule name to find — see internal/replay/policy. A runtime switch
+	// would have left all three in the binary regardless of its position.
+	judge, err := policy.Provide(policy.Config{
+		FlagWeights:       cfg.ReplayFlagWeights,
+		ReviewThreshold:   cfg.ReplayReviewThreshold,
+		SustainedBurstSec: cfg.ReplaySustainedBurstSec,
+	})
+	if err != nil && !errors.Is(err, policy.ErrNoPolicy) {
+		return err
+	}
+	decider, err := replay.NewDecider(judge)
 	if err != nil {
 		return err
+	}
+	// Loud, once, at the top: an instance that judges runs for correctness only
+	// is a legitimate deployment and a SILENT one is the worst outcome of making
+	// the policy removable. The same fact is served by /healthz, because the
+	// person who needs it most is the one who did not read the boot log.
+	if policy.IsNoop(judge) {
+		logger.Warn("review policy disabled: runs are judged for correctness only",
+			"policyVersion", judge.Version(),
+			"rebuildWith", "-tags "+policy.BuildTag,
+			"consequence", "no suspicion is computed, no run reaches the review queue, "+
+				"and this instance's leaderboards are not protected — see docs/SELF_HOST.md")
+		if errors.Is(err, policy.ErrNoPolicy) {
+			logger.Warn("replay policy tuning is set but this build has no policy to tune",
+				"err", err)
+		}
+	} else {
+		logger.Info("review policy enabled", "policyVersion", judge.Version())
 	}
 	var workers sync.WaitGroup
 	defer workers.Wait()
@@ -242,7 +273,7 @@ func run() error {
 				Concurrency:   cfg.ReplayConcurrency,
 				ReplayTimeout: cfg.ReplayTimeout,
 				ShutdownGrace: cfg.ReplayShutdownGrace,
-				Policy:        policy,
+				Decider:       decider,
 			},
 			logger,
 		)
@@ -270,7 +301,10 @@ func run() error {
 		MaxAge:           300,
 	}))
 
-	router.Get("/healthz", platform.HealthHandler())
+	router.Get("/healthz", platform.HealthHandler(platform.ReviewPolicy{
+		Enabled: !policy.IsNoop(judge),
+		Version: judge.Version(),
+	}))
 	router.Get("/readyz", platform.ReadyHandler(pool))
 	// Dictionary bodies are public, immutable, content-addressed static assets.
 	// They sit outside /api/v1 (and outside auth) on purpose: this path is a CDN

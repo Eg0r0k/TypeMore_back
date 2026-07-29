@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/replay/policy"
 )
 
 // Worker configuration defaults. They are deliberately modest: replay is
@@ -45,8 +47,10 @@ type WorkerConfig struct {
 	// the shutdown signal. The batch runs on an uncancelled context so it can
 	// commit its work rather than roll it back.
 	ShutdownGrace time.Duration
-	// Policy is the flag-scoring rule set. The zero value means DefaultPolicy.
-	Policy Policy
+	// Decider binds the review policy to the decision path. The zero value
+	// means the open default: policy.Noop, which judges nothing. Build one with
+	// NewDecider — it is where an unusable judge version is refused.
+	Decider Decider
 }
 
 func (c WorkerConfig) withDefaults() WorkerConfig {
@@ -65,8 +69,10 @@ func (c WorkerConfig) withDefaults() WorkerConfig {
 	if c.ShutdownGrace <= 0 {
 		c.ShutdownGrace = 30 * time.Second
 	}
-	if c.Policy.Version == 0 {
-		c.Policy = DefaultPolicy()
+	if c.Decider.isZero() {
+		// Cannot fail: policy.Noop's version is the one ParseVersion is
+		// guaranteed to accept.
+		c.Decider, _ = NewDecider(policy.Noop{})
 	}
 	return c
 }
@@ -129,9 +135,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		"pollInterval", w.cfg.PollInterval,
 		"replayTimeout", w.cfg.ReplayTimeout,
 		"bundleSha", bundleSHA[:12],
-		"policyVersion", w.cfg.Policy.Version,
-		"reviewThreshold", w.cfg.Policy.ReviewThreshold,
+		"policyVersion", w.cfg.Decider.Judge().Version(),
 	)
+	if policy.IsNoop(w.cfg.Decider.Judge()) {
+		// The loudest place this can be said that is not the composition root.
+		// A worker judging runs for correctness only is a legitimate
+		// configuration and a silent one would be the worst outcome.
+		w.log.Warn("review policy disabled: runs are judged for correctness only")
+	}
 
 	var wg sync.WaitGroup
 	for i, core := range cores {
@@ -207,19 +218,19 @@ func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (in
 }
 
 // RevalidateBatch re-judges one batch of runs that are no longer current on
-// either axis: policy_version behind CurrentPolicyVersion, or bundle_sha
+// either axis: policy_version behind the judge's, or bundle_sha
 // different from the vendored bundle's. Same judging path as the queue — the
 // numbers are recomputed from the log, not read back — so a bundle change is
 // re-judged with the code that now disagrees with the row.
 //
-// bundleSHA is the SAME value Policy.Decide stamps onto every decision, so
+// bundleSHA is the SAME value Decider.Decide stamps onto every decision, so
 // "what the claim looks for" and "what the apply writes" cannot drift into two
 // digests and revalidate the same rows forever.
 //
 // Idempotent: a run it touches stops matching both arms of the claim.
 func (w *Worker) RevalidateBatch(ctx context.Context, core *Core, log *slog.Logger) (int, error) {
 	return w.runBatch(ctx, core, log, "revalidate batch done", func(decide func(context.Context, PendingRun) Decision) (int, error) {
-		return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Policy.Version, bundleSHA, w.cfg.BatchSize, decide)
+		return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Decider.version, bundleSHA, w.cfg.BatchSize, decide)
 	})
 }
 
@@ -234,7 +245,7 @@ func (w *Worker) runBatch(
 	started := time.Now()
 
 	claimed, err := process(func(ctx context.Context, run PendingRun) Decision {
-		d := Judge(ctx, core, w.reg, w.quotes, w.cfg.Policy, run)
+		d := Judge(ctx, core, w.reg, w.quotes, w.cfg.Decider, run)
 		switch d.Status {
 		case StatusAccepted:
 			tally.accepted++
@@ -265,7 +276,7 @@ func (w *Worker) runBatch(
 }
 
 // Judge replays one run and maps the outcome onto a decision under the given
-// policy. It never returns an error: every failure mode is a decision, which is
+// decider. It never returns an error: every failure mode is a decision, which is
 // what keeps one bad run from wedging the queue.
 //
 // Exported because the worker is not the only caller — `replayctl calibrate`
@@ -277,7 +288,7 @@ func (w *Worker) runBatch(
 // gets its bytes from the quote registry and never touches the dictionary
 // registry at all — its dict_hash is dictVersion([text]) and would not resolve
 // there, so a shared lookup would reject every quote run before it began.
-func Judge(ctx context.Context, core *Core, reg *Registry, quotes QuoteResolver, policy Policy, run PendingRun) Decision {
+func Judge(ctx context.Context, core *Core, reg *Registry, quotes QuoteResolver, decider Decider, run PendingRun) Decision {
 	in := Input{
 		Seed:         run.Seed,
 		DictHash:     run.DictHash,
@@ -287,28 +298,28 @@ func Judge(ctx context.Context, core *Core, reg *Registry, quotes QuoteResolver,
 
 	ref, isQuote, err := quoteRefOf(run.Setup)
 	if err != nil {
-		return policy.Decide(run, Result{}, err)
+		return decider.Decide(run, Result{}, err)
 	}
 	if isQuote {
 		quote, err := resolveQuote(ctx, quotes, ref)
 		if err != nil {
-			return policy.Decide(run, Result{}, err)
+			return decider.Decide(run, Result{}, err)
 		}
 		in.Quote = quote
 	} else {
 		body, ok := reg.Body(run.DictHash)
 		if !ok {
-			return policy.Decide(run, Result{}, ErrUnknownDict)
+			return decider.Decide(run, Result{}, ErrUnknownDict)
 		}
 		in.DictBody = body
 	}
 
 	if in.Log, err = gunzip(run.Log); err != nil {
-		return policy.Decide(run, Result{}, fmt.Errorf("replay: decompress log: %w", err))
+		return decider.Decide(run, Result{}, fmt.Errorf("replay: decompress log: %w", err))
 	}
 
 	res, err := core.Replay(ctx, in)
-	return policy.Decide(run, res, err)
+	return decider.Decide(run, res, err)
 }
 
 // quoteRef is a run's own claim about which fixed text it was typed against.

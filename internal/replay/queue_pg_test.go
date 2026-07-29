@@ -26,6 +26,8 @@ import (
 	"github.com/typemore/typemore-server/internal/platform/migrate"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
+	"github.com/typemore/typemore-server/internal/replay/policy"
+	"github.com/typemore/typemore-server/internal/replay/policy/policytest"
 )
 
 // The Postgres testcontainer is started lazily on first use and torn down in
@@ -225,8 +227,29 @@ func (pgQuotes) ResolveQuote(context.Context, uuid.UUID) (string, string, bool, 
 	return "", "", false, nil
 }
 
+// fakeDecider binds the deterministic fake judge. These tests are about the
+// QUEUE — claiming, applying, revalidating — and the shipped policy is behind a
+// build tag they must not depend on.
+func fakeDecider(t *testing.T) replay.Decider {
+	t.Helper()
+	d, err := replay.NewDecider(policytest.NewFake())
+	require.NoError(t, err)
+	return d
+}
+
+// fakePolicyColumn is the fake judge's version as it lands in policy_version.
+func fakePolicyColumn(t *testing.T) int16 {
+	t.Helper()
+	v, err := policy.ParseVersion(policytest.FakeVersion)
+	require.NoError(t, err)
+	return v
+}
+
 func newTestWorker(t *testing.T, q replay.Queue, cfg replay.WorkerConfig) *replay.Worker {
 	t.Helper()
+	if cfg.Decider == (replay.Decider{}) {
+		cfg.Decider = fakeDecider(t)
+	}
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 	reg, err := replay.NewRegistry(core)
@@ -455,7 +478,7 @@ func TestRevalidateIsBoundedAndIdempotent(t *testing.T) {
 	for _, id := range ids {
 		row := fetchRun(t, pool, id)
 		require.NotNil(t, row.PolicyVersion, "run %s has no policy_version", id)
-		assert.Equal(t, replay.CurrentPolicyVersion, *row.PolicyVersion)
+		assert.Equal(t, fakePolicyColumn(t), *row.PolicyVersion)
 	}
 }
 
@@ -503,7 +526,7 @@ func TestRevalidateClaimsRunsJudgedByAnotherBundle(t *testing.T) {
 	for _, id := range ids {
 		row := fetchRun(t, pool, id)
 		require.NotNil(t, row.PolicyVersion)
-		require.Equal(t, replay.CurrentPolicyVersion, *row.PolicyVersion)
+		require.Equal(t, fakePolicyColumn(t), *row.PolicyVersion)
 	}
 
 	n, err = w.RevalidateBatch(ctx, core, discardLogger())
@@ -663,7 +686,7 @@ func TestRevalidateAppliesTheCurrentPolicy(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(validation, &doc))
 	assert.Len(t, doc.Flags, 1, "the flag must survive acceptance")
-	assert.Equal(t, replay.CurrentPolicyVersion, doc.Policy.Version)
+	assert.Equal(t, fakePolicyColumn(t), doc.Policy.Version)
 	assert.Positive(t, doc.Policy.Suspicion)
 	assert.Less(t, doc.Policy.Suspicion, doc.Policy.Threshold)
 }

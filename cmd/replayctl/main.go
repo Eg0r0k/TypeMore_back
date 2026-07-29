@@ -22,6 +22,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -43,6 +44,7 @@ import (
 	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
+	"github.com/typemore/typemore-server/internal/replay/policy"
 )
 
 func main() {
@@ -64,8 +66,30 @@ func run() error {
 	}
 	// Resolved before anything touches the database: a typo in a weight
 	// override must stop the tool, not silently judge with a default.
-	policy, err := replay.DefaultPolicy().WithOverrides(
-		cfg.ReplayFlagWeights, cfg.ReplayReviewThreshold, cfg.ReplaySustainedBurstSec)
+	//
+	// Built without -tags anticheat this is policy.Noop, and both subcommands
+	// say so rather than pretending. Calibrating a judge that judges nothing is
+	// a report full of zeroes; revalidating with one would REWRITE every stored
+	// verdict as unjudged, which is a destructive no-op and the one thing this
+	// tool must not do quietly.
+	judge, err := policy.Provide(policy.Config{
+		FlagWeights:       cfg.ReplayFlagWeights,
+		ReviewThreshold:   cfg.ReplayReviewThreshold,
+		SustainedBurstSec: cfg.ReplaySustainedBurstSec,
+	})
+	if err != nil && !errors.Is(err, policy.ErrNoPolicy) {
+		return err
+	}
+	if errors.Is(err, policy.ErrNoPolicy) {
+		fmt.Fprintln(os.Stderr, "warning: "+err.Error())
+	}
+	if policy.IsNoop(judge) {
+		return fmt.Errorf("this binary has no review policy (built without -tags %s), so there is "+
+			"nothing to %s: calibrate would report zeroes, and revalidate would rewrite every "+
+			"stored verdict as unjudged. Rebuild with -tags %s",
+			policy.BuildTag, command, policy.BuildTag)
+	}
+	decider, err := replay.NewDecider(judge)
 	if err != nil {
 		return err
 	}
@@ -85,7 +109,7 @@ func run() error {
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		return calibrate(ctx, pool, policy, cfg, int32(*limit), *top)
+		return calibrate(ctx, pool, decider, cfg, int32(*limit), *top)
 
 	case "revalidate":
 		fs := flag.NewFlagSet("revalidate", flag.ExitOnError)
@@ -99,7 +123,7 @@ func run() error {
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		return revalidate(ctx, pool, policy, cfg, *limit, int32(*batch))
+		return revalidate(ctx, pool, decider, cfg, *limit, int32(*batch))
 
 	default:
 		return fmt.Errorf("unknown command %q (want calibrate or revalidate)", command)
@@ -130,7 +154,7 @@ type outcome struct {
 	doc       auditDoc
 }
 
-func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cfg platform.Config, limit int32, top int) error {
+func calibrate(ctx context.Context, pool *pgxpool.Pool, decider replay.Decider, cfg platform.Config, limit int32, top int) error {
 	core, err := replay.NewCore(cfg.ReplayTimeout)
 	if err != nil {
 		return err
@@ -147,7 +171,11 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 		return err
 	}
 
-	printPolicy(policy)
+	printPolicy(decider)
+	// The weights column below is the whole point of calibration and the one
+	// thing verdicts alone cannot supply. A judge that will not describe itself
+	// gets a report without that column rather than no report at all.
+	desc, described := policy.Describe(decider.Judge())
 	if len(rows) == 0 {
 		fmt.Println("\nno judged runs to calibrate against")
 		return nil
@@ -164,7 +192,7 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 	for i := range rows {
 		// The exact path the worker takes — a report from a different code path
 		// would be a fiction.
-		d := replay.Judge(ctx, core, reg, quotes, policy, rows[i].PendingRun)
+		d := replay.Judge(ctx, core, reg, quotes, decider, rows[i].PendingRun)
 
 		var doc auditDoc
 		_ = json.Unmarshal(d.Validation, &doc)
@@ -203,9 +231,15 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 			lo, hi, sum = min(lo, v), max(hi, v), sum+v
 		}
 		mean := sum / float64(len(sev))
+		if !described {
+			fmt.Printf("  %-22s %5d %6.1f%% %8.4f %8.4f %8.4f %8s\n",
+				code, flagRuns[code], 100*float64(flagRuns[code])/float64(len(rows)),
+				lo, mean, hi, "-")
+			continue
+		}
 		fmt.Printf("  %-22s %5d %6.1f%% %8.4f %8.4f %8.4f %8.2f  (max contribution %.4f)\n",
 			code, flagRuns[code], 100*float64(flagRuns[code])/float64(len(rows)),
-			lo, mean, hi, policy.Weights[code], hi*policy.Weights[code])
+			lo, mean, hi, desc.Weights[code], hi*desc.Weights[code])
 	}
 
 	fmt.Println("\ncombination rules fired")
@@ -216,8 +250,8 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cf
 		fmt.Printf("  %-24s %4d\n", r, ruleRuns[r])
 	}
 
-	fmt.Printf("\nsuspicion histogram (review threshold %.2f)\n", policy.ReviewThreshold)
-	for _, b := range histogram(outcomes, policy.ReviewThreshold) {
+	fmt.Printf("\nsuspicion histogram (review threshold %.2f)\n", desc.Threshold)
+	for _, b := range histogram(outcomes, desc.Threshold) {
 		fmt.Printf("  %-22s %4d %s\n", b.label, b.count, strings.Repeat("#", b.count))
 	}
 
@@ -309,7 +343,7 @@ func flagSummary(flags []replay.Flag) string {
 
 // --- revalidate --------------------------------------------------------------
 
-func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, cfg platform.Config, limit int, batch int32) error {
+func revalidate(ctx context.Context, pool *pgxpool.Pool, decider replay.Decider, cfg platform.Config, limit int, batch int32) error {
 	core, err := replay.NewCore(cfg.ReplayTimeout)
 	if err != nil {
 		return err
@@ -337,14 +371,14 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 		replay.WorkerConfig{
 			BatchSize:     batch,
 			ReplayTimeout: cfg.ReplayTimeout,
-			Policy:        policy,
+			Decider:       decider,
 		},
 		logger,
 	)
 
-	printPolicy(policy)
-	fmt.Printf("\nre-judging runs with policy_version < %d OR bundle_sha <> %s (limit %d, batch %d)\n\n",
-		policy.Version, replay.BundleSHA()[:12], limit, batch)
+	printPolicy(decider)
+	fmt.Printf("\nre-judging runs with policy_version < %s OR bundle_sha <> %s (limit %d, batch %d)\n\n",
+		decider.Judge().Version(), replay.BundleSHA()[:12], limit, batch)
 
 	started := time.Now()
 	total := 0
@@ -365,12 +399,21 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, policy replay.Policy, c
 	return nil
 }
 
-func printPolicy(p replay.Policy) {
-	fmt.Printf("policy v%d   review threshold %.2f   sustained-burst floor %.0fs   bundle %s\n",
-		p.Version, p.ReviewThreshold, p.SustainedBurstSec, replay.BundleSHA()[:12])
-	parts := make([]string, 0, len(p.Weights))
-	for _, code := range slices.Sorted(maps.Keys(p.Weights)) {
-		parts = append(parts, fmt.Sprintf("%s=%.2f", code, p.Weights[code]))
+// printPolicy reports what is judging. The arithmetic comes through the optional
+// Describer seam, so a judge that will not explain itself degrades to its
+// version and its bundle rather than being reached into.
+func printPolicy(d replay.Decider) {
+	desc, ok := policy.Describe(d.Judge())
+	if !ok {
+		fmt.Printf("policy %s   bundle %s   (this judge does not describe its arithmetic)\n",
+			d.Judge().Version(), replay.BundleSHA()[:12])
+		return
+	}
+	fmt.Printf("policy %s   review threshold %.2f   bundle %s\n",
+		d.Judge().Version(), desc.Threshold, replay.BundleSHA()[:12])
+	parts := make([]string, 0, len(desc.Weights))
+	for _, code := range slices.Sorted(maps.Keys(desc.Weights)) {
+		parts = append(parts, fmt.Sprintf("%s=%.2f", code, desc.Weights[code]))
 	}
 	fmt.Println("weights: " + strings.Join(parts, "  "))
 }

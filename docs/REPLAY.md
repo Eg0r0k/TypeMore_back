@@ -141,6 +141,19 @@ detail string.
 **These are signals, not verdicts.** The policy is what turns them into a
 status, and it exists because the obvious rule does not work.
 
+> **The policy is optional and lives behind an interface.** Everything below
+> this line describes the review policy — what a flag is worth, where the review
+> threshold sits, which combinations are shapes. It is compiled in only under
+> `-tags anticheat`. The open default (`policy.Noop`) computes no suspicion and
+> routes nothing to review, and the server still replays every run, still
+> recompares every number, and still refuses everything the hard rules refuse.
+>
+> The worker talks to `policy.Judge` and to nothing else. **No hard verdict
+> depends on it** — `TestHardVerdictsDoNotDependOnTheJudge` runs the tamper
+> matrix against judges from "review nothing, ever" to "review everything" and
+> gets identical verdicts. See [SELF_HOST.md](./SELF_HOST.md) for what an
+> instance without a policy does and does not protect.
+
 ### What was wrong with "any flag ⇒ flagged"
 
 The first version of this worker flagged a run whenever `len(flags) > 0`. On the
@@ -159,7 +172,7 @@ already computes was being thrown away.
 
 Suspicion is `Σ weight[code] × severity`. A weight is what a *maximally severe*
 instance of that flag is worth, so the table reads as "how much review does this
-signal deserve at its worst". Defaults live in `internal/replay/policy.go`;
+signal deserve at its worst". Defaults live in `internal/replay/policy/review_anticheat.go` (built only under `-tags anticheat`);
 `make calibrate` is how they were chosen.
 
 | Flag | Weight | Why |
@@ -247,6 +260,17 @@ summary fields the client sees.
 | `TYPEMORE_REPLAY_REVIEW_THRESHOLD` | `1.0` | Suspicion at or above which a run is flagged. |
 | `TYPEMORE_REPLAY_SUSTAINED_BURST_SEC` | `10` | Duration floor for `sustained_superhuman`. |
 
+All three tune a policy that must already be **built in**. On a binary without
+`-tags anticheat` they have nothing to tune, and the server warns rather than
+ignoring them. They are build-gated rather than runtime-gated on purpose: a
+runtime switch leaves the weights and the rule names in the binary whichever way
+it is set, and `strings` reads them in ten seconds.
+
+Tuning does **not** move `policy_version`. A version that shifted with every
+nudged weight would make `revalidate` re-judge the whole table on each one; the
+effective threshold is recorded in each verdict's audit block instead, which is
+what explains a verdict on a tuned instance.
+
 An unknown flag code or an unparseable weight is a **startup error**. A typo in
 a tuning knob must stop the process, not leave a check that looks configured and
 is not.
@@ -257,9 +281,25 @@ threshold are stored on the row as well.
 
 ### Policy versioning
 
-`CurrentPolicyVersion` (`internal/replay/policy.go`) identifies the rule set.
-Bump it whenever weights, threshold, or combination rules change in a way that
-would re-judge an already-judged run, then run `make revalidate`.
+A judge's `Version()` identifies its rule set. Bump it whenever weights, the
+threshold, or combination rules change in a way that would re-judge an
+already-judged run, then run `make revalidate`.
+
+It is a **string** on the interface and a smallint in the column, and
+`policy.ParseVersion` is the single place that maps one to the other — resolved
+once when the worker is built, so a judge with an unstorable version is a startup
+failure rather than a surprise on some run at three in the morning.
+
+`policy.Noop` reports `"none"`, which stores as **NULL** — the value the column
+already used for "no rule set judged this run". A run judged without a policy
+therefore carries no version AND no `policy` block in its `validation`, which is
+not the same as a block full of zeroes: zeroes would read as "a policy looked and
+found nothing", and the truth is that nothing looked.
+
+That is what makes enabling a policy retroactively possible at all. The claim
+below already keys on `policy_version IS NULL`, so an instance that turns
+anti-cheat on and runs `revalidate` re-judges its entire unjudged history without
+anyone having to remember which runs those were.
 
 `bundle_sha` and `policy_version` answer different questions and move
 independently:
@@ -511,7 +551,7 @@ judged by it, and the verdict is only meaningful with the `bundle_sha` beside it
 1. `make calibrate` against a database with real runs. Read the firing rates
    and the histogram: a weight change that moves nothing, or moves everything,
    is the wrong change.
-2. Edit the weights / threshold / rules in `internal/replay/policy.go`.
+2. Edit the weights / threshold / rules in `internal/replay/policy/review_anticheat.go`.
 3. Bump `CurrentPolicyVersion`.
 4. `make calibrate` again — the "transitions" block at the bottom is the exact
    set of status changes you are about to make. Look at them.

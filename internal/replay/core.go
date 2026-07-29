@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
+
+	"github.com/typemore/typemore-server/internal/replay/policy"
 )
 
 // coreBundle is the frontend's src/shared/core compiled to a single IIFE that
@@ -370,11 +372,12 @@ type QuoteText struct {
 }
 
 // Flag is one scored plausibility flag from validateLog.
-type Flag struct {
-	Code   string  `json:"code"`
-	Score  float64 `json:"score"`
-	Detail string  `json:"detail,omitempty"`
-}
+//
+// An ALIAS, not a definition: the type belongs to internal/replay/policy,
+// because a Judge must be writable against that package alone and this package
+// imports it. The alias keeps every existing caller — and the JSON that lands in
+// validation.flags — exactly as it was.
+type Flag = policy.Flag
 
 // Result is what the core says about a run. Metrics and Score are the raw
 // JSON the core produced (never re-encoded by Go), so what lands in the database

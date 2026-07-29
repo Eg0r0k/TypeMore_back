@@ -14,6 +14,13 @@ the auth/HTTP surface (endpoints, schema, env, security) is in
 [`docs/LEADERBOARDS.md`](docs/LEADERBOARDS.md); the dictionary catalogue and its
 caching contract are in [`docs/DICTIONARIES.md`](docs/DICTIONARIES.md).
 
+The review policy that decides whether a replayed run is *suspicious* is
+optional and compiled in only under `-tags anticheat`. A plain `make build`
+produces a server that replays every run, recomputes every number and refuses
+everything the hard rules refuse — and judges nothing, loudly.
+[`docs/SELF_HOST.md`](docs/SELF_HOST.md) says exactly what such an instance does
+and does not protect.
+
 ## What's here
 
 | Endpoint | Purpose |
@@ -184,7 +191,7 @@ db/migrations/         # goose SQL migrations (embedded)
 docs/PROTOCOL.md       # realtime contract      docs/AUTH.md          # auth/HTTP contract
 docs/RUNS.md           # run ingestion          docs/DICTIONARIES.md  # dictionary service
 docs/REPLAY.md         # replay worker          docs/LEADERBOARDS.md  # score boards
-docs/QUOTES.md         # quote registry
+docs/QUOTES.md         # quote registry       docs/SELF_HOST.md     # running without anti-cheat
 ```
 
 The package layout follows `BACKEND.md §2`; only the packages this phase needs

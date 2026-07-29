@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/typemore/typemore-server/internal/replay"
+	"github.com/typemore/typemore-server/internal/replay/policy/policytest"
 )
 
 type profileSummaryResp struct {
@@ -476,7 +476,7 @@ func TestKeyboardProjectionIsExactlyOnceAcrossRevalidate(t *testing.T) {
 	// and run the revalidate pass that re-replays it.
 	_, err := h.pool.Exec(context.Background(), `UPDATE runs SET bundle_sha = 'deadbeef'`)
 	require.NoError(t, err)
-	h.revalidateOnce(t, replay.DefaultPolicy())
+	h.revalidateOnce(t, policytest.NewFake())
 
 	after := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
 	assert.Equal(t, before, after, "a re-judged accepted run must not count twice")
@@ -494,10 +494,8 @@ func TestKeyboardProjectionReversesOnDemotion(t *testing.T) {
 	require.NotEmpty(t, before.Keys)
 
 	// A zero threshold flags every run (suspicion >= threshold), demoting it.
-	harsh := replay.DefaultPolicy()
-	harsh.Version = 99
-	harsh.ReviewThreshold = 0
-	h.revalidateOnce(t, harsh)
+	// The version moves too, which is what makes the pass claim the run at all.
+	h.revalidateOnce(t, policytest.NewFakeVersioned("990", 0))
 
 	demoted := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
 	for _, k := range demoted.Keys {
@@ -505,10 +503,9 @@ func TestKeyboardProjectionReversesOnDemotion(t *testing.T) {
 		assert.Zero(t, k.Intervals, "key %s must be reversed to zero", k.KeyID)
 	}
 
-	// The default policy re-accepts it; the contribution returns.
-	restore := replay.DefaultPolicy()
-	restore.Version = 100
-	h.revalidateOnce(t, restore)
+	// A later version with the normal threshold re-accepts it; the contribution
+	// returns.
+	h.revalidateOnce(t, policytest.NewFakeVersioned("991", policytest.FakeThreshold))
 	restored := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
 	assert.Equal(t, before, restored, "re-promotion restores the exact contribution")
 }

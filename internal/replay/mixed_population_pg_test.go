@@ -179,7 +179,7 @@ func TestWorkerDrainsAMixedV1V2Population(t *testing.T) {
 			require.NotNil(t, row.BundleSha)
 			assert.Equal(t, replay.BundleSHA(), *row.BundleSha)
 			require.NotNil(t, row.PolicyVersion)
-			assert.Equal(t, replay.CurrentPolicyVersion, *row.PolicyVersion)
+			assert.Equal(t, fakePolicyColumn(t), *row.PolicyVersion)
 			require.NotNil(t, row.ValidatedAt)
 			assert.Zero(t, row.Attempts, "a clean replay must not burn an attempt")
 			assert.Nil(t, row.LastError)

@@ -18,8 +18,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/typemore/typemore-server/internal/replay/policy"
+	"github.com/typemore/typemore-server/internal/replay/policy/policytest"
 )
 
 // --- golden vectors ---------------------------------------------------------
@@ -204,48 +207,72 @@ func (q *fakeQueue) decision(t *testing.T, id uuid.UUID) Decision {
 	return d
 }
 
+// testDecider is the judge this package's tests run against: the deterministic
+// FAKE, never the shipped policy.
+//
+// The real one is behind a build tag and may end up in a private module, so a
+// test that reached for it would either fail to compile or quietly become a test
+// of closed code. What these tests are actually about is the worker's plumbing —
+// that flags reach a judge, that its decision reaches the audit document, that
+// review routing lands in the status — and the fake exercises every one of those
+// paths without pinning a single real weight.
+// fakePolicyColumn is the fake judge's version as it lands in the
+// policy_version column.
+func fakePolicyColumn(t *testing.T) int16 {
+	t.Helper()
+	v, err := policy.ParseVersion(policytest.FakeVersion)
+	require.NoError(t, err)
+	return v
+}
+
+func testDecider(t *testing.T, j policy.Judge) Decider {
+	t.Helper()
+	d, err := NewDecider(j)
+	require.NoError(t, err)
+	return d
+}
+
 func testWorker(t *testing.T, q Queue) (*Worker, *Core) {
 	t.Helper()
-	return testWorkerWithPolicy(t, q, DefaultPolicy())
+	return testWorkerWithPolicy(t, q, policytest.NewFake())
 }
 
-func testWorkerWithPolicy(t *testing.T, q Queue, p Policy) (*Worker, *Core) {
+func testWorkerWithPolicy(t *testing.T, q Queue, j policy.Judge) (*Worker, *Core) {
 	t.Helper()
-	return testWorkerWith(t, q, p, goldenQuotes(t))
+	return testWorkerWith(t, q, j, goldenQuotes(t))
 }
 
-func testWorkerWith(t *testing.T, q Queue, p Policy, quotes QuoteResolver) (*Worker, *Core) {
+func testWorkerWith(t *testing.T, q Queue, j policy.Judge, quotes QuoteResolver) (*Worker, *Core) {
 	t.Helper()
 	core, reg := sharedDicts(t)
-	w := NewWorker(q, reg, quotes, WorkerConfig{BatchSize: 50, Policy: p},
+	w := NewWorker(q, reg, quotes, WorkerConfig{BatchSize: 50, Decider: testDecider(t, j)},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w, core
 }
 
-// judgeOne runs a single run through the worker's decision path under the
-// default (shipped) policy, against the registry the golden vectors were
-// played on.
+// judgeOne runs a single run through the worker's decision path under the fake
+// judge, against the registry the golden vectors were played on.
 func judgeOne(t *testing.T, run PendingRun) Decision {
 	t.Helper()
-	return judgeOneWith(t, run, DefaultPolicy(), goldenQuotes(t))
+	return judgeOneWith(t, run, policytest.NewFake(), goldenQuotes(t))
 }
 
-func judgeOneWithPolicy(t *testing.T, run PendingRun, p Policy) Decision {
+func judgeOneWithPolicy(t *testing.T, run PendingRun, j policy.Judge) Decision {
 	t.Helper()
-	return judgeOneWith(t, run, p, goldenQuotes(t))
+	return judgeOneWith(t, run, j, goldenQuotes(t))
 }
 
 // judgeOneWithQuotes judges against a registry the test chose — the way a quote
 // that has gone missing, or come back with different bytes, is staged.
 func judgeOneWithQuotes(t *testing.T, run PendingRun, quotes QuoteResolver) Decision {
 	t.Helper()
-	return judgeOneWith(t, run, DefaultPolicy(), quotes)
+	return judgeOneWith(t, run, policytest.NewFake(), quotes)
 }
 
-func judgeOneWith(t *testing.T, run PendingRun, p Policy, quotes QuoteResolver) Decision {
+func judgeOneWith(t *testing.T, run PendingRun, j policy.Judge, quotes QuoteResolver) Decision {
 	t.Helper()
 	q := newFakeQueue(run)
-	w, _ := testWorkerWith(t, q, p, quotes)
+	w, _ := testWorkerWith(t, q, j, quotes)
 	n, err := w.RunBatch(context.Background(), mustCore(t, DefaultReplayTimeout), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
@@ -303,7 +330,7 @@ func TestGoldenVectorsReplayBitExact(t *testing.T) {
 
 			require.Equal(t, v.Expect.Status, d.Status, "validation: %s", d.Validation)
 			assert.Equal(t, bundleSHA, d.BundleSHA)
-			assert.Equal(t, CurrentPolicyVersion, d.PolicyVersion)
+			assert.Equal(t, fakePolicyColumn(t), d.PolicyVersion)
 			assert.Empty(t, d.LastError)
 			assert.Zero(t, d.Attempts)
 
@@ -318,8 +345,8 @@ func TestGoldenVectorsReplayBitExact(t *testing.T) {
 			// The policy block is attached to EVERY valid decision — an accepted
 			// run keeps its flags and its arithmetic for moderation.
 			require.NotNil(t, doc.Policy, "no policy block on a valid decision")
-			assert.Equal(t, CurrentPolicyVersion, doc.Policy.Version)
-			assert.Equal(t, DefaultReviewThreshold, doc.Policy.Threshold)
+			assert.Equal(t, fakePolicyColumn(t), doc.Policy.Version)
+			assert.Equal(t, policytest.FakeThreshold, doc.Policy.Threshold)
 			assert.Empty(t, doc.Policy.UnknownFlags, "the bundle emits a flag the weights table does not know")
 			if d.Status == StatusAccepted {
 				assert.Empty(t, doc.Reason)
@@ -519,7 +546,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 	var sawUnpaired bool
 	for _, v := range vectors {
 		for _, flag := range v.Expect.Flags {
-			if flag == FlagUnpairedKeyup && v.Expect.Status == StatusAccepted {
+			if flag == unpairedKeyupCode && v.Expect.Status == StatusAccepted {
 				sawUnpaired = true
 			}
 		}

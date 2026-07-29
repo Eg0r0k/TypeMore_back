@@ -13,55 +13,22 @@ import (
 // collected, stored and visible to moderation, and they are worth nothing at
 // all: there is no calibration data for v2, and an unpaired keyup is something
 // honest players produce routinely (alt-tab holding a key, a layout switch, a
-// window that lost focus). These tests are the contract that keeps a weight off
-// them until that changes deliberately.
+// window that lost focus).
+//
+// The ARITHMETIC half of that promise — that every telemetry code carries a
+// weights entry and that entry is exactly zero — is a property of the policy and
+// lives with it, behind the build tag. What stays here is the half that is a
+// property of the WORKER and holds for any judge that does not weight telemetry:
+// however many unpaired releases a log carries, the run it belongs to comes back
+// with the same numbers and the same verdict, and the flag is still recorded.
 
-// Every telemetry code carries a weight entry — so it is not reported as an
-// unknown flag — and that entry is exactly zero.
-func TestTelemetryFlagsAreCollectedNotJudged(t *testing.T) {
-	p := DefaultPolicy()
-	require.NotEmpty(t, TelemetryOnlyFlags)
+// unpairedKeyupCode is the core's flag code, written out as the literal the core
+// emits: this test is about what the WORKER does with it, so it must not borrow
+// a constant from a policy that may not be compiled in.
+const unpairedKeyupCode = "unpaired-keyup"
 
-	for _, code := range TelemetryOnlyFlags {
-		w, known := p.Weights[code]
-		assert.True(t, known, "telemetry flag %q has no weights entry: it would surface as unknown", code)
-		assert.Zero(t, w, "telemetry flag %q carries a weight — scored telemetry heuristics are a later phase", code)
-	}
-}
-
-// The arithmetic, at any count and any severity: telemetry flags do not move
-// suspicion by a single bit, and they do not participate in a shape rule.
-func TestTelemetryFlagsMoveSuspicionByNothing(t *testing.T) {
-	p := DefaultPolicy()
-
-	// A baseline of real, weighted flags — the point is that the telemetry
-	// flags do not perturb an existing suspicion either, not just that they sum
-	// to zero on their own.
-	base := []Flag{
-		{Code: FlagMinInterval, Score: 0.5},
-		{Code: FlagSuperhumanBurst, Score: 0.5},
-	}
-	want := p.Suspicion(base)
-
-	for _, n := range []int{1, 2, 10, 1000} {
-		for _, code := range TelemetryOnlyFlags {
-			flags := append([]Flag{}, base...)
-			for range n {
-				flags = append(flags, Flag{Code: code, Score: 1.0})
-			}
-			assert.Equal(t, want, p.Suspicion(flags),
-				"%d × %s moved suspicion", n, code)
-			assert.Empty(t, p.UnknownFlagCodes(flags),
-				"%s must be a known code, not an unknown one", code)
-			assert.Empty(t, p.Combinations(flags, nil),
-				"%s took part in a combination rule", code)
-		}
-	}
-}
-
-// The end-to-end shape of the same promise, on a real log the core actually
-// judges: a run with N unpaired key releases replays to the SAME numbers as the
-// run without them, scores zero suspicion, and is accepted with the flag kept.
+// A run with N unpaired key releases replays to the SAME numbers as the run
+// without them, scores the same suspicion, and is accepted with the flag kept.
 //
 // The vector is the log-v2 telemetry vector, which is clean; the releases are
 // injected here so the count can be varied. Telemetry events are no-ops in the
@@ -75,7 +42,7 @@ func TestUnpairedKeyupsAreAcceptedAtAnyCount(t *testing.T) {
 	require.Equal(t, StatusAccepted, clean.Status, "validation: %s", clean.Validation)
 	cleanDoc := audit(t, clean)
 	require.NotNil(t, cleanDoc.Policy)
-	assert.NotContains(t, flagCodes(cleanDoc.Flags), FlagUnpairedKeyup,
+	assert.NotContains(t, flagCodes(cleanDoc.Flags), unpairedKeyupCode,
 		"the baseline vector already has unpaired releases; it cannot isolate them")
 
 	for _, n := range []int{1, 5, 50} {
@@ -89,7 +56,7 @@ func TestUnpairedKeyupsAreAcceptedAtAnyCount(t *testing.T) {
 			doc := audit(t, d)
 			assert.Equal(t, verdictValid, doc.Verdict)
 			assert.Empty(t, doc.Reason)
-			assert.Contains(t, flagCodes(doc.Flags), FlagUnpairedKeyup,
+			assert.Contains(t, flagCodes(doc.Flags), unpairedKeyupCode,
 				"the flag must still be raised and stored: it is telemetry, not silence")
 
 			require.NotNil(t, doc.Policy)

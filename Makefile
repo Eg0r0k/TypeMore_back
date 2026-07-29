@@ -9,7 +9,9 @@
 #   make test        run the test suite (portable; no cgo required)
 #   make test-race   run tests under the race detector (needs a C compiler)
 #   make lint        run golangci-lint (see `make tools`)
-#   make build       build the binary into ./bin with version metadata
+#   make build       build the binary into ./bin (NO review policy — docs/SELF_HOST.md)
+#   make build-anticheat  the same binary WITH the review policy compiled in
+#   make test-anticheat   run the suite with the review policy built in
 #   make core-bundle re-vendor the TS core bundle from the frontend checkout
 #   make bundle-gate fail if the vendored bundle is stale against that checkout
 #   make contract    regenerate the cross-repo match-timing contract artifact
@@ -58,7 +60,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle bundle-gate contract vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race test-anticheat lint build build-anticheat tidy sqlc core-bundle bundle-gate contract vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -77,8 +79,25 @@ lint:
 	golangci-lint run
 
 ## build: compile the binary into ./bin with version metadata
+# WITHOUT the review policy. The binary boots, replays every run, recomputes
+# every number and refuses everything the hard rules refuse — it just judges
+# nothing. It says so at startup and on /healthz. See docs/SELF_HOST.md.
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY)$(EXE) $(CMD)
+
+## build-anticheat: compile the binary WITH the review policy built in
+# The weights, the review threshold and the combination rules are compiled in
+# only here — a plain `make build` does not contain them, which is checked by
+# TestBinaryWithoutTheTagCarriesNoPolicy rather than assumed.
+build-anticheat:
+	go build -trimpath -tags anticheat -ldflags "$(LDFLAGS)" -o bin/$(BINARY)$(EXE) $(CMD)
+
+## test-anticheat: run the suite with the review policy built in
+# `make test` covers the open build; this covers the closed one. Both matter:
+# the policy's own tests only compile under the tag, and the proof that hard
+# verdicts do NOT depend on a policy only means anything in the build without one.
+test-anticheat:
+	go test -tags anticheat ./...
 
 ## core-bundle: re-vendor internal/replay/corejs/core.bundle.js from $(FRONTEND)
 # The bundler comes from the frontend's own node_modules, so its version is

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+
+	"github.com/typemore/typemore-server/internal/replay/policy"
 )
 
 // Verdicts. 'valid' and 'invalid' come from the core's validateLog; 'error' is
@@ -165,9 +167,52 @@ type serverMetricsDoc struct {
 // refused are meaningless, so they are not stored at all.
 //
 // Note what is NOT in the table: "a plausibility flag was raised". A single weak
-// flag never sends a run to review — see Policy for why, and what replaced it.
-func (p Policy) Decide(run PendingRun, res Result, replayErr error) Decision {
-	base := Decision{BundleSHA: bundleSHA, PolicyVersion: p.Version, Attempts: run.Attempts}
+// flag never sends a run to review — see internal/replay/policy for why.
+//
+// # Everything above the last two rows is independent of the judge
+//
+// Read the table again from the top. Every refusal down to metric_mismatch is
+// decided before a judge is consulted and cannot be changed by one: they are
+// structural facts about the log and arithmetic disagreements with the client.
+// Only the last two rows are policy, and an instance running policy.Noop simply
+// never reaches them.
+//
+// That is what makes the anti-cheat policy removable without making the product
+// wrong, and it is asserted rather than asserted-in-a-comment:
+// TestHardVerdictsDoNotDependOnTheJudge runs the tamper matrix against judges
+// from "review nothing, ever" to "review everything" and gets the same verdicts.
+type Decider struct {
+	judge policy.Judge
+	// version is judge.Version() mapped onto the smallint column, resolved ONCE
+	// in NewDecider. A judge whose version cannot be stored is a startup
+	// failure, not a surprise on some run at three in the morning.
+	version int16
+}
+
+// NewDecider binds a judge to the decision path, rejecting one whose version
+// cannot be recorded on a run.
+func NewDecider(j policy.Judge) (Decider, error) {
+	if j == nil {
+		j = policy.Noop{}
+	}
+	version, err := policy.ParseVersion(j.Version())
+	if err != nil {
+		return Decider{}, err
+	}
+	return Decider{judge: j, version: version}, nil
+}
+
+// Judge returns the judge this decider consults. Used by the composition root
+// to report what is running; the decision path is the only thing that calls it.
+func (p Decider) Judge() policy.Judge { return p.judge }
+
+// isZero reports whether this decider was never built. The worker replaces one
+// with the open default rather than dereferencing a nil judge.
+func (p Decider) isZero() bool { return p.judge == nil }
+
+// Decide maps a replay outcome onto the run's new state.
+func (p Decider) Decide(run PendingRun, res Result, replayErr error) Decision {
+	base := Decision{BundleSHA: bundleSHA, PolicyVersion: p.version, Attempts: run.Attempts}
 
 	switch {
 	case errors.Is(replayErr, ErrUnknownDict):
@@ -224,21 +269,35 @@ func (p Policy) Decide(run PendingRun, res Result, replayErr error) Decision {
 	base.ServerScore = res.Score
 	base.CharObservations = res.CharObservations
 
-	// The policy block is attached to every valid decision — accepted included.
+	// The only place the judge is consulted. Everything above this line was
+	// decided without it and stays decided without it.
+	verdict := p.judge.Judge(res.Flags, policy.RunMeta{
+		DurationSec:  runSeconds(res.Metrics),
+		ScoreVersion: run.ScoreVersion,
+	})
+
+	// The policy block is attached to every JUDGED decision — accepted included.
 	// An accepted run KEEPS its flags and its suspicion so moderation can audit
 	// the boundary without re-running anything.
-	rules := p.Combinations(res.Flags, res.Metrics)
-	suspicion := p.Suspicion(res.Flags)
-	doc := validationDoc{
-		Verdict: verdictValid,
-		Flags:   res.Flags,
-		Policy: &policyDoc{
-			Version:      p.Version,
-			Suspicion:    roundSuspicion(suspicion),
-			Threshold:    p.ReviewThreshold,
-			Rules:        rules,
-			UnknownFlags: p.UnknownFlagCodes(res.Flags),
-		},
+	//
+	// A judge that does not judge writes no block at all. That is not the same
+	// as a block full of zeroes: zeroes would read as "a policy looked and found
+	// nothing", and the truth is that nothing looked. The absent block and the
+	// NULL policy_version beside it are what keep such a run re-judgeable
+	// forever (docs/SELF_HOST.md).
+	//
+	// Keyed on the resolved column value rather than on asking the judge again,
+	// so "no policy block" and "NULL policy_version" are the same decision and
+	// cannot drift into a row that has one but not the other.
+	doc := validationDoc{Verdict: verdictValid, Flags: res.Flags}
+	if p.version != policy.ColumnNone {
+		doc.Policy = &policyDoc{
+			Version:      p.version,
+			Suspicion:    roundSuspicion(verdict.Suspicion),
+			Threshold:    verdict.Threshold,
+			Rules:        verdict.Reasons,
+			UnknownFlags: verdict.UnknownFlags,
+		}
 	}
 
 	if d, err := compareScore(run.ClientScore, res.Score); err != nil {
@@ -267,14 +326,15 @@ func (p Policy) Decide(run PendingRun, res Result, replayErr error) Decision {
 		return withValidation(base, StatusFlagged, doc, "")
 	}
 
-	// A shape outranks a magnitude: no weight tuning should be able to hide a
-	// combination that only a machine produces.
-	if len(rules) > 0 {
-		doc.Reason = ReasonBotPattern
-		return withValidation(base, StatusFlagged, doc, "")
-	}
-	if suspicion >= p.ReviewThreshold {
+	// The judge's routing, recorded with the distinction the reason codes have
+	// always drawn: a run routed because a SHAPE fired reads differently from
+	// one routed because a magnitude crossed a line. Which shapes exist, and
+	// where the line is, is the judge's business and not recorded here.
+	if verdict.NeedsReview {
 		doc.Reason = ReasonSuspicionThreshold
+		if len(verdict.Reasons) > 0 {
+			doc.Reason = ReasonBotPattern
+		}
 		return withValidation(base, StatusFlagged, doc, "")
 	}
 	return withValidation(base, StatusAccepted, doc, "")
@@ -352,4 +412,21 @@ func compareMetrics(client, server json.RawMessage) (*divergence, error) {
 		}
 	}
 	return nil, nil
+}
+
+// runSeconds reads durationSec out of the server's own metrics — the one piece
+// of a run, besides its flags, that a judge is given. A missing or unreadable
+// value reads as 0, which makes a duration-floor rule abstain rather than fire
+// on a guess.
+func runSeconds(metrics json.RawMessage) float64 {
+	if len(metrics) == 0 {
+		return 0
+	}
+	var m struct {
+		DurationSec float64 `json:"durationSec"`
+	}
+	if err := json.Unmarshal(metrics, &m); err != nil {
+		return 0
+	}
+	return m.DurationSec
 }

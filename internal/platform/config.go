@@ -205,9 +205,14 @@ type Config struct {
 	// --- Replay review policy (docs/REPLAY.md, "Review policy") ---
 	//
 	// Which plausibility flags are worth what, and how much weighted severity
-	// sends a run to a human. Defaults live in internal/replay; these override
-	// them, and a typo here is a startup failure rather than a silently
-	// disarmed check.
+	// sends a run to a human. Defaults live in internal/replay/policy behind
+	// the `anticheat` build tag; these override them, and a typo is a startup
+	// failure rather than a silently disarmed check.
+	//
+	// On a binary built WITHOUT that tag there is no policy to tune, and the
+	// server warns instead of ignoring the value. The gate is build-time and not
+	// runtime on purpose: a runtime switch would leave the weights and the rule
+	// names in the binary whichever way it was set (docs/SELF_HOST.md).
 
 	// ReplayFlagWeights overrides individual flag weights, as
 	// "code=weight,code=weight" (e.g. "min-interval=0.4,paste=1.0"). Unlisted

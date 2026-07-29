@@ -22,6 +22,8 @@ import (
 	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/replay"
 	replaypg "github.com/typemore/typemore-server/internal/replay/pgstore"
+	"github.com/typemore/typemore-server/internal/replay/policy"
+	"github.com/typemore/typemore-server/internal/replay/policy/policytest"
 )
 
 // End-to-end: a real client payload goes in through the HTTP ingest path, one
@@ -79,7 +81,7 @@ func (h *harness) replayOnce(t *testing.T) {
 	queue := replaypg.New(h.pool, leaderboardpg.New(h.pool, false)).
 		WithKeyboard(keyboardpg.New(layouts))
 	w := replay.NewWorker(queue, reg, quote.ReplayResolver{Store: quotepg.New(h.pool)},
-		replay.WorkerConfig{BatchSize: 10}, discard)
+		replay.WorkerConfig{BatchSize: 10, Decider: fakeDecider(t)}, discard)
 	_, err = w.RunBatch(context.Background(), core, discard)
 	require.NoError(t, err)
 }
@@ -330,10 +332,12 @@ func TestQuoteRunOnAnUnknownQuoteIsFlaggedNotRejected(t *testing.T) {
 }
 
 // revalidateOnce drives one bundle/policy-aware revalidate batch under the
-// given policy, keyboard projector attached — the same pass `make revalidate`
+// given judge, keyboard projector attached — the same pass `make revalidate`
 // runs, which is also the keyboard projection's backfill mechanism.
-func (h *harness) revalidateOnce(t *testing.T, policy replay.Policy) {
+func (h *harness) revalidateOnce(t *testing.T, judge policy.Judge) {
 	t.Helper()
+	decider, err := replay.NewDecider(judge)
+	require.NoError(t, err)
 	core, err := replay.NewCore(replay.DefaultReplayTimeout)
 	require.NoError(t, err)
 	reg, err := replay.NewRegistry(core)
@@ -344,7 +348,7 @@ func (h *harness) revalidateOnce(t *testing.T, policy replay.Policy) {
 	queue := replaypg.New(h.pool, leaderboardpg.New(h.pool, false)).
 		WithKeyboard(keyboardpg.New(layouts))
 	w := replay.NewWorker(queue, reg, quote.ReplayResolver{Store: quotepg.New(h.pool)},
-		replay.WorkerConfig{BatchSize: 50, Policy: policy}, discard)
+		replay.WorkerConfig{BatchSize: 50, Decider: decider}, discard)
 	for {
 		n, err := w.RevalidateBatch(context.Background(), core, discard)
 		require.NoError(t, err)
@@ -352,4 +356,14 @@ func (h *harness) revalidateOnce(t *testing.T, policy replay.Policy) {
 			return
 		}
 	}
+}
+
+// fakeDecider binds the deterministic fake judge. These end-to-end tests are
+// about ingest, replay and the projections around them, not about the shipped
+// review policy — which is behind a build tag they must not depend on.
+func fakeDecider(t *testing.T) replay.Decider {
+	t.Helper()
+	d, err := replay.NewDecider(policytest.NewFake())
+	require.NoError(t, err)
+	return d
 }
