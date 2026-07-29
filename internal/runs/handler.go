@@ -158,12 +158,15 @@ type summaryView struct {
 	RestartsSinceLastSubmit int32     `json:"restartsSinceLastSubmit"`
 	CreatedAt               time.Time `json:"createdAt"`
 	// The profile table's derived cells (docs/RUNS.md): grade/consistency/chars
-	// absent until judged, quoteId absent on seeded runs, mods always present.
-	Grade       *string         `json:"grade,omitempty"`
-	Consistency *float64        `json:"consistency,omitempty"`
-	Chars       json.RawMessage `json:"chars,omitempty"`
-	QuoteID     *uuid.UUID      `json:"quoteId,omitempty"`
-	Mods        json.RawMessage `json:"mods,omitempty"`
+	// absent until judged, quoteId absent on seeded runs, adoptedFromRunId
+	// absent unless the run's text was taken from another run, mods always
+	// present.
+	Grade            *string         `json:"grade,omitempty"`
+	Consistency      *float64        `json:"consistency,omitempty"`
+	Chars            json.RawMessage `json:"chars,omitempty"`
+	QuoteID          *uuid.UUID      `json:"quoteId,omitempty"`
+	AdoptedFromRunID *uuid.UUID      `json:"adoptedFromRunId,omitempty"`
+	Mods             json.RawMessage `json:"mods,omitempty"`
 }
 
 // toSummaryView converts the domain Summary to its JSON view. The two structs

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/runlimits"
 )
 
 // Ranked modes. Zen and custom text are unranked by design (SCORING_CONCEPT §2)
@@ -29,14 +31,71 @@ const (
 // quoteKeyPrefix opens the second key space. See Key.
 const quoteKeyPrefix = "quote:"
 
-// Dimension bounds, mirroring the ingest validator's (docs/RUNS.md): a bucket
-// can only ever describe a run that was allowed in.
+// Dimension bounds. Read from internal/runlimits, which is the same place the
+// ingest validator reads them: a bucket can only ever describe a run that was
+// allowed in, and "mirroring the ingest validator's" used to be a comment
+// between two literals rather than a fact anything enforced.
+//
+// Note what these bounds are NOT: they are not the RANKED set. A dimension can
+// sit inside them and still name no board — 3 000 words is legal to play and
+// ranked nowhere. Which sizes rank is leaderboard_eligible_runs' answer, and
+// asking it is rankedShape's job, not this bound's.
 const (
-	maxDurationMs = 3_600_000
-	maxWordCount  = 10_000
+	maxDurationMs = runlimits.MaxDurationMs
+	maxWordCount  = runlimits.MaxWordCount
 	maxLangLen    = 32
 	maxSourceLen  = 16
 )
+
+// The RANKED SET: the sizes a seeded run competes at (SCORING_CONCEPT §4).
+//
+// Sitting inside the ingest bounds is NOT the same question. A 3 000-word run is
+// legal to play, is judged, is scored and lives in its player's history — and
+// ranks nowhere, because a board at that size does not exist. 10 minutes is
+// absent for the stated reason that sitting out ten minutes is endurance and
+// the sample is too small to rank.
+//
+// These two slices are the Go half of a fact whose other half is SQL
+// (leaderboard_eligible_runs' `duration_ms IN (…)` / `word_count IN (…)`). Two
+// copies of a set is exactly the drift this codebase keeps writing migrations
+// about, so they are not trusted to agree — TestTheRankedSetAgreesWithTheView
+// plants a run at every size in and around both and requires the predicate below
+// and the view to return the same answer for each. The set is written twice and
+// checked once, rather than written twice and hoped over.
+var (
+	RankedDurationsMs = []int32{15_000, 30_000, 60_000}
+	RankedWordCounts  = []int32{25, 50, 100}
+)
+
+// IsRankedShape reports whether a run of this mode and size competes on a board.
+//
+// This is the PROPERTY the projection asks, in place of the enumeration it used
+// to imply. The distinction is the whole of this rule: `NewBucket` bounded the
+// dimension by what ingestion allows, which let it mint `words:3000:en:seeded` —
+// a perfectly well-formed key for a board that can never hold a row. Nothing
+// broke, because the SQL underneath then matched nothing and deleted; but "Go
+// names a cell that cannot exist and SQL quietly cleans up after it" is a
+// deferred failure of the exact class that produced lobbyEntryOf without
+// ModeQuote and a quote run with no bucket. The key is now not built at all.
+func IsRankedShape(mode string, dimension int32) bool {
+	switch mode {
+	case ModeTime:
+		return contains(RankedDurationsMs, dimension)
+	case ModeWords:
+		return contains(RankedWordCounts, dimension)
+	default:
+		return false
+	}
+}
+
+func contains(set []int32, v int32) bool {
+	for _, x := range set {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrInvalidBucket is returned for a bucket that cannot name a board — an
 // unknown mode, a dimension outside the ingest bounds, or a component carrying
@@ -201,6 +260,14 @@ func (b Bucket) validate() error {
 	}
 	if b.Dimension <= 0 || b.Dimension > limit {
 		return fmt.Errorf("%w: dimension %d out of range for mode %q", ErrInvalidBucket, b.Dimension, b.Mode)
+	}
+	// Inside the ingest bounds and still not a board. Checked here, in the one
+	// rule set behind every constructor, so a parsed key and a projected cell
+	// get the same answer: an unranked size is not a board whose page is empty,
+	// it is a link that names nothing, and both doors say so.
+	if !IsRankedShape(b.Mode, b.Dimension) {
+		return fmt.Errorf("%w: %s runs do not rank at %d (ranked sizes: %v / %v)",
+			ErrInvalidBucket, b.Mode, b.Dimension, RankedDurationsMs, RankedWordCounts)
 	}
 	if err := validComponent("lang", b.Lang, maxLangLen); err != nil {
 		return err

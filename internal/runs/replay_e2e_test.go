@@ -98,6 +98,27 @@ func (h *harness) publishQuote(t *testing.T, id uuid.UUID, text, hash string, su
 	require.NoError(t, err)
 }
 
+// supersedeQuote retires a published revision the way the importer does: it
+// flips the flag and NEVER touches the text, which is the whole reason a run
+// recorded against the retired row keeps resolving its own bytes.
+func (h *harness) supersedeQuote(t *testing.T, id uuid.UUID) {
+	t.Helper()
+	tag, err := h.pool.Exec(context.Background(),
+		`UPDATE quotes SET superseded = true WHERE id = $1`, id)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, tag.RowsAffected(), "no such published quote")
+}
+
+// stalePolicyVersion backdates every run's recorded policy version so the next
+// revalidate pass claims it. Without this, revalidate is correctly a no-op —
+// it only re-judges what the current policy or bundle has moved past — and a
+// test that wants to see a run judged AGAIN has to say so.
+func (h *harness) stalePolicyVersion(t *testing.T) {
+	t.Helper()
+	_, err := h.pool.Exec(context.Background(), `UPDATE runs SET policy_version = 0`)
+	require.NoError(t, err)
+}
+
 func TestSubmittedRunIsReplayedAndAccepted(t *testing.T) {
 	h := newHarness(t)
 	h.login("replay@example.com", "correct horse battery", "replayer")

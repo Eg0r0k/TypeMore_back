@@ -282,6 +282,81 @@ func (c *Core) DictVersion(words []string) (string, error) {
 	return s, nil
 }
 
+// QuoteTargets returns the TARGET WORD LIST the core derives from a quote's
+// bytes — the same tokens the browser typed against, produced by the same
+// vendored bundle, for the text exactly as the registry holds it.
+//
+// It exists so the server can be checked on the thing that breaks FIRST. A
+// quote's text is turned into targets by one rule and one only (the core's
+// `generateWords`: every line break is rewritten to "\n ", then the text is
+// split on U+0020 and empty tokens are dropped). If that rule were ever
+// reimplemented in Go — or if anything on the way in "tidied" a typographic
+// quote, a no-break space or an em dash — the server would disagree with the
+// client on SOME texts and on no others, and every run on those quotes would
+// fail its fold with a score mismatch. Comparing targets is what makes that
+// failure say "the text disagrees" instead of "the score disagrees".
+//
+// Note what it does NOT do: it never normalises. `normalize.ts` is an INPUT
+// adapter — it decides which grapheme a keystroke STORES — and by design it
+// never transforms the expected text (see its header: "changes what is WRITTEN,
+// never how anything is judged"). The bytes below are the registry's, verbatim.
+func (c *Core) QuoteTargets(ctx context.Context, text string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// The hash the quote branch checks the text against. Computed by the bundle,
+	// like every other digest in this system; c.dictVersion is called directly
+	// rather than through DictVersion because the mutex is already held.
+	hashValue, err := c.call(ctx, c.dictVersion, c.rt.NewArray(text))
+	if err != nil {
+		return nil, err
+	}
+	hash, ok := hashValue.Export().(string)
+	if !ok {
+		return nil, fmt.Errorf("replay: dictVersion returned %T, want string", hashValue.Export())
+	}
+
+	// A quote run's generation config, spelled the way a stored setup spells it.
+	// `quoteId` is a placeholder: the core only ever puts it in an error message,
+	// and this call resolves nothing.
+	var doc strings.Builder
+	doc.WriteString(`{"seed":0,"dictVersion":`)
+	writeJSONString(&doc, hash)
+	doc.WriteString(`,"generation":{"mode":"quote","length":0,"punctuation":false,` +
+		`"numbers":false,"randomCase":false,"reverse":false,"textSource":` +
+		`{"kind":"quote","quoteId":"00000000-0000-0000-0000-000000000000","quoteHash":`)
+	writeJSONString(&doc, hash)
+	doc.WriteString(`,"text":`)
+	writeJSONString(&doc, text)
+	doc.WriteString(`}}}`)
+
+	seedContext, err := c.parseJSON(ctx, doc.String())
+	if err != nil {
+		return nil, err
+	}
+	generated, err := c.call(ctx, c.generateWords, c.quoteDict, seedContext)
+	if err != nil {
+		return nil, err
+	}
+	value, err := c.unwrapResult(ctx, generated)
+	if err != nil {
+		return nil, err
+	}
+	genObj, ok := value.(*goja.Object)
+	if !ok {
+		return nil, errors.New("replay: generateWords returned a non-object")
+	}
+	raw, err := c.stringifyJSON(ctx, genObj.Get("words"))
+	if err != nil {
+		return nil, err
+	}
+	var words []string
+	if err := json.Unmarshal(raw, &words); err != nil {
+		return nil, fmt.Errorf("replay: decode quote targets: %w", err)
+	}
+	return words, nil
+}
+
 // unwrapResult splits a neverthrow Result into its Ok value or its Err payload.
 // The core returns Results from generateWords and validateLog; nothing else in
 // this package knows what a Result looks like.

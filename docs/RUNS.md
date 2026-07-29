@@ -157,6 +157,63 @@ than from a word list. Two consequences worth stating:
   re-derived from `quoteId`. A client that got `dictHash` wrong cannot break a
   run whose text the server already resolved.
 
+### Text provenance: `setup.adoptedFromRunId`
+
+Beside *where the text came from* (`textSource`) sits *whether this run made it
+up*. One optional field, at the TOP LEVEL of the setup snapshot:
+
+```json
+"setup": {
+  "adoptedFromRunId": "8f14e45f-ceea-4d0e-9c9a-1b0c9d8e3f2a",
+  "config":      { … },
+  "generation":  { … },
+  "declaration": { … }
+}
+```
+
+| Field | Rule |
+|---|---|
+| `adoptedFromRunId` | Optional. When present, a **canonical lowercase dashed UUID** naming the run this run's text was taken from. `422 invalid_adopted_from` otherwise. Absent (and explicit `null`) mean the text was generated fresh. |
+
+**What it means.** A run that names one is a **seeded repeat**: its targets were
+adopted wholesale from the run it names — today, the "race this run" flow, which
+applies the target run's seed and word list rather than drawing new ones. The
+text was knowable before the first keystroke, so the run is **saved and ranked
+nowhere**: no board slot of either shape, no personal best, and no rating point
+when TP arrives ([`LEADERBOARDS.md`](LEADERBOARDS.md), "Seeded repeats"). It is
+still accepted, still judged, still stored, and still listed in its player's own
+history — *saved* and *counted* have been two different things on this surface
+since the first pending run.
+
+**What it does NOT mean.** It is not "there was another caret on screen". A run
+played against a pace caret set to your personal best, or against a ghost, over a
+**freshly generated** text is an ordinary run in every respect — history, board,
+PB, TP — and the outcome of that race changes nothing, because the run is judged
+on its own metrics and not by comparison. Gating on the opponent would refuse
+those runs and admit nothing; gating on the origin of the text refuses exactly
+the runs whose text was learnable, and keeps working for any future surface that
+draws a second caret.
+
+**Why an unverifiable client claim is safe here.** The field can only ever
+*withhold* credit from its own submitter. Forging it costs you your board slot
+and can never win you one, so there is nothing to defend. The opposite spelling —
+a field asserting "this run is fresh" — would be worth forging, which is why the
+marker is the burden rather than the permission.
+
+**Why the spelling is checked.** `uuid.Parse` also accepts `{…}`, `urn:uuid:…`
+and the undashed 32-character form, while the SQL that reads this field back
+(`run_adopted_from`, migration `00017`) matches a dashed pattern and answers
+`NULL` to everything else. An undashed marker would therefore be *no marker at
+all* downstream, and the repeat it marks would silently count. The same rule now
+applies to `textSource.quoteId` for the mirror-image reason: an undashed id
+resolves in the replay worker and not in `leaderboard_eligible_runs`, which would
+judge a run against its quote and then rank it on no board.
+
+It is **additive and unversioned**: absent is the legacy shape, every row written
+before it existed carries no such key, and the core never reads it — `Replay`
+destructures the setup into `config` / `generation` / `declaration` and nothing
+else, so the field cannot influence a fold, a metric or a score.
+
 ### List response
 
 ```json
@@ -176,10 +233,17 @@ than from a word list. Two consequences worth stating:
 100. The log payload is never included in summaries.
 
 Summaries additionally carry the profile table's **derived cells** — `grade`,
-`consistency`, `chars` (absent until judged), `quoteId` (quote runs only) and
-`mods` (always) — lifted in SQL from the documents the row already stores, so
-the profile page renders without parsing them. Additive; see
-[`PROFILE.md`](PROFILE.md).
+`consistency`, `chars` (absent until judged), `quoteId` (quote runs only),
+`adoptedFromRunId` (seeded repeats only) and `mods` (always) — lifted in SQL from
+the documents the row already stores, so the profile page renders without parsing
+them. Additive; see [`PROFILE.md`](PROFILE.md).
+
+`adoptedFromRunId` is what lets a history row render "saved, not counted" without
+the client re-deriving eligibility. Note what is *not* here: a quote's text, its
+attribution and its length band. Those are served, immutable and cached by id, by
+`GET /quotes/{id}` — the same call the quote board's heading makes — and lifting
+them would put a join into the profile page's hot query, whose plans are pinned
+against a 100 000-run account ([`PERFORMANCE.md`](PERFORMANCE.md), zone 9).
 
 ## Structural validation (this phase only)
 
@@ -200,6 +264,7 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 | `seed` | integer in `[0, 2³²−1]` (mulberry32) | `422 seed_out_of_range` |
 | `textSource` | `kind` ∈ {`seeded`, `quote`}; a `quote` needs a UUID `quoteId` and a `quoteHash` | `422 invalid_text_source` |
 | `textSource.text` | must be absent | `422 quote_text_submitted` |
+| `adoptedFromRunId` | optional; a canonical lowercase dashed UUID when present | `422 invalid_adopted_from` |
 | Dimensions | seeded: exactly one of `durationMs` (1…3 600 000) / `wordCount` (1…10 000). quote: neither | `422 invalid_dimensions` |
 | `restartsSinceLastSubmit` | optional; integer in `[0, 10 000]` when present | `422 invalid_restarts` |
 | `mode` / `lang` / `dictHash` | present, ≤ 32/32/64 chars | `400 bad_request` |

@@ -248,5 +248,6 @@ func applyDerived(out *runs.Summary, raw json.RawMessage) {
 	out.Consistency = cells.Consistency
 	out.Chars = cells.Chars
 	out.QuoteID = cells.QuoteID
+	out.AdoptedFromRunID = cells.AdoptedFromRunID
 	out.Mods = cells.Mods
 }

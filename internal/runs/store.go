@@ -83,22 +83,29 @@ type Summary struct {
 	// The profile table's cells, derived in SQL so the client renders a row
 	// without parsing the setup/metrics documents (docs/RUNS.md). Grade,
 	// Consistency and Chars are absent until the run is judged; QuoteID is
-	// absent on a seeded run; Mods is always present.
+	// absent on a seeded run; AdoptedFromRunID is absent on a run whose text was
+	// generated fresh, i.e. on nearly all of them; Mods is always present.
 	Grade       *string         `json:"grade,omitempty"`
 	Consistency *float64        `json:"consistency,omitempty"`
 	Chars       json.RawMessage `json:"chars,omitempty"`
 	QuoteID     *uuid.UUID      `json:"quoteId,omitempty"`
-	Mods        json.RawMessage `json:"mods,omitempty"`
+	// AdoptedFromRunID: this run's TEXT was taken from the run it names, so the
+	// run is saved and listed but ranked nowhere (migration 00017). Present is
+	// the whole signal — history renders "saved, not counted" from it instead of
+	// re-deriving eligibility client-side.
+	AdoptedFromRunID *uuid.UUID      `json:"adoptedFromRunId,omitempty"`
+	Mods             json.RawMessage `json:"mods,omitempty"`
 }
 
 // DerivedCells is the SQL-side `derived` document of the summary queries; see
 // queries.sql. Decoded by the pgstore adapter into the flat Summary fields.
 type DerivedCells struct {
-	Grade       *string         `json:"grade"`
-	Consistency *float64        `json:"consistency"`
-	Chars       json.RawMessage `json:"chars"`
-	QuoteID     *uuid.UUID      `json:"quoteId"`
-	Mods        json.RawMessage `json:"mods"`
+	Grade            *string         `json:"grade"`
+	Consistency      *float64        `json:"consistency"`
+	Chars            json.RawMessage `json:"chars"`
+	QuoteID          *uuid.UUID      `json:"quoteId"`
+	AdoptedFromRunID *uuid.UUID      `json:"adoptedFromRunId"`
+	Mods             json.RawMessage `json:"mods"`
 }
 
 // Cursor is a keyset pagination position: the (CreatedAt, ID) of the last row a

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+
+	"github.com/typemore/typemore-server/internal/runlimits"
 )
 
 // Ingestion ceilings, mirrored from internal/runs (docs/RUNS.md). The zone-2
@@ -35,9 +37,17 @@ const (
 	// TestEveryPublishedDictionaryCanPlayAFullLengthRunUnderLogV2: worst is
 	// code_abap_1k at 417,710 events — this cap gives it ~15% headroom, the
 	// same discipline (and the same generator) that sized MaxEvents.
-	MaxEventsV2   = 480_000
-	MaxWordCount  = 10_000
-	MaxDurationMs = 3_600_000
+	MaxEventsV2 = 480_000
+	// MaxWordCount and MaxDurationMs are RE-EXPORTS of internal/runlimits, not
+	// second copies. They were literals here, in the ingest validator and in the
+	// leaderboard's bucket bound — three numbers that had to be equal with
+	// nothing but a comment saying so. A load fixture built at a size ingestion
+	// refuses measures a run the server never sees, so this package must read
+	// the bound rather than restate it. Aliased instead of renamed because
+	// `perf.MaxWordCount` is what the fixtures and both dictionary gates already
+	// say, and the indirection is the point, not the spelling.
+	MaxWordCount  = runlimits.MaxWordCount
+	MaxDurationMs = runlimits.MaxDurationMs
 )
 
 // Realistic-run parameters. A human at ~100 wpm types ~8.3 characters a second,

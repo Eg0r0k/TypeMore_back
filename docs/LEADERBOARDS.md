@@ -156,21 +156,91 @@ entries table and the whole public catalogue**, not over the one language bucket
 the run would most plausibly have landed in; `TestSeededRunIsRankedInNoQuoteBoard`
 asserts the second.
 
+#### Supersede versus the board
+
+A published quote is **never edited**. Correcting one inserts a new row and
+retires the old ([`QUOTES.md`](QUOTES.md), "Immutability"): the revision key is
+`(lang, upstream_id, text_hash)` and `InsertQuoteRevision` mints a fresh
+`gen_random_uuid()`, so **one id is one text, for the life of the corpus**.
+
+That single fact settles the whole policy, and it is worth stating in both
+directions because only one of them is obvious.
+
+**A board is keyed on the quote id — not on `(id, hash)` — and that is already
+per-version.** The pair would be redundant: the id determines the hash. A run
+that has been ranked stays ranked, against the exact bytes it was played on,
+forever; retiring a revision touches neither its `text` nor its board, and
+`GET /quotes/{id}` keeps resolving it precisely so that every run on it stays
+replayable. A run still *pending* when the corpus moves is ranked normally when
+it is judged: the projection resolves the id through `quotes`, and `superseded`
+is not part of that join.
+
+**A correction does not reset a board — it forks one.** The corrected text has a
+different id, therefore a different and empty board, and players who draw the
+quote after the correction rank there. The two populations never merge, and
+neither is disturbed. So "fixing a typo does not disturb the board" is true of
+the *existing* board and false of the corpus as a whole: the quote the picker
+now offers is a different map with a different ranking. If that is not what a
+correction should mean, the place to change it is the revision key, not the
+board.
+
+`TestSupersedingAQuoteLeavesItsBoardAloneAndOpensANewOne` and
+`TestARunJudgedAfterItsQuoteWasRetiredStillRanks` are both halves.
+
+#### Seeded repeats hold no slot
+
+A run whose `setup.adoptedFromRunId` names another run took its **text** from
+that run rather than generating it, so the words were knowable before the first
+keystroke. Such a run is accepted, judged, stored and listed in its player's own
+history — and ranked nowhere, on either board shape.
+
+The exclusion lives in `leaderboard_eligible_runs` beside the quote rule and for
+the same reason: one view, so the projection, the rebuild and every read cannot
+drift into three answers. It is a property of the RUN, not of the board, which is
+why a single line covers a seeded repeat of a language board and of a quote board
+alike.
+
+It is **not** a rule about opponents. A pace caret or a ghost drawn over a
+FRESHLY generated text changes nothing about the run underneath it: it ranks,
+sets a PB and earns TP exactly as it would with an empty field, and losing the
+race — on wpm or on score — is not a verdict on anything. See
+[`RUNS.md`](RUNS.md), "Text provenance", for why the marker is spelled as the
+burden rather than as the permission.
+
+`TestOnlyTheAdoptedTwinIsRankedNowhere` states it as the same run twice, told
+apart by that one field; `TestASeededRepeatIsNotPromotedWhenTheSlotEmpties` and
+`TestRebuildDoesNotReadmitSeededRepeats` cover the two ways an excluded row
+usually creeps back in.
+
 #### TP does not exist yet, and this is the hook it must use
 
-There is no TP (SCORING_CONCEPT §5) in this system today, and quotes are excluded
-from it for the same three reasons they are excluded from the global boards. The
-column is in the view, named, so that arriving TP has to *say something* about
-quotes: the runs it may count are exactly
+There is no TP (SCORING_CONCEPT §5) in this system today. When it arrives, the
+runs it may count are exactly
 
 ```sql
-SELECT … FROM leaderboard_eligible_runs WHERE quote_id IS NULL
+SELECT … FROM leaderboard_eligible_runs
 ```
 
-A TP implementation that writes the `SELECT` without the `WHERE` is inheriting
-quote runs into a global rating, and the only defence against that is that the
-predicate is written down here and in the migration, beside the reason. There is
-deliberately **no** second "globally rankable runs" view: one more view whose
+— the whole view, with **no** extra predicate.
+
+Two things about that are deliberate and both are recent changes of direction, so
+read them before writing the query:
+
+**Quote runs DO earn TP.** Earlier revisions of this document and of migration
+`00009` said the opposite and told a future implementation to write
+`WHERE quote_id IS NULL`; `ARCHITECTURE.md` and SCORING_CONCEPT §6 still carry
+the older reasoning (memorisable corpus, length variance, cherry-picking). That
+has been overruled as a product decision: **a quote run earns TP exactly as a
+seeded run does, with no exception and no coefficient.** The player chooses the
+quote, and choosing it — or typing the same one as often as they like — is not
+dishonesty. The `quote_id` column stays in the view because it is the board
+coordinate; it is no longer a TP filter.
+
+**Seeded repeats do not earn TP,** and they are already excluded by the view, so
+this needs no predicate either. That is the whole point of putting the rule in
+`leaderboard_eligible_runs` rather than in the projection.
+
+There is deliberately **no** second "TP-eligible runs" view: one more view whose
 only difference is a `WHERE` clause is one more thing that can drift from this
 one, and the whole design of this table is that eligibility has a single home.
 

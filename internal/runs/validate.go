@@ -6,6 +6,8 @@ import (
 	"math"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/runlimits"
 )
 
 // Structural limits. These are cheap, game-agnostic bounds — the point is to
@@ -14,11 +16,17 @@ import (
 const (
 	// Event-count bounds: a real run has at least one event, and 120k is above
 	// the largest v1 run the documented game permits on ANY published
-	// dictionary — a full MaxWordCount (10 000) code_css run with punctuation
-	// measures 108 274 events; german measures 79 116, 81 430 with
-	// punctuation. The old 50 000 was sized around an interpreter cost that no
+	// dictionary. The old 50 000 was sized around an interpreter cost that no
 	// longer exists and refused a mode the docs promise. See the caps table in
 	// docs/RUNS.md for the measurements and the tradeoff.
+	//
+	// THE CAP ITSELF NEVER MOVES, and this number was derived when MaxWordCount
+	// was 10 000 — where the worst published dictionary (league_of_legends)
+	// measured 118 943 events, 99% of it. Lowering MaxWordCount to 3 000 lowered
+	// the MEASURING POINT, not this bound, so every one of those measurements is
+	// still an upper bound and the headroom only grew. Raising this number is
+	// what docs/DICTIONARIES.md forbids; lowering the measuring point is the
+	// other legal answer, and it is the one that was taken.
 	minEvents = 1
 	maxEvents = 120_000
 	// maxEventsV2 bounds a telemetry (log v2) submission: a v2 capture is 3×
@@ -37,11 +45,18 @@ const (
 	// seedMax is 2³²−1: mulberry32 is a 32-bit PRNG (PROTOCOL.md §4).
 	seedMax = int64(math.MaxUint32)
 
-	// Dimension caps. Structural only: durations up to an hour, word counts up
-	// to the client's 10k ceiling. Which one applies is decided by presence,
-	// not by the mode string (mode semantics are game knowledge).
-	maxDurationMs = int32(3_600_000)
-	maxWordCount  = int32(10_000)
+	// Dimension caps, read from internal/runlimits rather than restated — that
+	// package carries the derivation of each number and is the one place all
+	// three consumers (this validator, the bucket bound, the load fixtures) now
+	// agree through. Which cap applies is decided by PRESENCE, not by the mode
+	// string: mode semantics are game knowledge and this layer has none.
+	//
+	// Both are HARD, UNCONDITIONAL refusals — 422 before the run is stored and
+	// long before the worker would replay it. Not judgements: nothing here is
+	// behind policy.Judge or the anticheat tag, because the open build has to
+	// refuse exactly what the closed one refuses (docs/SELF_HOST.md).
+	maxDurationMs = int32(runlimits.MaxDurationMs)
+	maxWordCount  = int32(runlimits.MaxWordCount)
 
 	// Small opaque-string caps so a bucket/hash field cannot be abused as a
 	// large blob smuggled outside the log.
@@ -103,11 +118,19 @@ const (
 	codeNonMonotonicSeq         = "non_monotonic_seq"
 	codeMalformedLog            = "malformed_log"
 	codeInvalidDimensions       = "invalid_dimensions"
+	// Distinct from invalid_dimensions on purpose. "You sent both durationMs and
+	// wordCount" is a client that does not know what it played; "you asked for
+	// 5 000 words" is a client asking for a run this product does not offer.
+	// A UI can act on the second (it names the limit that was crossed) and can
+	// only apologise for the first.
+	codeWordCountTooLarge = "word_count_too_large"
+	codeDurationTooLong   = "duration_too_long"
 	codeSeedOutOfRange          = "seed_out_of_range"
 	codeInvalidTextSource       = "invalid_text_source"
 	codeQuoteTextSubmitted      = "quote_text_submitted"
 	codeLogTooLarge             = "log_too_large"
 	codeInvalidRestarts         = "invalid_restarts"
+	codeInvalidAdoptedFrom      = "invalid_adopted_from"
 )
 
 // ingestRequest is the POST /runs body. The opaque snapshots and the log are
@@ -151,7 +174,22 @@ const (
 // the dimension columns are indexed columns this layer owns. Everything else in
 // the snapshot stays opaque and is still stored verbatim.
 type setupEnvelope struct {
-	Generation *struct {
+	// AdoptedFromRunId names the run this run's TEXT was taken from — the
+	// "race this run" flow, which applies the target run's seed and word list
+	// wholesale. Absent (the overwhelming majority, and every row written before
+	// this field existed) means the text was generated fresh.
+	//
+	// It is read here for one reason only: shape. Whether the run it names
+	// exists, belongs to anybody, or is even the player's own is deliberately
+	// NOT asked — the field can only ever cost its own submitter a board slot,
+	// so there is nothing to gain by forging it and nothing to protect. What a
+	// malformed value WOULD cost is a run that silently counts because SQL read
+	// nonsense as NULL, and that is what the shape check prevents.
+	// Raw, so a value of the wrong JSON TYPE (a number, an object) is reported
+	// as this field's problem rather than collapsing the whole envelope decode
+	// into "setup.generation is not an object".
+	AdoptedFromRunID json.RawMessage `json:"adoptedFromRunId"`
+	Generation       *struct {
 		TextSource *struct {
 			Kind      string `json:"kind"`
 			QuoteID   string `json:"quoteId"`
@@ -226,11 +264,22 @@ func validateIngest(userID uuid.UUID, req *ingestRequest) (CreateRunParams, *api
 			"seed must be an integer in [0, 2^32-1]")
 	}
 
+	// The one part of the opaque setup snapshot this layer parses, read once.
+	env, verr := parseSetupEnvelope(req.Setup)
+	if verr != nil {
+		return CreateRunParams{}, verr
+	}
+
 	// Text source: which of the two dimension rules applies, and the quote
 	// reference's own shape. Must run BEFORE the dimension check, which reads
 	// its answer.
-	kind, verr := validateTextSource(req.Setup)
+	kind, verr := validateTextSource(env)
 	if verr != nil {
+		return CreateRunParams{}, verr
+	}
+
+	// Text provenance. Shape only — see setupEnvelope.AdoptedFromRunID.
+	if verr := validateAdoptedFrom(env); verr != nil {
 		return CreateRunParams{}, verr
 	}
 
@@ -291,22 +340,71 @@ func validateOpaqueField(name, value string, maxLen int) *apiError {
 	return nil
 }
 
+// parseSetupEnvelope lifts the sliver of the setup snapshot ingestion reads.
+// Everything else stays opaque and is stored verbatim.
+func parseSetupEnvelope(setup json.RawMessage) (setupEnvelope, *apiError) {
+	var env setupEnvelope
+	if err := json.Unmarshal(setup, &env); err != nil {
+		return setupEnvelope{}, apiErrUnprocessable(codeInvalidTextSource,
+			"setup.generation is not an object")
+	}
+	return env, nil
+}
+
+// validateAdoptedFrom checks `setup.adoptedFromRunId`: absent, or a UUID.
+//
+// A run that names one is a SEEDED REPEAT — its text was taken from the run it
+// names rather than generated — and it is ranked nowhere (migration 00017). It
+// is still accepted, judged, stored and listed: "saved" and "counted" have been
+// two different things on this surface since the first pending run, and this is
+// one more way to be the first without being the second.
+func validateAdoptedFrom(env setupEnvelope) *apiError {
+	if len(env.AdoptedFromRunID) == 0 || string(env.AdoptedFromRunID) == "null" {
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(env.AdoptedFromRunID, &value); err != nil || !isCanonicalUUID(value) {
+		return apiErrUnprocessable(codeInvalidAdoptedFrom,
+			"setup.adoptedFromRunId must be a canonical lowercase dashed uuid when present")
+	}
+	return nil
+}
+
+// isCanonicalUUID reports whether s is a uuid in the ONE spelling the rest of
+// the system agrees on: 36 characters, lowercase, dashed.
+//
+// uuid.Parse alone is not enough, and the gap is not cosmetic. It also accepts
+// `{...}`, `urn:uuid:...` and the undashed 32-character form — but the SQL that
+// reads these ids back out of the setup document (run_quote_id and
+// run_adopted_from, migrations 00009 and 00017) matches a DASHED pattern and
+// answers NULL to anything else. So a non-canonical spelling passes ingestion
+// here and then means something different downstream:
+//
+//   - an undashed adoptedFromRunId would be no marker at all in SQL, and the
+//     seeded repeat it marks would quietly count;
+//   - an undashed quoteId resolves in the worker (which uses uuid.Parse) but not
+//     in the view, so the run would be judged against its quote and ranked on no
+//     board, for no reason a reader could see.
+//
+// Refusing the spelling at the door is what keeps "the id" one thing. It is the
+// same rule leaderboard.ParseBucketKey applies to a bucket key, for the same
+// reason: these ids are also what people link to, and two spellings of one id
+// are two of everything that is keyed by it.
+func isCanonicalUUID(s string) bool {
+	parsed, err := uuid.Parse(s)
+	return err == nil && parsed.String() == s
+}
+
 // validateTextSource checks `setup.generation.textSource` and reports the run's
 // text-source kind. An absent textSource is `seeded` — the legacy shape, and
 // what every row written before quotes existed carries.
 //
-// This is the one place ingestion looks inside the setup snapshot, and it looks
-// no further than it must: the kind, and — for a quote — that the reference is
-// usable as a reference. Whether the quote EXISTS is not asked here. Ingestion
-// is game-agnostic and never consults a registry; the worker resolves the id
-// and flags `unknown_quote` if it cannot, exactly as it already does for an
-// unknown dictionary.
-func validateTextSource(setup json.RawMessage) (string, *apiError) {
-	var env setupEnvelope
-	if err := json.Unmarshal(setup, &env); err != nil {
-		return "", apiErrUnprocessable(codeInvalidTextSource,
-			"setup.generation is not an object")
-	}
+// This looks no further than it must: the kind, and — for a quote — that the
+// reference is usable as a reference. Whether the quote EXISTS is not asked
+// here. Ingestion is game-agnostic and never consults a registry; the worker
+// resolves the id and flags `unknown_quote` if it cannot, exactly as it already
+// does for an unknown dictionary.
+func validateTextSource(env setupEnvelope) (string, *apiError) {
 	if env.Generation == nil || env.Generation.TextSource == nil {
 		return textSourceSeeded, nil
 	}
@@ -330,9 +428,12 @@ func validateTextSource(setup json.RawMessage) (string, *apiError) {
 		return "", apiErrUnprocessable(codeQuoteTextSubmitted,
 			"setup.generation.textSource must not carry text; the server resolves it from quoteId")
 	}
-	if _, err := uuid.Parse(src.QuoteID); err != nil {
+	// Canonical spelling, not merely parseable — see isCanonicalUUID. An
+	// undashed id resolves in the worker and NOT in leaderboard_eligible_runs,
+	// which would judge a run against its quote and then rank it nowhere.
+	if !isCanonicalUUID(src.QuoteID) {
 		return "", apiErrUnprocessable(codeInvalidTextSource,
-			"setup.generation.textSource.quoteId must be a uuid")
+			"setup.generation.textSource.quoteId must be a canonical lowercase dashed uuid")
 	}
 	if src.QuoteHash == "" || len(src.QuoteHash) > maxDictHashLen {
 		return "", apiErrUnprocessable(codeInvalidTextSource,
@@ -371,14 +472,22 @@ func validateDimensions(req *ingestRequest, textSource string) *apiError {
 		return apiErrUnprocessable(codeInvalidDimensions,
 			"exactly one of durationMs or wordCount must be set, not both")
 	case req.DurationMs != nil:
-		if *req.DurationMs <= 0 || *req.DurationMs > maxDurationMs {
+		if *req.DurationMs <= 0 {
 			return apiErrUnprocessable(codeInvalidDimensions,
-				"durationMs is out of range")
+				"durationMs must be positive")
+		}
+		if *req.DurationMs > maxDurationMs {
+			return apiErrUnprocessable(codeDurationTooLong,
+				fmt.Sprintf("a run may last at most %d ms", maxDurationMs))
 		}
 	case req.WordCount != nil:
-		if *req.WordCount <= 0 || *req.WordCount > maxWordCount {
+		if *req.WordCount <= 0 {
 			return apiErrUnprocessable(codeInvalidDimensions,
-				"wordCount is out of range")
+				"wordCount must be positive")
+		}
+		if *req.WordCount > maxWordCount {
+			return apiErrUnprocessable(codeWordCountTooLarge,
+				fmt.Sprintf("a run may ask for at most %d words", maxWordCount))
 		}
 	default:
 		return apiErrUnprocessable(codeInvalidDimensions,

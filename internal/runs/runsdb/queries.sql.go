@@ -172,6 +172,7 @@ SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
            'consistency', (server_metrics ->> 'consistency')::float8,
            'chars',       server_metrics -> 'chars',
            'quoteId',     run_quote_id(setup),
+           'adoptedFromRunId', run_adopted_from(setup),
            'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE id = $1 AND user_id = $2
@@ -262,6 +263,7 @@ SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
            'consistency', (server_metrics ->> 'consistency')::float8,
            'chars',       server_metrics -> 'chars',
            'quoteId',     run_quote_id(setup),
+           'adoptedFromRunId', run_adopted_from(setup),
            'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE user_id = $1
@@ -366,6 +368,7 @@ SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
            'consistency', (server_metrics ->> 'consistency')::float8,
            'chars',       server_metrics -> 'chars',
            'quoteId',     run_quote_id(setup),
+           'adoptedFromRunId', run_adopted_from(setup),
            'mods',        run_mods(setup))))::jsonb AS derived
 FROM runs
 WHERE user_id = $1
@@ -411,7 +414,15 @@ type ListRunsFirstRow struct {
 // setup/metrics documents: the SQL grade of the SERVER accuracy (run_grade —
 // the fenced mirror of the core's gradeOf), the consistency and chars slices
 // of server_metrics (absent until judged), and the run_quote_id / run_mods
-// selections of the setup snapshot the leaderboard projection already uses.
+// selections of the setup snapshot the leaderboard projection already uses,
+// plus run_adopted_from — the seeded-repeat marker, which is what lets a row
+// render "saved, not counted" without the client re-deriving eligibility.
+//
+// Every cell is a pure function of columns this table already holds. There is
+// deliberately NO join here, to quotes or to anything else: this is the profile
+// page's hot query with pinned plans on a 100k-run account (docs/PERFORMANCE.md
+// zone 9), and a quote's own text and length band are already served, cached by
+// id, by GET /quotes/{id} — the same call the quote board's heading makes.
 // One jsonb document rather than five columns so nullability stays a property
 // of the data (jsonb_strip_nulls) instead of five hand-annotated scan types.
 // Additive: every pre-existing column is untouched.

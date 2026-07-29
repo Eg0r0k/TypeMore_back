@@ -206,9 +206,28 @@ type runSpec struct {
 	// word count (the dimension rule 00008 enforces for them), and a setup whose
 	// textSource names that quote.
 	quote uuid.UUID
+	// adoptedFrom, when set, marks this run a SEEDED REPEAT: its text was taken
+	// from the run it names rather than generated, so it is stored and listed but
+	// ranked nowhere (migration 00017). Spliced into the setup document, which is
+	// where the client puts it and where SQL reads it from.
+	adoptedFrom uuid.UUID
 	// flags is written into validation.flags — an accepted run may carry them
 	// (docs/REPLAY.md, "Review policy") and that must not affect eligibility.
 	flags []string
+}
+
+// withAdoptedFrom splices `adoptedFromRunId` into a setup document, top level,
+// exactly as buildRunPayload does on the client. Done by decode/encode rather
+// than by string surgery so a malformed fixture fails here instead of at the
+// jsonb cast.
+func withAdoptedFrom(t *testing.T, setup string, runID uuid.UUID) string {
+	t.Helper()
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(setup), &doc))
+	doc["adoptedFromRunId"] = runID.String()
+	out, err := json.Marshal(doc)
+	require.NoError(t, err)
+	return string(out)
 }
 
 func (s *runSpec) withDefaults() {
@@ -255,6 +274,9 @@ func (s *runSpec) withDefaults() {
 func (b *board) addRun(spec runSpec) uuid.UUID {
 	b.t.Helper()
 	spec.withDefaults()
+	if spec.adoptedFrom != uuid.Nil {
+		spec.setup = withAdoptedFrom(b.t, spec.setup, spec.adoptedFrom)
+	}
 
 	flags, err := json.Marshal(spec.flags)
 	require.NoError(b.t, err)

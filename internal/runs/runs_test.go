@@ -333,6 +333,12 @@ func TestIngestQuoteRunRefusesAnUnusableReference(t *testing.T) {
 		"quoteId is absent":     `{"kind":"quote","quoteHash":"e42437c7"}`,
 		"quoteHash is absent":   `{"kind":"quote","quoteId":"` + quoteRunID + `"}`,
 		"kind is unknown":       `{"kind":"beatmap","quoteId":"` + quoteRunID + `"}`,
+		// Parseable but not CANONICAL. uuid.Parse accepts all three of these and
+		// run_quote_id's dashed pattern accepts none of them, so each would be a
+		// run the worker judges against its quote and the board files nowhere.
+		"quoteId is undashed": `{"kind":"quote","quoteId":"3f2a1b0c9d8e4c7b8a6f5e4d3c2b1a09","quoteHash":"e42437c7"}`,
+		"quoteId is braced":   `{"kind":"quote","quoteId":"{` + quoteRunID + `}","quoteHash":"e42437c7"}`,
+		"quoteId is a urn":    `{"kind":"quote","quoteId":"urn:uuid:` + quoteRunID + `","quoteHash":"e42437c7"}`,
 	} {
 		body := quoteRun()
 		body["setup"] = json.RawMessage(
@@ -348,6 +354,83 @@ func TestIngestQuoteRunRefusesAnUnusableReference(t *testing.T) {
 	unknown["setup"] = json.RawMessage(`{"config":{},"generation":{"textSource":` +
 		`{"kind":"quote","quoteId":"00000000-0000-4000-8000-000000000000","quoteHash":"deadbeef"}}}`)
 	requireStatus(t, h.post("/api/v1/runs", unknown), http.StatusAccepted)
+}
+
+// --- adoptedFromRunId: the seeded-repeat marker ---
+
+// The marker is optional, shape-checked, and stored verbatim inside the opaque
+// setup. It is deliberately NOT resolved: whether the run it names exists, or
+// belongs to this player, is not asked. The field can only ever cost its own
+// submitter a board slot (migration 00017), so there is nothing to gain by
+// forging it — which is exactly why the flag is spelled as the burden rather
+// than as the permission, and why a shape check is the whole of the validation.
+func TestIngestAdoptedFromRunIdIsOptionalAndShapeChecked(t *testing.T) {
+	h := newHarness(t)
+	h.login("adopted@example.com", "password-123", "Adopted")
+
+	// Absent — every run before this field existed, and nearly every run after.
+	requireStatus(t, h.post("/api/v1/runs", validRun()), http.StatusAccepted)
+
+	adopted := func(value string) map[string]any {
+		body := validRun()
+		body["setup"] = json.RawMessage(`{"adoptedFromRunId":` + value + `,` +
+			`"config":{"mode":"time"},"generation":{"mode":"time"},"declaration":{}}`)
+		return body
+	}
+
+	// Present and well-formed — accepted, and the run is saved like any other.
+	requireStatus(t, h.post("/api/v1/runs", adopted(`"`+quoteRunID+`"`)), http.StatusAccepted)
+
+	// A value SQL would read as NULL must not get in: the run would then count,
+	// silently, which is the one outcome the marker exists to prevent.
+	for name, value := range map[string]string{
+		"not a uuid":  `"the-run-i-raced"`,
+		"empty":       `""`,
+		"a number":    `7`,
+		"undashed":    `"3f2a1b0c9d8e4c7b8a6f5e4d3c2b1a09"`,
+		"an object":   `{"id":"` + quoteRunID + `"}`,
+		"whitespaced": `" ` + quoteRunID + `"`,
+	} {
+		resp := h.post("/api/v1/runs", adopted(value))
+		require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, name)
+		assert.Equal(t, "invalid_adopted_from", decodeInto[errResp](t, resp).Error, name)
+	}
+
+	// An explicit null is an absent field, not a malformed one.
+	requireStatus(t, h.post("/api/v1/runs", adopted(`null`)), http.StatusAccepted)
+}
+
+// The marker rides through to the run's own summary as a derived cell, so the
+// history row can say "saved, not counted" without re-deriving eligibility.
+func TestAdoptedRunSummaryCarriesTheMarker(t *testing.T) {
+	h := newHarness(t)
+	h.login("adopted-cell@example.com", "password-123", "AdoptedCell")
+
+	body := validRun()
+	body["setup"] = json.RawMessage(`{"adoptedFromRunId":"` + quoteRunID + `",` +
+		`"config":{"mode":"time"},"generation":{"mode":"time"},"declaration":{}}`)
+	requireStatus(t, h.post("/api/v1/runs", body), http.StatusAccepted)
+	requireStatus(t, h.post("/api/v1/runs", validRun()), http.StatusAccepted)
+
+	resp := h.get("/api/v1/runs")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var page struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&page))
+	require.Len(t, page.Runs, 2)
+
+	var marked, plain int
+	for _, row := range page.Runs {
+		if id, ok := row["adoptedFromRunId"]; ok {
+			marked++
+			assert.Equal(t, quoteRunID, id)
+			continue
+		}
+		plain++
+	}
+	assert.Equal(t, 1, marked, "exactly the run that named an origin carries the cell")
+	assert.Equal(t, 1, plain, "a fresh run carries no cell at all — absence is the default")
 }
 
 func TestIngestSeedOutOfRange(t *testing.T) {
