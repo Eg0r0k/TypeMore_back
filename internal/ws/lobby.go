@@ -181,11 +181,19 @@ func (r *Room) lobbyEntryOf() (lobbyEntry, bool) {
 		},
 	}
 	// Exactly one of the two dimensions, chosen by the mode (docs/PROTOCOL.md §5).
-	switch r.settings.Mode {
-	case protocol.ModeTime:
+	//
+	// The counted arm asks IsCounted rather than naming the modes, which is the
+	// same question the finish window, the AFK share rule and the per-word
+	// ceiling ask. Naming them is what went wrong here: the switch listed time
+	// and words, quote fell through both, and a quote room appeared in the public
+	// list carrying NEITHER dimension — a listing that says nothing about the
+	// length of the match it is advertising. The next counted mode would have
+	// done it again.
+	switch {
+	case r.settings.Mode == protocol.ModeTime:
 		duration := r.settings.DurationMs
 		view.Settings.DurationMs = &duration
-	case protocol.ModeWords:
+	case protocol.IsCounted(r.settings.Mode):
 		words := r.settings.WordCount
 		view.Settings.WordCount = &words
 	}

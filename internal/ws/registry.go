@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"log/slog"
@@ -39,6 +40,11 @@ type Registry struct {
 	// their (secret) resume token. It is a slice, not a map, so the token
 	// comparison on reconnect is a constant-time compare against each candidate.
 	graces []graceEntry
+	// persists tracks the in-flight match-capture writes. They are started off
+	// the room lock (the write must not hold up a room's return to the lobby)
+	// and they outlive the room that started it, so something process-wide has
+	// to own them or a shutdown races them.
+	persists sync.WaitGroup
 }
 
 // graceEntry links a live resume token to the room and seat awaiting reconnect.
@@ -124,6 +130,39 @@ func newRoomCode() string {
 // entry is case-insensitive (codes are stored upper-case).
 func normalizeCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+// goPersist runs a finished match's capture write on its own goroutine, owned by
+// the registry. The write is deliberately off the room lock and deliberately on
+// a background context with its own timeout: a match that ended as the process
+// is shutting down is exactly the capture worth keeping, so cancelling it with
+// the server context would throw away the thing it exists to save. What was
+// missing is the other half — something to wait on, so the process does not exit
+// out from under a half-written match.
+func (reg *Registry) goPersist(write func()) {
+	reg.persists.Add(1)
+	go func() {
+		defer reg.persists.Done()
+		write()
+	}()
+}
+
+// WaitForPersists blocks until every in-flight match-capture write has finished,
+// or until ctx is done. It reports whether they all completed; a false means the
+// deadline arrived first and some capture may be missing, which is worth a log
+// line rather than silence.
+func (reg *Registry) WaitForPersists(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		reg.persists.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // addGrace registers a seat's resume token so a reconnect can find its room and

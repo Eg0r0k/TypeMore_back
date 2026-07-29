@@ -93,6 +93,15 @@ func NewHandler(log *slog.Logger, allowedOrigins []string, identify func(*http.R
 	}
 }
 
+// WaitForPersists blocks until every in-flight match-capture write has finished
+// or ctx is done, reporting whether they all completed. Call it during shutdown,
+// after the HTTP server has stopped accepting connections and before the
+// database pool closes: a match that ends as the process is going down is
+// exactly the capture worth keeping.
+func (h *Handler) WaitForPersists(ctx context.Context) bool {
+	return h.reg.WaitForPersists(ctx)
+}
+
 // Option tunes a Handler's registry. The match-timing options exist mainly so
 // tests can drive the deadline and reconnect-grace paths without real-time waits.
 type Option func(*matchTiming)

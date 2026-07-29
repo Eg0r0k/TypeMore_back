@@ -80,6 +80,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Registered here and therefore LAST to run: every defer below is registered
+	// after it and unwinds first, so the replay worker's drain and the room
+	// registry's final persists all still have a database underneath them.
+	defer pool.Close()
 	// Build the auth domain. One Postgres store backs both the general store and
 	// (this phase) the session store; email goes through SMTP or, when unset,
 	// the dev log sender. See internal/auth for the session-storage deviation.
@@ -283,6 +287,18 @@ func run() error {
 		return "", "", false
 	}, wspg.New(pool))
 	router.Handle("/ws", wsHandler)
+	// A match that ends while the process is going down is exactly the capture
+	// worth keeping, so its write runs on a background context of its own and is
+	// waited for here instead. Registered after pool.Close, so it unwinds first
+	// and the write still has a database.
+	defer func() {
+		wait, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
+		defer cancel()
+		if !wsHandler.WaitForPersists(wait) {
+			logger.Warn("match captures still writing at shutdown deadline; some may be lost",
+				"timeout", cfg.ShutdownTimeout)
+		}
+	}()
 
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())

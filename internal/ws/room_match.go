@@ -357,7 +357,9 @@ func (r *Room) endMatchLocked(reason string) {
 
 	snap := r.snapshotLocked(m)
 	if r.store != nil {
-		go r.persist(snap)
+		// Owned by the registry, not by this goroutine and not by this room: the
+		// write outlives both, and a shutdown has to be able to wait for it.
+		r.reg.goPersist(func() { r.persist(snap) })
 	}
 
 	end := protocol.MatchEnd{Type: protocol.TypeMatchEnd, MatchID: m.id, Reason: reason}
