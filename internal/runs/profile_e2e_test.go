@@ -488,14 +488,21 @@ func TestKeyboardProjectionReversesOnDemotion(t *testing.T) {
 	h := newHarness(t)
 	h.login("kbd-demote@example.com", "correct horse battery", "kbddemote")
 
-	requireStatus(t, h.post("/api/v1/runs", goldenPayload(t, "words-clean")), http.StatusAccepted)
+	// A run that raises ONE weak flag: accepted under the normal threshold, and
+	// demotable by lowering the threshold under its suspicion. A flagless run
+	// cannot be demoted by any threshold, because no judge routes a run with
+	// nothing against it — so the fixture has to carry the evidence it is later
+	// judged harshly on.
+	requireStatus(t, h.post("/api/v1/runs", goldenPayload(t, "words-one-fast-interval")), http.StatusAccepted)
 	h.replayOnce(t)
 	before := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
 	require.NotEmpty(t, before.Keys)
 
-	// A zero threshold flags every run (suspicion >= threshold), demoting it.
-	// The version moves too, which is what makes the pass claim the run at all.
-	h.revalidateOnce(t, policytest.NewFakeVersioned("990", 0))
+	// A threshold under that flag's contribution flags the run, demoting it. The
+	// version has to move FORWARD past the fake's own — revalidate claims runs
+	// whose policy_version is BEHIND the judge's, so a lower number claims
+	// nothing and the pass would silently do no work at all.
+	h.revalidateOnce(t, policytest.NewFakeVersioned("1000", 1e-9))
 
 	demoted := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
 	for _, k := range demoted.Keys {
@@ -505,7 +512,7 @@ func TestKeyboardProjectionReversesOnDemotion(t *testing.T) {
 
 	// A later version with the normal threshold re-accepts it; the contribution
 	// returns.
-	h.revalidateOnce(t, policytest.NewFakeVersioned("991", policytest.FakeThreshold))
+	h.revalidateOnce(t, policytest.NewFakeVersioned("1001", policytest.FakeThreshold))
 	restored := decodeInto[keyboardResp](t, h.get("/api/v1/profile/keyboard"))
 	assert.Equal(t, before, restored, "re-promotion restores the exact contribution")
 }
