@@ -34,8 +34,9 @@ graph LR
   receive time, appends it to that player's authoritative capture, and relays it
   as `peer_batch` to the other seats (lossless, per-player order preserved). A
   mid-match drop keeps the seat for a 15 s grace window, buffering the peer
-  backlog; a `hello` with the seat's `resumeToken` replays the backlog and
-  resumes, else the seat is `dnf`'d on expiry (see PROTOCOL.md §6).
+  backlog and exempting it from the AFK rules for the duration; a `hello` with
+  the seat's `resumeToken` replays the backlog and resumes (restarting its
+  trailing-AFK clock), else the seat is `dnf`'d on expiry (see PROTOCOL.md §6).
 - **Results.** A client sends `finish` when done; a finished player then
   **waits** while the others race. A run that ends on a freemod rule (master /
   expert miss, the MinSpeed floor) sends the SAME `finish` — the protocol treats
@@ -48,7 +49,10 @@ graph LR
   feels — walk away and you are out), and in words mode a seat whose **idle
   share** of its elapsed window reaches 60 % is `dnf`'d too (one-second buckets
   on the server's receive clock, judged after a 10 s warm-up) — that one catches
-  the seat that never really played. Both replaced the old fixed 30 s idle
+  the seat that never really played. Neither runs on a seat inside its
+  **reconnect grace window**: the drop is the grace timer's to resolve, and
+  judging it twice left the reconnect window with no time in it (PROTOCOL.md §6).
+  Both replaced the old fixed 30 s idle
   timer, and the **first** finish still opens a **120 s** window that `dnf`'s the
   stragglers at close. The end is
   announced by a single `match_end` frame carrying the frozen roster's statuses

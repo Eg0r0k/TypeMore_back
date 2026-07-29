@@ -172,26 +172,48 @@ func (r *Room) leave(sess *session) {
 }
 
 // disconnect handles a connection drop (readLoop teardown). The seat survives
-// in ANY phase: it enters the reconnect grace window and the caller registers
-// its resume token. Mid-match the drop is announced (peer_status disconnected)
+// in ANY phase: it enters the reconnect grace window, whose resume token is
+// registered here. Mid-match the drop is announced (peer_status disconnected)
 // and the peer-relay backlog starts buffering; a lobby-phase drop is silent on
 // the wire — the seat simply stays, keeping its ready flag and (if host) the
 // host role until the grace expires.
-func (r *Room) disconnect(sess *session) (bool, *seat) {
+//
+// The token is registered BEFORE the expiry timer is armed, and both belong to
+// this function rather than being split across it and its caller. Armed first,
+// the timer could resolve the seat — dnf it, remove it, drop a grace entry that
+// did not exist yet — and the registration would then land on a seat that was
+// already gone, leaving a claimable token pointing at nothing.
+//
+// The two locks are taken in sequence, never nested: Registry.mu is above
+// Room.mu in the ordering (see Registry), so it must not be acquired inside the
+// room lock. Between the two sections the seat is disconnected with no timer
+// armed, which is harmless — a reconnect arriving there takes the seat live and
+// the re-check below then declines to arm anything.
+func (r *Room) disconnect(sess *session) bool {
 	r.mu.Lock()
 	seat := r.findSeatLocked(sess)
 	if seat == nil {
 		r.mu.Unlock()
-		return false, nil
+		return false
 	}
 	seat.sess = nil
 	seat.disconnected = true
-	seat.grace = time.AfterFunc(r.reg.timing.grace, func() { r.onGraceExpire(seat) })
 	if r.match != nil && seat.status == seatActive {
 		r.broadcastPeerStatusLocked(seat.playerID, protocol.StatusDisconnected)
 	}
 	r.mu.Unlock()
-	return true, seat
+
+	r.reg.addGrace(seat.resumeToken, r, seat)
+
+	r.mu.Lock()
+	// reattach binds the session under the room lock and only clears
+	// `disconnected` once the backlog has drained, so sess is what says the seat
+	// is already back.
+	if seat.disconnected && seat.sess == nil {
+		seat.grace = time.AfterFunc(r.reg.timing.grace, func() { r.onGraceExpire(seat) })
+	}
+	r.mu.Unlock()
+	return true
 }
 
 // reattach re-binds a fresh session to a disconnected seat in any phase. It
@@ -233,6 +255,15 @@ func (r *Room) reattach(ctx context.Context, sess *session, seat *seat) bool {
 		if len(seat.backlog) == 0 {
 			seat.disconnected = false
 			if midMatch {
+				// The seat re-enters the AFK sweep here, so the trailing clock
+				// restarts here too. Without this the outage would be spent
+				// retroactively: a player back after 14 s of a 15 s window would
+				// have one second to produce a batch before the sweep called
+				// them silent, which is the reconnect window collapsing again by
+				// another route. Coming back IS evidence of being at the
+				// keyboard; the share rule still counts the idle buckets, so the
+				// outage is not forgotten, only stopped from being fatal.
+				seat.lastBatchMs = nowMs()
 				r.broadcastPeerStatusLocked(seat.playerID, protocol.StatusReconnected)
 			}
 			r.mu.Unlock()

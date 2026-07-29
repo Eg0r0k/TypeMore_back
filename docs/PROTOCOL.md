@@ -756,8 +756,18 @@ this phase; the wall-clock check is deferred to the replay worker.
   - **Finish window** (`FINISH_WINDOW_MS` = 120 000): when the **first** seat
     finishes a words-mode match, a 120 s window starts; at close every
     still-racing seat is `dnf`'d and the match ends with reason `finish_window`.
-  - Both cancel at match end; a **graced** (disconnected) racing seat is **not**
-    exempt — its grace-`dnf` or the AFK rule, whichever fires first.
+  - Both cancel at match end. A **graced** (disconnected) racing seat is
+    **exempt from both** for as long as its grace window lasts: the drop is
+    already being resolved by the grace timer, on its own clock, and running the
+    AFK rules over it as well left the reconnect window with no time in it. Grace
+    and `AfkTrailingMs` are both 15 s, and the trailing rule counts from the last
+    accepted batch rather than from the drop — so the sweep reached a dropped
+    seat at or before its grace expired, earlier by however long the connection
+    had been failing before the socket died. A seat that never resumes is still
+    `dnf`'d, by the grace timer (§6). A seat that **does** resume has its trailing
+    clock restarted at the resume: the outage is not charged retroactively
+    against a player who is back and typing. The share rule keeps counting the
+    idle buckets, so the absence still shows in `afkShare`.
 - **Mid-match reconnect visibility — IMPLEMENTED.** While a match runs,
   `room_state` carries `match: { matchId, goAtServerMs }` (absent otherwise). A
   client whose **page reloaded** keeps its seat via the `resumeToken` but has lost

@@ -137,8 +137,10 @@ func (r *Room) startMatch(sess *session) {
 	})
 	// AFK sweep (§6): once per second, dnf every racing seat that has gone
 	// silent (trailing rule, both modes) or that has been idle for most of the
-	// window (share rule, words only). A graced seat is not exempt: a
-	// disconnected player is the most AFK a player gets.
+	// window (share rule, words only). A seat inside its reconnect grace window
+	// is skipped: it is the grace timer's to resolve, and having both clocks run
+	// on it left the reconnect window with no time in it at all. A drop that is
+	// never resumed still ends in dnf, from the grace timer instead of here.
 	m.afkSweep = time.NewTicker(protocol.AfkBucketMs * time.Millisecond)
 	m.afkStop = make(chan struct{})
 	go r.runAfkSweep(id, m.afkSweep.C, m.afkStop)

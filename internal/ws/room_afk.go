@@ -55,6 +55,16 @@ func (r *Room) runAfkSweep(matchID string, tick <-chan time.Time, stop <-chan st
 //     player is not at the keyboard, whatever the mode's end condition is.
 //   - SHARE: idle for at least afkKickShare of the elapsed window, words mode
 //     only, and only once the window is old enough to judge (afkWarmupMs).
+//
+// A seat inside its reconnect grace window is skipped by BOTH. It is already
+// being resolved by the grace timer, on its own clock, and sweeping it as well
+// meant the reconnect window did not exist: grace and afkTrailingMs are both
+// 15 s, so the sweep reached a dropped seat at lastBatchMs + 15 s while grace
+// only expired at disconnectedAt + 15 s — always at or before the grace it was
+// supposed to be inside, and earlier by however long the connection had been
+// failing before the socket actually died. Nothing changes for a player who
+// never comes back: grace expires and dnf's the seat through the normal
+// disconnect path.
 func (r *Room) sweepAfk(matchID string) bool {
 	r.mu.Lock()
 	m := r.match
@@ -68,6 +78,11 @@ func (r *Room) sweepAfk(matchID string) bool {
 	kicked := false
 	for _, s := range m.roster {
 		if s.status != seatActive {
+			continue
+		}
+		// In the grace window the seat belongs to the grace timer. See the
+		// note above: judging it here is what collapsed the reconnect window.
+		if s.disconnected {
 			continue
 		}
 		// lastBatchMs starts at "go", so a seat that never typed is measured

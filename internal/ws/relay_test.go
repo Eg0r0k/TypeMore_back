@@ -132,6 +132,9 @@ type match struct {
 	tokens  []string
 	matchID string
 	seed    int64
+	// goAtMs is the countdown's t=0 on the server clock. The AFK sweep measures
+	// everything from it, so a test about the sweep has to wait for it.
+	goAtMs int64
 }
 
 // startMatch builds an n-player room (player 0 is host) and starts a match,
@@ -202,6 +205,7 @@ func startMatchWith(t *testing.T, ctx context.Context, srv *httptest.Server, n i
 		if i == 0 {
 			m.matchID = cd.MatchID
 			m.seed = cd.Seed
+			m.goAtMs = cd.GoAtServerMs
 		} else {
 			require.Equal(t, m.matchID, cd.MatchID, "every seat gets the same matchId")
 			require.Equal(t, m.seed, cd.Seed, "every seat gets the same seed")

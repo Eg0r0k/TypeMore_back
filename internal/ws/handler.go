@@ -205,12 +205,11 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, displayName, 
 	reason := s.readLoop(ctx)
 
 	// On teardown, hand the seat to the room: in any phase it enters the
-	// reconnect grace window and we register its resume token. Done before
-	// closing outbound so a graced seat is never sent to on a closed queue.
+	// reconnect grace window, and disconnect registers the resume token and arms
+	// the expiry itself — in that order. Done before closing outbound so a
+	// graced seat is never sent to on a closed queue.
 	if s.room != nil {
-		if grace, seat := s.room.disconnect(s); grace {
-			h.reg.addGrace(seat.resumeToken, s.room, seat)
-		}
+		s.room.disconnect(s)
 	}
 
 	// Orderly teardown: closing outbound lets the writer flush any already-queued
