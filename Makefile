@@ -11,6 +11,7 @@
 #   make lint        run golangci-lint (see `make tools`)
 #   make build       build the binary into ./bin with version metadata
 #   make core-bundle re-vendor the TS core bundle from the frontend checkout
+#   make bundle-gate fail if the vendored bundle is stale against that checkout
 #   make vectors     regenerate the replay golden vectors (read the diff!)
 #   make tools       install golangci-lint into your Go bin
 #   make calibrate   dry-run the replay review policy over stored runs
@@ -31,7 +32,13 @@ CMD    := ./cmd/server
 DATABASE_URL ?= postgres://typemore:typemore@localhost:5432/typemore?sslmode=disable
 
 # Frontend checkout used by `make core-bundle`. Defaults to a sibling directory.
+# TestVendoredBundleIsFresh resolves the same path (TYPEMORE_FRONTEND overrides
+# it there), so the gate checks the checkout the rebuild would read.
 FRONTEND ?= ../TypeMore_front
+
+# The esbuild argument list for `make core-bundle`, read from the file the
+# freshness gate reads. One argument per line, #-comments and blanks stripped.
+ESBUILD_ARGS := $(shell sed -e 's/#.*//' internal/replay/corejs/esbuild.args)
 
 # Windows produces .exe binaries; keep the output runnable on both OSes.
 ifeq ($(OS),Windows_NT)
@@ -50,7 +57,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle bundle-gate vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -74,14 +81,21 @@ build:
 
 ## core-bundle: re-vendor internal/replay/corejs/core.bundle.js from $(FRONTEND)
 # The bundler comes from the frontend's own node_modules, so its version is
-# pinned by that lockfile rather than by whatever is on this machine. See
-# internal/replay/corejs/README.md before changing the flags.
+# pinned by that lockfile rather than by whatever is on this machine. The flags
+# live in corejs/esbuild.args, which the freshness gate reads too — see
+# internal/replay/corejs/README.md before changing them.
 core-bundle:
-	cd $(FRONTEND) && pnpm exec esbuild src/shared/core/index.ts \
-		--bundle --format=iife --global-name=TypeMoreCore --target=es2017 \
-		--platform=browser --legal-comments=none \
+	cd $(FRONTEND) && pnpm exec esbuild $(ESBUILD_ARGS) \
 		--outfile="$(CURDIR)/internal/replay/corejs/core.bundle.js"
 	go test ./internal/replay/
+
+## bundle-gate: fail if the vendored core bundle is not what $(FRONTEND) compiles to
+# Rebuilds into a temp file and diffs — never writes the vendored artifact. The
+# strict flag turns "the toolchain is missing" into a failure, so a CI job that
+# has the frontend cannot pass this by accident; a job WITHOUT the frontend runs
+# the test through `make test` instead, where it skips with a stated reason.
+bundle-gate:
+	TYPEMORE_BUNDLE_GATE=required go test ./internal/replay/ -run TestVendoredBundleIsFresh -count=1 -v
 
 ## vectors: regenerate the replay golden vectors (ONLY after a deliberate bundle change)
 # The vectors pin the scoring contract: `make core-bundle` fails the test suite

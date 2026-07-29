@@ -1,3 +1,4 @@
+"use strict";
 var TypeMoreCore = (() => {
   var __defProp = Object.defineProperty;
   var __defProps = Object.defineProperties;
@@ -71,12 +72,13 @@ var TypeMoreCore = (() => {
     }, "return" in obj && method("return"), it;
   };
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/index.ts
+  // src/shared/core/index.ts
   var index_exports = {};
   __export(index_exports, {
     CODE_MAX_EXTRA_CHARS: () => CODE_MAX_EXTRA_CHARS,
     DEFAULT_MAX_EXTRA_CHARS: () => DEFAULT_MAX_EXTRA_CHARS,
     DEFAULT_THRESHOLDS: () => DEFAULT_THRESHOLDS,
+    EQUIVALENCE_GROUPS: () => EQUIVALENCE_GROUPS,
     EVENT_LOG_VERSION: () => EVENT_LOG_VERSION,
     EVENT_LOG_VERSION_TELEMETRY: () => EVENT_LOG_VERSION_TELEMETRY,
     GameCore: () => GameCore,
@@ -93,6 +95,7 @@ var TypeMoreCore = (() => {
     afkOf: () => afkOf,
     afkStatsOf: () => afkStatsOf,
     analyzeLog: () => analyzeLog,
+    areGraphemesEquivalent: () => areGraphemesEquivalent,
     asMs: () => asMs,
     asSeq: () => asSeq,
     bufferOf: () => bufferOf,
@@ -117,10 +120,12 @@ var TypeMoreCore = (() => {
     initialState: () => initialState,
     initialStateOf: () => initialStateOf,
     insertEvent: () => insertEvent,
+    isSpaceGrapheme: () => isSpaceGrapheme,
     isTelemetryEvent: () => isTelemetryEvent,
     keyDownEvent: () => keyDownEvent,
     keyUpEvent: () => keyUpEvent,
     kogasa: () => kogasa,
+    makeNormalizer: () => makeNormalizer,
     makeSeedContext: () => makeSeedContext,
     metricsFrom: () => metricsFrom,
     metricsOf: () => metricsOf,
@@ -129,6 +134,7 @@ var TypeMoreCore = (() => {
     mulberry32: () => mulberry32,
     netCharsOf: () => netCharsOf,
     nextTickDelay: () => nextTickDelay,
+    normalizeGrapheme: () => normalizeGrapheme,
     parseEventBatch: () => parseEventBatch,
     parseGameEvent: () => parseGameEvent,
     progressOf: () => progressOf,
@@ -143,13 +149,17 @@ var TypeMoreCore = (() => {
     settle: () => settle,
     sortEvents: () => sortEvents,
     targetCharsOf: () => targetCharsOf,
+    timelineFrom: () => timelineFrom,
     timelineOf: () => timelineOf,
     totalTargetCharsOf: () => totalTargetCharsOf,
     validateLog: () => validateLog,
+    wordHistory: () => wordHistory,
+    wordHistoryFrom: () => wordHistoryFrom,
+    wordHistoryOf: () => wordHistoryOf,
     wpmOverTime: () => wpmOverTime
   });
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/events.ts
+  // src/shared/core/events.ts
   var asSeq = (n) => n;
   var asMs = (n) => n;
   var isTelemetryEvent = (event) => event.kind === "down" || event.kind === "up";
@@ -199,6 +209,82 @@ var TypeMoreCore = (() => {
     }
     return events;
   }
+
+  // src/shared/core/normalize.ts
+  var SPACE_CHARS = [
+    " ",
+    // regular space
+    "\xA0",
+    // no-break space
+    "\u1680",
+    // ogham space mark
+    "\u2002",
+    // en space
+    "\u2003",
+    // em space
+    "\u2004",
+    // three-per-em space
+    "\u2007",
+    // figure space
+    "\u2008",
+    // punctuation space
+    "\u2009",
+    // thin space
+    "\u200A",
+    // hair space
+    "\u200B",
+    // zero width space
+    "\u202F",
+    // narrow no-break space
+    "\u3000",
+    // ideographic space (CJK IME)
+    "\uFEFF"
+    // zero width no-break space
+  ];
+  var EQUIVALENCE_GROUPS = [
+    { id: "apostrophes", chars: ["'", "\u2019", "\u2018", "\u02BC", "\u05F3", "\u02BB", "\u1FBD"] },
+    { id: "double-quotes", chars: ['"', "\u201D", "\u201C", "\u201E"] },
+    { id: "dashes", chars: ["-", "\u2013", "\u2014", "\u2010", "\u2011"] },
+    { id: "commas", chars: [",", "\u201A"] },
+    { id: "spaces", chars: SPACE_CHARS, canonical: " " },
+    // Latin 'e' included like monkeytype: a latin layout mid-cyrillic word is a
+    // layout slip, not a different letter.
+    { id: "ru-yo", chars: ["\u0451", "\u0435", "e"], languages: ["russian"] }
+  ];
+  var appliesTo = (group, language) => {
+    if (group.languages === void 0) return true;
+    if (language === void 0) return false;
+    return group.languages.some((name) => language === name || language.startsWith(`${name}_`));
+  };
+  function makeNormalizer(groups) {
+    const byChar = /* @__PURE__ */ new Map();
+    for (const group of groups) {
+      for (const char of group.chars) {
+        const list = byChar.get(char);
+        if (list) list.push(group);
+        else byChar.set(char, [group]);
+      }
+    }
+    const areEquivalent = (a, b, language) => {
+      if (a === b) return true;
+      const candidates = byChar.get(a);
+      if (candidates === void 0) return false;
+      return candidates.some((group) => group.chars.includes(b) && appliesTo(group, language));
+    };
+    const normalize = (typed, expected, language) => {
+      var _a, _b;
+      if (typed === expected) return typed;
+      if (expected !== void 0 && areEquivalent(typed, expected, language)) return expected;
+      const fallback = (_a = byChar.get(typed)) == null ? void 0 : _a.find((group) => group.canonical !== void 0 && appliesTo(group, language));
+      return (_b = fallback == null ? void 0 : fallback.canonical) != null ? _b : typed;
+    };
+    return { areEquivalent, normalize };
+  }
+  var defaultNormalizer = makeNormalizer(EQUIVALENCE_GROUPS);
+  var areGraphemesEquivalent = defaultNormalizer.areEquivalent;
+  var normalizeGrapheme = defaultNormalizer.normalize;
+  var SPACE_SET = new Set(SPACE_CHARS);
+  var isSpaceGrapheme = (grapheme) => SPACE_SET.has(grapheme);
 
   // node_modules/.pnpm/neverthrow@8.2.0/node_modules/neverthrow/dist/index.es.js
   var defaultErrorConfig = {
@@ -676,7 +762,7 @@ var TypeMoreCore = (() => {
   };
   var fromThrowable = Result.fromThrowable;
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/words.ts
+  // src/shared/core/words.ts
   function mulberry32(seed) {
     let a = seed >>> 0;
     return () => {
@@ -806,7 +892,7 @@ var TypeMoreCore = (() => {
     return ok({ words, context, dictName: dict.name });
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/game-core.ts
+  // src/shared/core/game-core.ts
   var DEFAULT_MAX_EXTRA_CHARS = 20;
   var CODE_MAX_EXTRA_CHARS = 40;
   function initialState() {
@@ -1352,7 +1438,7 @@ var TypeMoreCore = (() => {
     }
   };
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/keyboard.ts
+  // src/shared/core/keyboard.ts
   var KEY_INTERVAL_CAP_MS = 2e3;
   function charObservationsOf(ctx, events) {
     var _a;
@@ -1407,7 +1493,7 @@ var TypeMoreCore = (() => {
     }));
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/stats.ts
+  // src/shared/core/stats.ts
   function analyzeLog(ctx, events) {
     var _a;
     let state = initialStateOf(ctx);
@@ -1418,6 +1504,7 @@ var TypeMoreCore = (() => {
     const wordLastT = [];
     const keyTimes = [];
     const keyCorrect = [];
+    const keyWordIndex = [];
     const commitTimes = [];
     events = events.some(isTelemetryEvent) ? events.filter((e) => !isTelemetryEvent(e)) : events;
     for (const event of sortEvents(events)) {
@@ -1437,6 +1524,7 @@ var TypeMoreCore = (() => {
           if (correct) correctKeys++;
           keyTimes.push(event.t);
           keyCorrect.push(correct);
+          keyWordIndex.push(wordIndex);
         }
         if (wordFirstT[wordIndex] === void 0) wordFirstT[wordIndex] = event.t;
         wordLastT[wordIndex] = event.t;
@@ -1459,6 +1547,7 @@ var TypeMoreCore = (() => {
       wordLastT,
       keyTimes,
       keyCorrect,
+      keyWordIndex,
       commitTimes
     };
   }
@@ -1577,8 +1666,10 @@ var TypeMoreCore = (() => {
     return computeMetrics(ctx, core.events, end);
   }
   function wpmOverTime(ctx, events, endMs) {
+    return timelineFrom(ctx, analyzeLog(ctx, events), endMs);
+  }
+  function timelineFrom(ctx, analysis, endMs) {
     var _a, _b;
-    const analysis = analyzeLog(ctx, events);
     const startedAt = analysis.finalState.startedAt;
     if (startedAt === null) return [];
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
@@ -1674,6 +1765,32 @@ var TypeMoreCore = (() => {
     }
     return out;
   }
+  function wordHistory(ctx, events) {
+    return wordHistoryFrom(ctx, analyzeLog(ctx, events));
+  }
+  function wordHistoryFrom(ctx, analysis) {
+    var _a, _b;
+    const state = analysis.finalState;
+    const input = state.input;
+    const committed = Math.min(state.wordIndex, ctx.words.length);
+    const inFlight = state.wordIndex < ctx.words.length && ((_a = input[state.wordIndex]) != null ? _a : "") !== "" ? 1 : 0;
+    const out = [];
+    for (let i = 0; i < committed + inFlight; i++) {
+      const typed = (_b = input[i]) != null ? _b : "";
+      const first = analysis.wordFirstT[i];
+      const last = analysis.wordLastT[i];
+      let burst;
+      if (first !== void 0 && last !== void 0 && typed.length > 0) {
+        const durationMs = last - first;
+        burst = durationMs > 0 ? typed.length / 5 / (durationMs / 6e4) : Infinity;
+      }
+      out.push({ target: ctx.words[i], typed, committed: i < committed, burst });
+    }
+    return out;
+  }
+  function wordHistoryOf(core) {
+    return wordHistory({ config: core.config, words: core.words }, core.events);
+  }
   function timelineOf(core, nowMs) {
     var _a, _b, _c;
     const ctx = { config: core.config, words: core.words };
@@ -1715,7 +1832,7 @@ var TypeMoreCore = (() => {
     return afkOf(ctx, core.events, (_c = (_b = (_a = core.state.finishedAt) != null ? _a : nowMs) != null ? _b : core.state.startedAt) != null ? _c : asMs(0));
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/mods.ts
+  // src/shared/core/mods.ts
   var MOD_MULTIPLIER_CAP = 4;
   var MOD_MULTIPLIERS = {
     punctuation: 1.1,
@@ -1761,7 +1878,7 @@ var TypeMoreCore = (() => {
     return Math.min(product, MOD_MULTIPLIER_CAP);
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/score.ts
+  // src/shared/core/score.ts
   var SCORE_VERSION = 1;
   var SCORE_VERSION_2 = 2;
   var POINTS_PER_KEYSTROKE = 10;
@@ -1938,14 +2055,14 @@ var TypeMoreCore = (() => {
     return finalizeScoreV2(state.base, state.comboPeak, metrics, ctx.config.mode, modMultiplier);
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/timer.ts
+  // src/shared/core/timer.ts
   var TICK_INTERVAL_MS = 1e3;
   function nextTickDelay(elapsedMs, tickIndex, durationMs) {
     const targetElapsed = Math.min(tickIndex * TICK_INTERVAL_MS, durationMs);
     return Math.max(0, targetElapsed - elapsedMs);
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/validate.ts
+  // src/shared/core/validate.ts
   var DEFAULT_THRESHOLDS = {
     minKeyIntervalMs: 15,
     uniformToleranceMs: 2,
@@ -2122,7 +2239,7 @@ var TypeMoreCore = (() => {
     return ok({ verdict: "valid", flags, metrics });
   }
 
-  // ../../../A946~1/AppData/Local/Temp/claude/core-vendor/src/shared/core/parse.ts
+  // src/shared/core/parse.ts
   var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
   var isValidSeq = (value) => typeof value === "number" && Number.isInteger(value) && value >= 1;
   var isValidT = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;

@@ -1,0 +1,22 @@
+# The esbuild invocation that produces core.bundle.js — the ONE copy of it.
+#
+# Both `make core-bundle` and TestVendoredBundleIsFresh read this file, so the
+# rebuild and the freshness gate cannot drift apart: a flag changed here changes
+# what is vendored AND what the gate expects, in the same commit.
+#
+# Everything except --outfile lives here (the target writes the vendored path,
+# the gate writes a temp file). Paths are relative to the frontend checkout —
+# both callers run esbuild with that as the working directory, which is what
+# keeps the module-path comments esbuild emits identical between them.
+#
+# Blank lines and #-comments are stripped; every other line is one argument.
+# See README.md in this directory for WHY each flag is what it is.
+
+src/shared/core/index.ts
+
+--bundle
+--format=iife
+--global-name=TypeMoreCore
+--target=es2017
+--platform=browser
+--legal-comments=none
