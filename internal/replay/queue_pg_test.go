@@ -86,7 +86,15 @@ func newPool(t *testing.T) *pgxpool.Pool {
 // --- golden-vector payloads (shared with the in-package tests) --------------
 
 type vectorFile struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// Expect is the verdict the vector was generated with — the same fields the
+	// in-package suite asserts, so a test here judges against the vector's own
+	// recorded expectation rather than a second copy of it.
+	Expect struct {
+		Status  string   `json:"status"`
+		Verdict string   `json:"verdict"`
+		Flags   []string `json:"flags"`
+	} `json:"expect"`
 	Payload struct {
 		Mode          string          `json:"mode"`
 		DurationMs    *int32          `json:"durationMs"`
@@ -137,6 +145,14 @@ func seedUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 // the ingest path would.
 func insertPending(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, v vectorFile) uuid.UUID {
 	t.Helper()
+	return insertPendingLog(t, pool, userID, v, v.Payload.Log)
+}
+
+// insertPendingLog is insertPending with the event log substituted — for a
+// fixture that varies the LOG (its wire version, its telemetry) while keeping
+// the rest of the submission identical.
+func insertPendingLog(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, v vectorFile, log json.RawMessage) uuid.UUID {
+	t.Helper()
 	p := v.Payload
 	var durationMs, wordCount *int32
 	if p.Mode == "time" {
@@ -157,7 +173,7 @@ func insertPending(t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, v vectorF
 		wordCount = &gen.Generation.Length
 	}
 
-	logJSON, err := json.Marshal(p.Log)
+	logJSON, err := json.Marshal(log)
 	require.NoError(t, err)
 	gz := gzipBytes(t, logJSON)
 
