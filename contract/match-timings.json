@@ -1,0 +1,13 @@
+{
+  "$comment": "Generated from the Go constants — do not edit by hand; run `make contract`. Consumers must assert their own thresholds sit strictly INSIDE these: a client that gives up later than the server shows a player still racing after the server dnf'd them.",
+  "source": "internal/protocol/protocol.go, internal/ws/room_match.go",
+  "match": {
+    "afkTrailingMs": 15000,
+    "afkKickShare": 0.6,
+    "afkWarmupMs": 10000,
+    "afkBucketMs": 1000,
+    "finishWindowMs": 120000,
+    "graceMs": 15000,
+    "countdownLeadMs": 5000
+  }
+}

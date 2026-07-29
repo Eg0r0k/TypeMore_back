@@ -54,7 +54,10 @@ graph LR
   judging it twice left the reconnect window with no time in it (PROTOCOL.md §6).
   Both replaced the old fixed 30 s idle
   timer, and the **first** finish still opens a **120 s** window that `dnf`'s the
-  stragglers at close. The end is
+  stragglers at close. Every number in this paragraph is asserted by
+  `TestMatchTimingsAreTheDocumentedValues` and published for the client to read
+  in [`contract/match-timings.json`](../contract/README.md) — the client's own
+  thresholds have to sit strictly inside them. The end is
   announced by a single `match_end` frame carrying the frozen roster's statuses
   (plus each seat's measured `afkMs`/`afkShare`) — clients enter results only on
   `match_end` (a graced seat receives it via its backlog on resume, see

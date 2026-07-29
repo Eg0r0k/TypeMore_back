@@ -12,6 +12,7 @@
 #   make build       build the binary into ./bin with version metadata
 #   make core-bundle re-vendor the TS core bundle from the frontend checkout
 #   make bundle-gate fail if the vendored bundle is stale against that checkout
+#   make contract    regenerate the cross-repo match-timing contract artifact
 #   make vectors     regenerate the replay golden vectors (read the diff!)
 #   make tools       install golangci-lint into your Go bin
 #   make calibrate   dry-run the replay review policy over stored runs
@@ -57,7 +58,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT) \
 	-X $(PKG)/internal/platform.BuildDate=$(DATE)
 
-.PHONY: run test test-race lint build tidy sqlc core-bundle bundle-gate vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
+.PHONY: run test test-race lint build tidy sqlc core-bundle bundle-gate contract vectors calibrate revalidate rebuild-leaderboards leaderboards import-quotes ban unban bans ban-show load bench load-plans migrate-up migrate-down migrate-status migrate-create tools help
 
 ## run: start the server locally
 run:
@@ -96,6 +97,15 @@ core-bundle:
 # the test through `make test` instead, where it skips with a stated reason.
 bundle-gate:
 	TYPEMORE_BUNDLE_GATE=required go test ./internal/replay/ -run TestVendoredBundleIsFresh -count=1 -v
+
+## contract: regenerate contract/match-timings.json from the Go constants
+# The frontend READS this file to check its own AFK thresholds sit inside the
+# server's. Regenerating it is therefore a cross-repo change: the test that
+# asserts the values (internal/ws/contract_test.go) is what should have stopped
+# you first, and it is the one to argue with.
+contract:
+	TYPEMORE_UPDATE_CONTRACT=1 go test ./internal/ws/ -run TestMatchTimingContractSnapshotIsCurrent -count=1
+	go test ./internal/ws/ -run TestMatchTiming -count=1
 
 ## vectors: regenerate the replay golden vectors (ONLY after a deliberate bundle change)
 # The vectors pin the scoring contract: `make core-bundle` fails the test suite
