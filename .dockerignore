@@ -5,5 +5,9 @@ bin
 *.md
 docs
 Dockerfile
+Dockerfile.migrate
 docker-compose.yml
 .golangci.yml
+
+# Local tool state: large, and nothing in the build reads it.
+.codegraph
