@@ -38,7 +38,6 @@ var TypeMoreCore = (() => {
     return to;
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
   var __await = function(promise, isYieldStar) {
     this[0] = promise;
     this[1] = isYieldStar;
@@ -72,10 +71,11 @@ var TypeMoreCore = (() => {
     }, "return" in obj && method("return"), it;
   };
 
-  // src/shared/core/index.ts
+  // src/index.ts
   var index_exports = {};
   __export(index_exports, {
     CODE_MAX_EXTRA_CHARS: () => CODE_MAX_EXTRA_CHARS,
+    CORE_PACKAGE_VERSION: () => CORE_PACKAGE_VERSION,
     DEFAULT_MAX_EXTRA_CHARS: () => DEFAULT_MAX_EXTRA_CHARS,
     DEFAULT_THRESHOLDS: () => DEFAULT_THRESHOLDS,
     EQUIVALENCE_GROUPS: () => EQUIVALENCE_GROUPS,
@@ -159,7 +159,7 @@ var TypeMoreCore = (() => {
     wpmOverTime: () => wpmOverTime
   });
 
-  // src/shared/core/events.ts
+  // src/events.ts
   var asSeq = (n) => n;
   var asMs = (n) => n;
   var isTelemetryEvent = (event) => event.kind === "down" || event.kind === "up";
@@ -210,7 +210,10 @@ var TypeMoreCore = (() => {
     return events;
   }
 
-  // src/shared/core/normalize.ts
+  // src/version.ts
+  var CORE_PACKAGE_VERSION = true ? "2.0.0" : "0.0.0-dev";
+
+  // src/normalize.ts
   var SPACE_CHARS = [
     " ",
     // regular space
@@ -286,7 +289,7 @@ var TypeMoreCore = (() => {
   var SPACE_SET = new Set(SPACE_CHARS);
   var isSpaceGrapheme = (grapheme) => SPACE_SET.has(grapheme);
 
-  // node_modules/.pnpm/neverthrow@8.2.0/node_modules/neverthrow/dist/index.es.js
+  // ../../node_modules/.pnpm/neverthrow@8.2.0/node_modules/neverthrow/dist/index.es.js
   var defaultErrorConfig = {
     withStackTrace: false
   };
@@ -762,7 +765,7 @@ var TypeMoreCore = (() => {
   };
   var fromThrowable = Result.fromThrowable;
 
-  // src/shared/core/words.ts
+  // src/words.ts
   function mulberry32(seed) {
     let a = seed >>> 0;
     return () => {
@@ -892,7 +895,7 @@ var TypeMoreCore = (() => {
     return ok({ words, context, dictName: dict.name });
   }
 
-  // src/shared/core/game-core.ts
+  // src/game-core.ts
   var DEFAULT_MAX_EXTRA_CHARS = 20;
   var CODE_MAX_EXTRA_CHARS = 40;
   function initialState() {
@@ -1394,9 +1397,7 @@ var TypeMoreCore = (() => {
   }
   var GameCore = class {
     constructor(init) {
-      __publicField(this, "_ctx");
-      __publicField(this, "_state");
-      __publicField(this, "_events", []);
+      this._events = [];
       this._ctx = {
         config: __spreadValues({}, init.config),
         words: [...init.words]
@@ -1438,7 +1439,7 @@ var TypeMoreCore = (() => {
     }
   };
 
-  // src/shared/core/keyboard.ts
+  // src/keyboard.ts
   var KEY_INTERVAL_CAP_MS = 2e3;
   function charObservationsOf(ctx, events) {
     var _a;
@@ -1493,7 +1494,7 @@ var TypeMoreCore = (() => {
     }));
   }
 
-  // src/shared/core/stats.ts
+  // src/stats.ts
   function analyzeLog(ctx, events) {
     var _a;
     let state = initialStateOf(ctx);
@@ -1832,7 +1833,7 @@ var TypeMoreCore = (() => {
     return afkOf(ctx, core.events, (_c = (_b = (_a = core.state.finishedAt) != null ? _a : nowMs) != null ? _b : core.state.startedAt) != null ? _c : asMs(0));
   }
 
-  // src/shared/core/mods.ts
+  // src/mods.ts
   var MOD_MULTIPLIER_CAP = 4;
   var MOD_MULTIPLIERS = {
     punctuation: 1.1,
@@ -1878,7 +1879,7 @@ var TypeMoreCore = (() => {
     return Math.min(product, MOD_MULTIPLIER_CAP);
   }
 
-  // src/shared/core/score.ts
+  // src/score.ts
   var SCORE_VERSION = 1;
   var SCORE_VERSION_2 = 2;
   var POINTS_PER_KEYSTROKE = 10;
@@ -2055,14 +2056,14 @@ var TypeMoreCore = (() => {
     return finalizeScoreV2(state.base, state.comboPeak, metrics, ctx.config.mode, modMultiplier);
   }
 
-  // src/shared/core/timer.ts
+  // src/timer.ts
   var TICK_INTERVAL_MS = 1e3;
   function nextTickDelay(elapsedMs, tickIndex, durationMs) {
     const targetElapsed = Math.min(tickIndex * TICK_INTERVAL_MS, durationMs);
     return Math.max(0, targetElapsed - elapsedMs);
   }
 
-  // src/shared/core/validate.ts
+  // src/validate.ts
   var DEFAULT_THRESHOLDS = {
     minKeyIntervalMs: 15,
     uniformToleranceMs: 2,
@@ -2239,7 +2240,7 @@ var TypeMoreCore = (() => {
     return ok({ verdict: "valid", flags, metrics });
   }
 
-  // src/shared/core/parse.ts
+  // src/parse.ts
   var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
   var isValidSeq = (value) => typeof value === "number" && Number.isInteger(value) && value >= 1;
   var isValidT = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -2353,3 +2354,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"ec30c943aa940accc65ec9aa0716d9db380f08a0","gitDirty":false}

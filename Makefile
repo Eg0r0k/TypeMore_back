@@ -36,12 +36,14 @@ DATABASE_URL ?= postgres://typemore:typemore@localhost:5432/typemore?sslmode=dis
 
 # Frontend checkout used by `make core-bundle`. Defaults to a sibling directory.
 # TestVendoredBundleIsFresh resolves the same path (TYPEMORE_FRONTEND overrides
-# it there), so the gate checks the checkout the rebuild would read.
+# it there), so the gate checks the checkout the vendoring would read.
 FRONTEND ?= ../TypeMore_front
 
-# The esbuild argument list for `make core-bundle`, read from the file the
-# freshness gate reads. One argument per line, #-comments and blanks stripped.
-ESBUILD_ARGS := $(shell sed -e 's/#.*//' internal/replay/corejs/esbuild.args)
+# The built goja bundle inside the frontend's @typemore/core package. This repo
+# no longer runs esbuild at all: the package's own `pnpm --filter @typemore/core
+# build` is the ONE producer of the artifact (single entry, deterministic), and
+# `make core-bundle` only verifies its provenance and copies it.
+CORE_DIST := $(FRONTEND)/packages/core/dist/core.bundle.js
 
 # Windows produces .exe binaries; keep the output runnable on both OSes.
 ifeq ($(OS),Windows_NT)
@@ -100,13 +102,38 @@ test-anticheat:
 	go test -tags anticheat ./...
 
 ## core-bundle: re-vendor internal/replay/corejs/core.bundle.js from $(FRONTEND)
-# The bundler comes from the frontend's own node_modules, so its version is
-# pinned by that lockfile rather than by whatever is on this machine. The flags
-# live in corejs/esbuild.args, which the freshness gate reads too — see
-# internal/replay/corejs/README.md before changing them.
+# Takes the PREBUILT artifact packages/core/dist/core.bundle.js and refuses to
+# vendor anything of unclear provenance. The bundle's last line is a trailer
+# (`//# typemore-core-build {...}`) written by the package build; vendoring is
+# refused when:
+#   - dist is missing            -> build it first,
+#   - gitDirty is true           -> commit the frontend, rebuild, then vendor,
+#   - gitSha is not FRONTEND's HEAD -> the dist predates the checkout; rebuild.
+# The dirty/sha rules exist so `bundle_sha` in every verdict can always be traced
+# to one exact frontend commit — a bundle from an uncommitted tree can never be
+# reproduced, and one from a stale tree is the B11 incident waiting to repeat.
 core-bundle:
-	cd $(FRONTEND) && pnpm exec esbuild $(ESBUILD_ARGS) \
-		--outfile="$(CURDIR)/internal/replay/corejs/core.bundle.js"
+	@test -f "$(CORE_DIST)" || { \
+		echo "ERROR: $(CORE_DIST) not found."; \
+		echo "       Build it first:  cd $(FRONTEND) && pnpm --filter @typemore/core build"; \
+		exit 1; }
+	@meta=$$(tail -n 1 "$(CORE_DIST)"); \
+	case "$$meta" in \
+	"//# typemore-core-build "*) ;; \
+	*) echo "ERROR: $(CORE_DIST) has no typemore-core-build trailer — built by something other than the package's build script?"; exit 1;; \
+	esac; \
+	echo "$$meta" | grep -q '"gitDirty":false' || { \
+		echo "ERROR: refusing to vendor a bundle built from a DIRTY frontend tree."; \
+		echo "       Commit the frontend, then: cd $(FRONTEND) && pnpm --filter @typemore/core build"; \
+		echo "       trailer: $$meta"; \
+		exit 1; }; \
+	sha=$$(echo "$$meta" | sed -n 's/.*"gitSha":"\([0-9a-f]*\)".*/\1/p'); \
+	head=$$(git -C "$(FRONTEND)" rev-parse HEAD); \
+	test -n "$$sha" -a "$$sha" = "$$head" || { \
+		echo "ERROR: bundle was built at $$sha but $(FRONTEND) is at $$head."; \
+		echo "       Rebuild at the current HEAD: cd $(FRONTEND) && pnpm --filter @typemore/core build"; \
+		exit 1; }
+	cp "$(CORE_DIST)" internal/replay/corejs/core.bundle.js
 	go test ./internal/replay/
 
 ## bundle-gate: fail if the vendored core bundle is not what $(FRONTEND) compiles to

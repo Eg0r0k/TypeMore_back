@@ -61,6 +61,72 @@ var bundleSHA = func() string {
 // BundleSHA returns the SHA-256 (hex) of the vendored core bundle.
 func BundleSHA() string { return bundleSHA }
 
+// BuildInfo is what the vendored bundle reports about itself: the @typemore/core
+// package version and the wire-format constants as EXPORTED CONSTANTS of the
+// bundle (read out of the goja runtime, so they cannot disagree with the code
+// that judges runs), plus the provenance trailer the package build appends
+// (frontend git sha + dirty flag — the facts `make core-bundle` refuses on).
+//
+// Zero values mean "the bundle predates the field", never an error: the server
+// must keep loading older vendored bundles, and the startup log is where a
+// missing identity gets noticed.
+type BuildInfo struct {
+	// PackageVersion is the bundle's CORE_PACKAGE_VERSION export (injected by
+	// the package build; a source-consumption fallback reads "0.0.0-dev").
+	PackageVersion string
+	// EventLogVersion / TelemetryLogVersion are EVENT_LOG_VERSION and
+	// EVENT_LOG_VERSION_TELEMETRY — the v1 base every stored run is pinned to,
+	// and the v2 keystroke-telemetry format.
+	EventLogVersion     int64
+	TelemetryLogVersion int64
+	// GitSHA / GitDirty come from the build-info trailer line, not from an
+	// export: the sha moves with every frontend commit, and as an export it
+	// would churn the export-parity guard for no informational gain.
+	GitSHA   string
+	GitDirty bool
+}
+
+// bundleTrailerPrefix marks the machine-readable last line of the bundle; the
+// same prefix is parsed by `make core-bundle` and the freshness gate.
+const bundleTrailerPrefix = "//# typemore-core-build "
+
+// bundleBuildInfo parses the provenance trailer once. Absent or malformed
+// trailers yield the zero value — see BuildInfo on why that is not an error.
+var bundleBuildInfo = func() (info struct {
+	GitSHA   string `json:"gitSha"`
+	GitDirty bool   `json:"gitDirty"`
+}) {
+	trimmed := strings.TrimRight(coreBundle, "\n")
+	if i := strings.LastIndexByte(trimmed, '\n'); i >= 0 && strings.HasPrefix(trimmed[i+1:], bundleTrailerPrefix) {
+		// Best-effort by design; a bad trailer leaves the zero value.
+		_ = json.Unmarshal([]byte(strings.TrimPrefix(trimmed[i+1:], bundleTrailerPrefix)), &info)
+	}
+	return info
+}()
+
+// BuildInfo returns the loaded bundle's self-reported identity. The server
+// logs it next to BundleSHA at startup, so "which core judged this run" is
+// answerable from the boot log alone.
+func (c *Core) BuildInfo() BuildInfo { return c.buildInfo }
+
+// readBuildInfo lifts the identity constants off the bundle's export object.
+// Missing exports (an older vendored bundle) leave zero values.
+func readBuildInfo(exports *goja.Object) BuildInfo {
+	info := BuildInfo{GitSHA: bundleBuildInfo.GitSHA, GitDirty: bundleBuildInfo.GitDirty}
+	if v := exports.Get("CORE_PACKAGE_VERSION"); v != nil {
+		if s, ok := v.Export().(string); ok {
+			info.PackageVersion = s
+		}
+	}
+	if v := exports.Get("EVENT_LOG_VERSION"); v != nil {
+		info.EventLogVersion = v.ToInteger()
+	}
+	if v := exports.Get("EVENT_LOG_VERSION_TELEMETRY"); v != nil {
+		info.TelemetryLogVersion = v.ToInteger()
+	}
+	return info
+}
+
 // ErrReplayTimeout is returned when a core call exceeded the interrupt budget.
 // It is a *decision input*, not a crash: the run is flagged and retried later.
 var ErrReplayTimeout = errors.New("replay: core call timed out")
@@ -84,6 +150,9 @@ type Core struct {
 	mu      sync.Mutex
 	rt      *goja.Runtime
 	timeout time.Duration
+
+	// buildInfo is the bundle's self-reported identity, read once at NewCore.
+	buildInfo BuildInfo
 
 	// Bound core exports. Names verified against the bundle — see
 	// TestBundleExportsAreBound.
@@ -136,7 +205,7 @@ func NewCore(timeout time.Duration) (*Core, error) {
 		return nil, fmt.Errorf("replay: core bundle did not define global %q", coreGlobal)
 	}
 
-	c := &Core{rt: rt, timeout: timeout, dicts: make(map[string]goja.Value)}
+	c := &Core{rt: rt, timeout: timeout, dicts: make(map[string]goja.Value), buildInfo: readBuildInfo(exports)}
 	bind := func(dst *goja.Callable, name string) error {
 		fn, ok := goja.AssertFunction(exports.Get(name))
 		if !ok {

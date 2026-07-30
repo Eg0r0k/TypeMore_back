@@ -204,6 +204,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The bundle's identity, next to its SHA: which @typemore/core version,
+	// which log formats, and which frontend commit this binary judges runs
+	// with. `make core-bundle` refuses dirty/stale provenance at vendoring
+	// time; this line is how a running instance answers the same question.
+	coreInfo := core.BuildInfo()
+	logger.Info("core bundle loaded",
+		"bundleSHA", replay.BundleSHA(),
+		"coreVersion", coreInfo.PackageVersion,
+		"eventLogVersion", coreInfo.EventLogVersion,
+		"telemetryLogVersion", coreInfo.TelemetryLogVersion,
+		"frontendCommit", coreInfo.GitSHA,
+		"builtFromDirtyTree", coreInfo.GitDirty)
 	dictReg, err := replay.NewRegistry(core)
 	if err != nil {
 		return err

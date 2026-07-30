@@ -1,87 +1,68 @@
 package replay
 
 import (
-	_ "embed"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// esbuildArgs is the argument list `make core-bundle` builds the vendored bundle
-// with — the same file, so the gate and the rebuild cannot disagree about what
-// "fresh" means.
-//
-//go:embed corejs/esbuild.args
-var esbuildArgs string
+// rebuildHint is what a failure has to leave behind: the commands that fix it.
+const rebuildHint = "run `pnpm --filter @typemore/core build` in the frontend, then `make core-bundle` here " +
+	"(and READ THE DIFF — see internal/replay/corejs/README.md)"
 
-// rebuildHint is what a failure has to leave behind: the command that fixes it.
-const rebuildHint = "run `make core-bundle` (and READ THE DIFF — see internal/replay/corejs/README.md)"
+// buildInfoTrailerPrefix marks the machine-readable last line the package build
+// appends to dist/core.bundle.js. The same prefix is parsed by `make
+// core-bundle` (provenance refusal) and by bundleBuildInfo in core.go.
+const buildInfoTrailerPrefix = "//# typemore-core-build "
 
-// TestVendoredBundleIsFresh rebuilds the core bundle from the frontend checkout
-// into a TEMPORARY file and diffs it against the vendored artifact.
+// TestVendoredBundleIsFresh diffs the vendored artifact against the frontend's
+// built dist/core.bundle.js — the @typemore/core package's own build output,
+// produced from the package's single entry by its deterministic build.
 //
-// The bundle is checked in because replay must not depend on a node toolchain at
-// runtime, and that is exactly what makes it rot: nothing in this repo changes
-// when the frontend's core does. The golden vectors catch a bundle whose
-// ARITHMETIC moved, which is the loud case. This catches the quiet one — a
-// vendored file that is simply not what the current source compiles to, which is
-// how the bundle spent a phase missing an entire module by accident rather than
-// by decision.
+// The bundle is checked in because replay must not depend on a node toolchain
+// at runtime, and that is exactly what makes it rot: nothing in this repo
+// changes when the frontend's core does. The golden vectors catch a bundle
+// whose ARITHMETIC moved, which is the loud case. This catches the quiet one —
+// a vendored file that is simply not what the current source compiles to,
+// which is how the bundle once spent a phase missing an entire module (B11).
 //
-// It is a gate, not a rebuild: the vendored file is never written here. When it
-// fails, the fix is a human running `make core-bundle` and reading the diff.
+// The build-info trailer is stripped from BOTH sides before comparing: it
+// carries the frontend's git sha, so an unrelated frontend commit (new sha,
+// byte-identical compiled core) must not read as a stale bundle. Provenance of
+// the trailer itself (dirty tree, stale sha) is `make core-bundle`'s job at
+// vendoring time, not this gate's.
 //
-// In CI it runs either way. Where the frontend is checked out beside this repo,
-// `make bundle-gate` sets TYPEMORE_BUNDLE_GATE=required so a missing toolchain
-// fails instead of skipping. Where only the Go module is checked out, it skips
-// with the reason on stderr — an explicit "did not run", never a quiet pass.
+// It is a gate, not a rebuild: the vendored file is never written here. Where
+// the frontend (or its built dist) is absent it skips with the reason on
+// stderr; `make bundle-gate` sets TYPEMORE_BUNDLE_GATE=required so an
+// environment that EXPECTS to check freshness fails instead of skipping.
 func TestVendoredBundleIsFresh(t *testing.T) {
-	frontend := frontendCheckout(t)
-	pnpm := pnpmBinary(t)
+	dist := distBundlePath(t)
 
-	fresh := filepath.Join(t.TempDir(), "core.fresh.js")
-	args := append(append([]string{"exec", "esbuild"}, parseEsbuildArgs(esbuildArgs)...), "--outfile="+fresh)
-
-	// Run from the frontend root, like the make target: esbuild writes each
-	// module's path into the bundle as a comment, so the working directory is
-	// part of the output bytes.
-	cmd := exec.Command(pnpm, args...)
-	cmd.Dir = frontend
-	var out strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &out
-
-	start := time.Now()
-	if err := cmd.Run(); err != nil {
-		// A toolchain that cannot run is not a stale bundle. Skipping loudly is
-		// the honest outcome; passing quietly is the one thing this must not do.
-		skipf(t, "esbuild failed in %s: %v\n%s", frontend, err, out.String())
-	}
-	t.Logf("rebuilt in %s: %s", time.Since(start).Round(time.Millisecond), strings.TrimSpace(out.String()))
-
-	rebuilt, err := os.ReadFile(fresh)
+	built, err := os.ReadFile(dist)
 	require.NoError(t, err)
-	require.NotEmpty(t, rebuilt, "esbuild produced an empty bundle")
+	require.NotEmpty(t, built, "frontend dist bundle is empty")
 
-	if string(rebuilt) == coreBundle {
+	fresh := stripBuildInfoTrailer(string(built))
+	vendored := stripBuildInfoTrailer(coreBundle)
+
+	if fresh == vendored {
 		return
 	}
-	t.Errorf("the vendored core bundle is not what %s compiles to — %s\n\n%s",
-		filepath.Join(frontend, "src", "shared", "core"), rebuildHint,
-		firstDifference(coreBundle, string(rebuilt)))
+	t.Errorf("the vendored core bundle is not what %s holds — %s\n\n%s",
+		dist, rebuildHint, firstDifference(vendored, fresh))
 }
 
-// frontendCheckout resolves the frontend the bundle is vendored from, matching
-// the make target's FRONTEND default (a sibling of this repo), and skips when it
-// is not there — the CI case, where only the Go module is checked out.
-func frontendCheckout(t *testing.T) string {
+// distBundlePath resolves the frontend's built bundle, matching the make
+// target's FRONTEND default (a sibling of this repo; TYPEMORE_FRONTEND
+// overrides), and skips when the checkout or its dist is not there — the CI
+// case where only the Go module is checked out, or a checkout that simply has
+// not run the package build.
+func distBundlePath(t *testing.T) string {
 	t.Helper()
 
 	dir := os.Getenv("TYPEMORE_FRONTEND")
@@ -95,33 +76,22 @@ func frontendCheckout(t *testing.T) string {
 	abs, err := filepath.Abs(dir)
 	require.NoError(t, err)
 
-	// The entry point, not just the directory: a checkout that exists but has no
-	// core is a broken setup, and it must not read as "fresh".
-	entry := filepath.Join(abs, filepath.FromSlash(parseEsbuildArgs(esbuildArgs)[0]))
-	if _, err := os.Stat(entry); err != nil {
-		skipf(t, "no frontend core source at %s (set TYPEMORE_FRONTEND, or see %s)", entry, rebuildHint)
+	dist := filepath.Join(abs, "packages", "core", "dist", "core.bundle.js")
+	if _, err := os.Stat(dist); err != nil {
+		skipf(t, "no built frontend bundle at %s (set TYPEMORE_FRONTEND, or %s)", dist, rebuildHint)
 	}
-	return abs
+	return dist
 }
 
-// pnpmBinary finds the package manager the make target shells out to. esbuild is
-// deliberately taken from the frontend's node_modules rather than from PATH: the
-// bundler version is pinned by that lockfile, and a different one would produce
-// different bytes for identical source.
-func pnpmBinary(t *testing.T) string {
-	t.Helper()
-	name := "pnpm"
-	if runtime.GOOS == "windows" {
-		name = "pnpm.cmd"
+// stripBuildInfoTrailer removes the trailing build-info line (and any final
+// newline) so the comparison is about the compiled code, not about which
+// commit compiled it.
+func stripBuildInfoTrailer(bundle string) string {
+	trimmed := strings.TrimRight(bundle, "\n")
+	if i := strings.LastIndexByte(trimmed, '\n'); i >= 0 && strings.HasPrefix(trimmed[i+1:], buildInfoTrailerPrefix) {
+		return trimmed[:i]
 	}
-	path, err := exec.LookPath(name)
-	if errors.Is(err, exec.ErrNotFound) && runtime.GOOS == "windows" {
-		path, err = exec.LookPath("pnpm")
-	}
-	if err != nil {
-		skipf(t, "pnpm is not on PATH: cannot rebuild the bundle to compare against")
-	}
-	return path
+	return trimmed
 }
 
 // gateRequiredEnv makes a skip a failure. A gate that cannot run is
@@ -145,22 +115,6 @@ func skipf(t *testing.T, format string, args ...any) {
 	t.Skip(msg)
 }
 
-// parseEsbuildArgs turns the shared argument file into a list: one argument per
-// line, #-comments and blank lines dropped. Same stripping the Makefile does
-// with sed.
-func parseEsbuildArgs(raw string) []string {
-	var out []string
-	for line := range strings.SplitSeq(raw, "\n") {
-		if i := strings.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		if line = strings.TrimSpace(line); line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}
-
 // firstDifference locates where two bundles part company and quotes both sides,
 // so a failure says what moved instead of only that something did.
 func firstDifference(vendored, rebuilt string) string {
@@ -170,8 +124,8 @@ func firstDifference(vendored, rebuilt string) string {
 		if h == w {
 			continue
 		}
-		return fmt.Sprintf("first difference at line %d:\n  vendored: %s\n  rebuilt:  %s\n"+
-			"(vendored %d lines / %d bytes, rebuilt %d lines / %d bytes)",
+		return fmt.Sprintf("first difference at line %d:\n  vendored: %s\n  built:    %s\n"+
+			"(vendored %d lines / %d bytes, built %d lines / %d bytes)",
 			i+1, quote(h), quote(w), len(have), len(vendored), len(want), len(rebuilt))
 	}
 	return "the files differ only in trailing bytes"
