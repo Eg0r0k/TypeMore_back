@@ -1,15 +1,22 @@
 # syntax=docker/dockerfile:1
-# One-shot migration runner: builds cmd/migrate and runs `migrate up` on start.
-# Used by the docker-compose `migrate` service.
+# One-shot schema/data bring-up image: builds cmd/migrate AND cmd/quotectl.
+# The docker-compose `migrate` service runs `/migrate up` (the default
+# entrypoint); the `quotes-import` service runs `/quotectl import` from the
+# same image. The quote corpus is embedded in the binary, so importing needs
+# nothing but the database — and it is idempotent: a corpus already published
+# verbatim reports "unchanged" and writes nothing (B-DICT-1: a stand without
+# the import serves an empty quote registry, which kills quote mode).
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate \
+	&& CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/quotectl ./cmd/quotectl
 
 FROM gcr.io/distroless/static:nonroot AS runtime
 COPY --from=build /out/migrate /migrate
+COPY --from=build /out/quotectl /quotectl
 USER nonroot:nonroot
 ENTRYPOINT ["/migrate"]
 CMD ["up"]

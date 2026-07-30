@@ -55,7 +55,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
 		-ldflags "${LDFLAGS}" -o /out/typemore-server ./cmd/server; \
 	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
-		-ldflags "${LDFLAGS}" -o /out/migrate ./cmd/migrate
+		-ldflags "${LDFLAGS}" -o /out/migrate ./cmd/migrate; \
+	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
+		-ldflags "${LDFLAGS}" -o /out/quotectl ./cmd/quotectl
 
 # --- healthcheck probe -----------------------------------------------------
 # distroless has no shell and no curl, so HEALTHCHECK needs a binary to call.
@@ -66,13 +68,17 @@ FROM busybox:${BUSYBOX_TAG} AS probe
 # --- migration runner ------------------------------------------------------
 # One-shot: `migrate up` against TYPEMORE_DATABASE_URL, then exits. The server
 # deliberately does not migrate on startup — bringing the schema up is a
-# separate, ordered step (see the root docker-compose.yml).
+# separate, ordered step (see the root docker-compose.yml). The image also
+# carries /quotectl: the compose `quotes-import` one-shot runs it to publish
+# the embedded quote corpus, without which quote mode serves an empty registry
+# (DICTFIX_LOG.md, B-DICT-1).
 # Declared BEFORE `server` so the default build target stays the server.
 FROM gcr.io/distroless/static:nonroot AS migrate
 LABEL org.opencontainers.image.title="typemore-migrate" \
 	org.opencontainers.image.source="https://github.com/typemore/typemore-server" \
-	org.opencontainers.image.description="Goose migration runner for the TypeMore schema"
+	org.opencontainers.image.description="Goose migration + quote-corpus runner for TypeMore"
 COPY --from=build /out/migrate /migrate
+COPY --from=build /out/quotectl /quotectl
 USER nonroot:nonroot
 ENTRYPOINT ["/migrate"]
 CMD ["up"]

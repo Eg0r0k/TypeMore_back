@@ -63,6 +63,23 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Publishes the embedded quote corpus into Postgres, then exits. Without this
+  # a fresh stand answers `{"quotes":[]}` / random→404 and quote mode is dead
+  # (DICTFIX_LOG.md, B-DICT-1). Idempotent: re-running against an unchanged
+  # corpus reports "unchanged" and writes nothing, so `up` is always safe.
+  quotes-import:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    entrypoint: ["/quotectl"]
+    command: ["import"]
+    environment:
+      TYPEMORE_DATABASE_URL: "postgres://typemore:typemore@postgres:5432/typemore?sslmode=disable"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   postgres:
     image: postgres:17
     environment:
