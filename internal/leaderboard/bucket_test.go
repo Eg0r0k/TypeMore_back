@@ -53,11 +53,17 @@ func TestBucketKeyFormat(t *testing.T) {
 
 // A time bucket and a word bucket can carry the same number. The mode prefix is
 // what keeps "60 words" and "60 milliseconds" from being the same board.
+//
+// The buckets are built as literals: this is a property of the KEY FORMAT, and
+// it must hold for any dimension the format is ever asked to carry — while
+// NewBucket (correctly) refuses these, because 60 is ranked in neither mode
+// (RankedDurationsMs/RankedWordCounts). The ranked sets happen to share no
+// number today, which is exactly why the guarantee has to be pinned here
+// rather than observed: the day a shared size appears, the prefix is all that
+// separates the two boards.
 func TestBucketKeysAreDisjointAcrossModes(t *testing.T) {
-	timeBucket, err := leaderboard.NewBucket(leaderboard.ModeTime, new(int32(60)), nil, "en", leaderboard.TextSourceSeeded)
-	require.NoError(t, err)
-	wordBucket, err := leaderboard.NewBucket(leaderboard.ModeWords, nil, new(int32(60)), "en", leaderboard.TextSourceSeeded)
-	require.NoError(t, err)
+	timeBucket := leaderboard.Bucket{Mode: leaderboard.ModeTime, Dimension: 60, Lang: "en", TextSource: leaderboard.TextSourceSeeded}
+	wordBucket := leaderboard.Bucket{Mode: leaderboard.ModeWords, Dimension: 60, Lang: "en", TextSource: leaderboard.TextSourceSeeded}
 	assert.NotEqual(t, timeBucket.Key(), wordBucket.Key())
 }
 
