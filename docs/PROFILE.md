@@ -12,12 +12,14 @@ Two decisions define the phase:
   Every query is scoped to one user and pinned to the per-user indexes by plan
   assertions (`docs/PERFORMANCE.md`, profile zone); the day a measured load
   says otherwise, the first move is a covering index, not a cache.
-- **Session-scoped, own profile only (v1).** Every route requires a session and
-  answers about the caller; there is **no handle for another player's profile
-  at all**, so privacy is the absence of a code path rather than a check.
-  Public profiles are a later, deliberate flag. When they arrive, the keyboard
-  heatmap stays **private-by-default**: per-key timing aggregates are
-  effectively biometric (see Privacy).
+- **Session-scoped for the owner; a separate, explicitly-gated public surface
+  for everyone else.** Every `/api/v1/profile/*` route requires a session and
+  answers about the caller, exactly as in v1. Public profiles arrived as the
+  deliberate flag v1 promised: `GET /api/v1/users/{name}/…` (see "Public
+  profiles" below), gated by two per-account switches enforced **on the
+  server**. The keyboard heatmap kept its promise too: **private-by-default
+  with its own opt-in** — per-key timing aggregates are effectively biometric
+  (see Privacy).
 
 ## Endpoints
 
@@ -211,17 +213,87 @@ pre-existing field untouched ([`RUNS.md`](RUNS.md)):
 | `quoteId` | quote runs | `run_quote_id(setup)` — the profile table's quote link |
 | `mods` | always | `run_mods(setup)` — the same selection the boards render |
 
+## Public profiles
+
+`GET /api/v1/users/{name}/…` — another player's profile, by display name
+(citext UNIQUE, so the lookup is case-insensitive exactly like the name's
+uniqueness; guests have no accounts and therefore no profiles). Mounted behind
+`OptionalAuth`: no session required, but an owner with a cookie is recognised.
+Privacy is enforced **here, on the server** — a frontend hiding sections over
+an API that still answers would be privacy theatre, and the e2e suite talks
+HTTP past any frontend to keep that true.
+
+Two per-account switches on `users` (migration `00018`):
+
+| Column | Default | Gates |
+|---|---|---|
+| `profile_public` | **true** | The whole data surface below |
+| `keyboard_public` | **false** | The keyboard portrait, additionally |
+
+Owner surface: the switches ride on `GET /api/v1/me` and move via
+`PATCH /api/v1/me/settings` (RequireOrigin + RequireAuth, partial body —
+`{"profilePublic"?, "keyboardPublic"?}`), answering with the same user view
+`/me` serves. The owner's session-scoped `/api/v1/profile/*` routes are
+untouched by either switch: **the owner always sees their own profile whole**,
+and the public paths also answer the owner (the preview case).
+
+| Route | Closed profile, stranger/anon | Open profile, stranger/anon |
+|---|---|---|
+| `GET /users/{name}` | **200** `{name, joined, public:false}` | 200 `{name, joined, public:true}` |
+| `…/summary` `…/activity` `…/histogram` `…/timeseries` `…/pbs` `…/runs` | **403 `profile_closed`** | 200 |
+| `…/portrait` | 403 `profile_closed` | 200 iff `keyboard_public`, else **403 `portrait_closed`** |
+
+An unknown name is a plain **404 `not_found`** — names are already public on
+every board, so there is no enumeration story to blur it for. A closed profile
+is deliberately **not** a 404: the page exists, "closed" is its state.
+
+What the public routes serve is the **same aggregation code** the session
+routes serve (shared `serve*` helpers — WHO may ask is each route's gate; WHAT
+a summary is must not fork), with three deliberate differences:
+
+- **`…/runs` is an allowlist**, narrower than the owner's feed: only ACCEPTED
+  runs, and per row only the server's verdict numbers plus the derived display
+  cells — no `clientMetrics`/`clientScore`, no `validation`, no `setup`, no
+  restart counter, no log size. `TestPublicRunPayloadIsAnAllowlist` snapshots
+  the exact key set; a new field is a deliberate disclosure that updates the
+  snapshot in the same commit that argues why. Keyset pagination as the
+  owner's feed.
+- **`…/pbs` reads through the boards' ban predicate** (`active_bans`), unlike
+  the session PBs read: a public surface must not show what every board hides.
+  Likewise a banned owner's `…/runs` history is empty — the same predicate the
+  public replay routes enforce. **Summary aggregates are NOT rebuilt under
+  bans** (existing semantics, kept deliberately): a banned owner's counters
+  keep answering, because going quiet would leak the ban through a side door
+  the boards already refuse to leak through.
+- **`…/portrait`** is served only when (`keyboard_public` OR owner) and the
+  profile is open — see Privacy below for why the switch exists at all.
+
+**The boundary with the boards — the line that must not move.** Profile
+privacy does not touch the leaderboards. A closed profile stays ranked under
+its name, its row stays clickable, and the run holding a board slot stays
+publicly watchable: the public replay pair's predicate
+(`internal/runs/queries.sql`) is extended with
+`profile_public OR run holds a board slot`, so closing a profile hides the
+**aggregated history page** — never a result its owner put into a public
+ranking. A closed profile's **non-board** runs do become unwatchable (they
+were only reachable through the history page privacy just closed), as the same
+indistinguishable 404 as everything else unwatchable.
+`TestClosedProfileKeepsItsBoardRowAndItsBoardReplay` is the pin.
+
 ## Privacy
 
-v1 is **own-profile only**: every route answers about the session's user, and
-no route accepts a user id. Public profiles are a later flag, and the shape of
-that flag is documented now so it does not get invented casually:
+Every `/api/v1/profile/*` route answers about the session's user and no route
+accepts a user id — unchanged from v1. The public surface above is the
+deliberate flag v1's documentation promised, with the promised shape:
 
-- the opt-in is per-account and off by default;
-- the **keyboard heatmap stays private even then** — per-key error rates and
-  inter-key timings are effectively biometric (they identify and profile a
-  person's motor behaviour), so they never ship on a public surface without
-  their own, separate opt-in.
+- the profile switch is per-account; the default is **open** (product
+  decision — the flag shipped together with the surface it gates, so no
+  account existed with an expectation of privacy the default would betray);
+- the **keyboard heatmap has its own opt-in, off by default** — per-key error
+  rates and inter-key timings are effectively biometric (they identify and
+  profile a person's motor behaviour), so they never ship on a public surface
+  unless their owner turned them on themselves; a closed profile hides the
+  portrait regardless of that opt-in.
 
 ## Performance posture
 

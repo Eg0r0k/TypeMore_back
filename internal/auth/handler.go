@@ -77,6 +77,56 @@ func (s *Service) HandleMe(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, view)
 }
 
+// HandleUpdateSettings serves PATCH /api/v1/me/settings: the account's two
+// privacy switches. Mounted beside /me by the caller (RequireOrigin +
+// RequireAuth — a mutating route needs the CSRF check /me itself does not).
+//
+// The body is a partial: each field updates only when present, so a client can
+// flip one switch without knowing (or racing) the other. The response is the
+// same userView /me serves, because the settings UI's next question after a
+// write is always "so what is the state now".
+func (s *Service) HandleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFrom(r.Context())
+	if !ok {
+		s.writeError(w, r, apiErrUnauthorized)
+		return
+	}
+	var req struct {
+		ProfilePublic  *bool `json:"profilePublic"`
+		KeyboardPublic *bool `json:"keyboardPublic"`
+	}
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ProfilePublic == nil && req.KeyboardPublic == nil {
+		s.writeError(w, r, apiErrBadRequest("no settings to update"))
+		return
+	}
+	// Resolve the partial against the session's user row — the middleware just
+	// read it, so the pair we write is the pair the caller saw.
+	p := SettingsParams{ProfilePublic: user.ProfilePublic, KeyboardPublic: user.KeyboardPublic}
+	if req.ProfilePublic != nil {
+		p.ProfilePublic = *req.ProfilePublic
+	}
+	if req.KeyboardPublic != nil {
+		p.KeyboardPublic = *req.KeyboardPublic
+	}
+	updated, err := s.store.UpdateUserSettings(r.Context(), user.ID, p)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	view := toUserView(updated)
+	if s.restrictions != nil {
+		restricted, err := s.restrictions.IsRestricted(r.Context(), user.ID)
+		if err != nil {
+			s.log.Error("resolve account restriction", "err", err, "userId", user.ID)
+		}
+		view.Restricted = restricted
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
 // handleLogout ends the current session.
 func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err := s.logout(r.Context(), r, w); err != nil {

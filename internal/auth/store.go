@@ -31,6 +31,19 @@ type User struct {
 	ID          uuid.UUID
 	DisplayName string
 	CreatedAt   time.Time
+	// ProfilePublic gates the public /users/{name} surface; open by default.
+	ProfilePublic bool
+	// KeyboardPublic is the keyboard portrait's own opt-in, independent of
+	// ProfilePublic and off by default — per-key timing is effectively
+	// biometric (docs/PROFILE.md, "Privacy").
+	KeyboardPublic bool
+}
+
+// SettingsParams is the input to UpdateUserSettings: the full pair, resolved
+// by the handler from the partial PATCH body against the current row.
+type SettingsParams struct {
+	ProfilePublic  bool
+	KeyboardPublic bool
 }
 
 // Identity is one way to sign in to a User. For ProviderEmail, Subject is the
@@ -134,6 +147,9 @@ type Store interface {
 
 	// User fetches a user by id.
 	User(ctx context.Context, id uuid.UUID) (User, error)
+	// UpdateUserSettings replaces the account's privacy switches and returns
+	// the updated row.
+	UpdateUserSettings(ctx context.Context, userID uuid.UUID, p SettingsParams) (User, error)
 
 	// Credential / UpdateCredential read and replace password material.
 	Credential(ctx context.Context, userID uuid.UUID) (Credential, error)

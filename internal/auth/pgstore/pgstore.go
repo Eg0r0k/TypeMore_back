@@ -61,7 +61,10 @@ func mapErr(err error) error {
 // --- conversions ---
 
 func toUser(u authdb.User) auth.User {
-	return auth.User{ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt}
+	return auth.User{
+		ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt,
+		ProfilePublic: u.ProfilePublic, KeyboardPublic: u.KeyboardPublic,
+	}
 }
 
 func toIdentity(i authdb.AuthIdentity) auth.Identity {
@@ -223,6 +226,16 @@ func (s *Store) MarkEmailVerified(ctx context.Context, userID uuid.UUID) error {
 
 func (s *Store) User(ctx context.Context, id uuid.UUID) (auth.User, error) {
 	u, err := s.q.GetUserByID(ctx, id)
+	if err != nil {
+		return auth.User{}, mapErr(err)
+	}
+	return toUser(u), nil
+}
+
+func (s *Store) UpdateUserSettings(ctx context.Context, userID uuid.UUID, p auth.SettingsParams) (auth.User, error) {
+	u, err := s.q.UpdateUserSettings(ctx, authdb.UpdateUserSettingsParams{
+		ID: userID, ProfilePublic: p.ProfilePublic, KeyboardPublic: p.KeyboardPublic,
+	})
 	if err != nil {
 		return auth.User{}, mapErr(err)
 	}

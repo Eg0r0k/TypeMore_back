@@ -288,10 +288,20 @@ type userView struct {
 	// the account that was just created or logged into and GET /me is the read
 	// that answers "what is the state of this account now".
 	Restricted bool `json:"restricted"`
+	// The two privacy switches (docs/PROFILE.md, "Public profiles"). They ride
+	// on /me so the settings UI reads its state from the session read it
+	// already makes, and they are wire facts about the CALLER's own account —
+	// what a stranger may see is the public surface's decision, not a field
+	// here.
+	ProfilePublic  bool `json:"profilePublic"`
+	KeyboardPublic bool `json:"keyboardPublic"`
 }
 
 func toUserView(u User) userView {
-	return userView{ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt}
+	return userView{
+		ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt,
+		ProfilePublic: u.ProfilePublic, KeyboardPublic: u.KeyboardPublic,
+	}
 }
 
 // Restrictions answers whether an account is under an active ban. Declared here

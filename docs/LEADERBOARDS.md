@@ -711,14 +711,24 @@ route was left behind:
 
 | Run | Response |
 |---|---|
-| accepted, owner not banned | `200` |
+| accepted, owner not banned, owner's profile open | `200` |
+| accepted, owner not banned, profile closed, **holds a board slot** | `200` |
+| accepted, owner not banned, profile closed, no board slot | `404` |
 | flagged | `404` |
 | rejected | `404` |
 | pending | `404` |
 | accepted, owner banned | `404` |
 | nonexistent / not a uuid | `404` |
 
-All three rules live in the `WHERE` clause of both queries — the same three
+The profile rows are the boundary between profile privacy and the boards
+(docs/PROFILE.md, "Public profiles"): closing a profile hides the aggregated
+history page, never a result its owner put into a public ranking — so a board
+row's replay keeps working whatever the switch says, while a non-board run of
+a closed profile is only reachable through the history page privacy just
+closed, and answers the same indistinguishable `404` as everything else
+unwatchable.
+
+All four rules live in the `WHERE` clause of both queries — the same four
 predicates, spelled the same way, join to `users` included — so no caller can
 reach the data without them and the pair cannot drift into two access matrices.
 The owner gets the same public answer here; their own runs stay reachable at any

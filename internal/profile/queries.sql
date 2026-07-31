@@ -171,6 +171,83 @@ FROM user_keyboard_profile
 WHERE user_id = $1
 ORDER BY key_id;
 
+-- name: GetPublicProfileUser :one
+-- The public surface's name resolution (docs/PROFILE.md, "Public profiles"):
+-- display_name is citext UNIQUE, so the lookup is case-insensitive exactly the
+-- way registration's uniqueness is. Nothing else about the account rides along
+-- — the public payloads are explicit allowlists, and this row is where the
+-- allowlist for the header STOPS.
+SELECT id, display_name, created_at, profile_public, keyboard_public
+FROM users
+WHERE display_name = $1;
+
+-- name: GetPublicProfileRunsFirst :many
+-- First page of a profile's PUBLIC run history. The WHERE clause is the board
+-- surface's visibility rule, spelled the same way as the public replay pair in
+-- internal/runs/queries.sql: only ACCEPTED runs, and none at all while the
+-- owner is banned (active_bans is THE ban/expiry predicate — docs/MODERATION.md).
+-- Whether the profile answers a stranger at all is the handler's 403, decided
+-- before this query runs; per-run visibility is decided here, in SQL, so no
+-- new code path can reach a hidden run.
+--
+-- The column list is an ALLOWLIST, deliberately narrower than the owner's own
+-- feed: no client-reported numbers, no validation trail, no setup snapshot, no
+-- restart counter. server_metrics/server_score and the derived cells are
+-- exactly what the public replay route already serves per run.
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang,
+       r.server_metrics, r.server_score, r.created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((r.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (r.server_metrics ->> 'consistency')::float8,
+           'chars',       r.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+WHERE r.user_id = $1
+  AND r.status = 'accepted'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT $2;
+
+-- name: GetPublicProfileRunsAfter :many
+-- Next public-history page after the (created_at, id) cursor — the same
+-- longhand row-value comparison, with the redundant-looking `<=` SEEK conjunct,
+-- as ListRunsAfter in internal/runs/queries.sql, and for the same measured
+-- reason (migration 00015's 3-column index provides the start condition).
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang,
+       r.server_metrics, r.server_score, r.created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((r.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (r.server_metrics ->> 'consistency')::float8,
+           'chars',       r.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+WHERE r.user_id = $1
+  AND r.status = 'accepted'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+  AND r.created_at <= $2
+  AND (r.created_at < $2 OR (r.created_at = $2 AND r.id < $3))
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT $4;
+
+-- name: GetPublicProfilePBs :many
+-- The PB cards as a STRANGER may see them: the same entries read as
+-- GetProfilePBs, but through the ban predicate the boards read through. The
+-- session-scoped read deliberately skips it (a player's own bests are their
+-- own data); a public surface showing a banned player's records would leak
+-- what every board hides. leaderboard_rows is not used here only because the
+-- view does not carry quote_source; the predicate is the same active_bans
+-- object, so the two cannot drift.
+SELECT bucket_key, run_id, score, wpm::float8 AS wpm, raw::float8 AS raw,
+       acc::float8 AS acc, grade, mods, quote_source, achieved_at
+FROM leaderboard_entries e
+WHERE e.user_id = $1
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = e.user_id)
+ORDER BY achieved_at DESC;
+
 -- name: GetProfileDominantLang :one
 -- The user's most-played dictionary language — the heatmap's default layout
 -- comes from it. Ties break alphabetically so the answer is stable.

@@ -188,9 +188,11 @@ type Session struct {
 }
 
 type User struct {
-	ID          uuid.UUID
-	DisplayName string
-	CreatedAt   time.Time
+	ID             uuid.UUID
+	DisplayName    string
+	CreatedAt      time.Time
+	ProfilePublic  bool
+	KeyboardPublic bool
 }
 
 type UserCredential struct {

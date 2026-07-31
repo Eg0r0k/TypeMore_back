@@ -30,8 +30,15 @@ func TestMeJSONContract(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	assert.Equal(t, []string{"createdAt", "displayName", "id", "restricted"}, keys,
-		"GET /me must expose exactly {id, displayName, createdAt, restricted} in lower-camelCase")
+	// profilePublic / keyboardPublic joined the set with public profiles
+	// (docs/PROFILE.md): the caller's OWN privacy switches, ridden on the
+	// session read the settings UI already makes. They disclose nothing about
+	// anyone else, and this snapshot is where any further field must argue its
+	// way in.
+	assert.Equal(t,
+		[]string{"createdAt", "displayName", "id", "keyboardPublic", "profilePublic", "restricted"},
+		keys,
+		"GET /me must expose exactly {id, displayName, createdAt, restricted, profilePublic, keyboardPublic} in lower-camelCase")
 
 	// `restricted` is a bare boolean and this test is where it stays one. The
 	// banner it drives is deliberately opaque, so a reason, an expiry or an

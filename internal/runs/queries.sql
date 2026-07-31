@@ -114,10 +114,15 @@ WHERE id = $1 AND user_id = $2;
 -- from them, so the server never ships a word list it would then have to keep
 -- in sync with the core's generator.
 --
--- Three access rules are in the WHERE clause rather than in Go, so no caller can
+-- Four access rules are in the WHERE clause rather than in Go, so no caller can
 -- reach this data without them: the run must be ACCEPTED (a flagged, rejected
--- or unjudged run is not a public artefact), and its owner must not be banned.
--- All three failures return no row, which the handler renders as one
+-- or unjudged run is not a public artefact), its owner must not be banned, and
+-- — since public profiles — its owner's profile must be open OR the run must
+-- hold a leaderboard slot. The last disjunct is the boundary between profile
+-- privacy and the boards (docs/PROFILE.md, "Public profiles"): closing a
+-- profile hides the aggregated history page, never a result its owner put into
+-- a public ranking, so a board row's replay keeps working whatever the switch
+-- says. All failures return no row, which the handler renders as one
 -- indistinguishable 404 — a leaderboard must not leak who is under review.
 SELECT r.setup, r.server_metrics, r.server_score,
        run_grade((r.server_metrics ->> 'accuracy')::numeric)::text AS grade,
@@ -128,13 +133,14 @@ FROM runs r
 WHERE r.id = @run_id
   AND r.status = 'accepted'
   AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
-  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id);
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+  AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id));
 
 -- name: GetPublicReplayLog :one
 -- The stored gzip event log of one publicly watchable run, and nothing else, so
 -- the log route never re-reads the metadata it is not going to serve.
 --
--- The WHERE clause is the SAME THREE RULES, spelled the same way, including the
+-- The WHERE clause is the SAME FOUR RULES, spelled the same way, including the
 -- join to users: eligibility for the log must be eligibility for the metadata,
 -- character for character, or the two routes drift into two access matrices.
 SELECT r.log
@@ -143,4 +149,5 @@ FROM runs r
 WHERE r.id = @run_id
   AND r.status = 'accepted'
   AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
-  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id);
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+  AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id));

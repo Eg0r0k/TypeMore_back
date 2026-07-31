@@ -3,10 +3,17 @@ package profile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrNotFound reports a display name that resolves to no account. It is the
+// public surface's only "who" error: an unknown name is 404 and nothing else
+// (names are already public on every board, so there is no enumeration story
+// to blur it for).
+var ErrNotFound = errors.New("profile: not found")
 
 // MetricStats is one profile metric's three aggregates. Acc and consistency
 // travel as [0, 1] fractions, exactly as the core reports them; formatting as
@@ -96,6 +103,50 @@ type KeyboardKey struct {
 	IntervalCount int64
 }
 
+// PublicUser is the public surface's name resolution: the row the header
+// answers from, and the two switches every other public route gates on.
+type PublicUser struct {
+	ID             uuid.UUID
+	DisplayName    string
+	Joined         time.Time
+	ProfilePublic  bool
+	KeyboardPublic bool
+}
+
+// PublicRun is one row of a profile's public run history — an explicit
+// allowlist, narrower than the owner's own runs feed: the server's verdict
+// numbers and the derived display cells, and nothing the run's owner reported
+// or the moderation trail recorded. Every run here is accepted by
+// construction (the query's predicate), so no Status field exists to leak
+// anything else.
+type PublicRun struct {
+	ID            uuid.UUID
+	Mode          string
+	DurationMs    *int32
+	WordCount     *int32
+	Lang          string
+	ServerMetrics json.RawMessage
+	ServerScore   json.RawMessage
+	CreatedAt     time.Time
+	// The derived cells, unpacked exactly as the runs domain unpacks its
+	// summaries (docs/RUNS.md): grade/consistency/chars always present on
+	// these rows (all judged), quoteId on quote runs, adoptedFromRunId on
+	// seeded repeats, mods always.
+	Grade            *string
+	Consistency      *float64
+	Chars            json.RawMessage
+	QuoteID          *uuid.UUID
+	AdoptedFromRunID *uuid.UUID
+	Mods             json.RawMessage
+}
+
+// RunCursor is the public history's keyset position, ordered like the owner's
+// feed: (created_at, id) descending.
+type RunCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
 // Store is the profile read model, implemented by pgstore. Every method is
 // scoped to one user; today is the caller's UTC date for the streak boundary.
 type Store interface {
@@ -110,4 +161,15 @@ type Store interface {
 	// dictionary language ("" for a fresh account) — the heatmap's default
 	// layout is derived from it.
 	Keyboard(ctx context.Context, userID uuid.UUID) ([]KeyboardKey, string, error)
+
+	// PublicUser resolves a display name (case-insensitively — the column is
+	// citext) to the public surface's identity row, or ErrNotFound.
+	PublicUser(ctx context.Context, displayName string) (PublicUser, error)
+	// PublicRuns lists a profile's publicly visible runs newest-first —
+	// accepted only, none while the owner is banned (the query owns that
+	// predicate). after=nil means the first page.
+	PublicRuns(ctx context.Context, userID uuid.UUID, after *RunCursor, limit int32) ([]PublicRun, error)
+	// PublicPBs is PBs through the boards' ban predicate: a banned owner's
+	// records are hidden here exactly as they are on every board.
+	PublicPBs(ctx context.Context, userID uuid.UUID) ([]PB, error)
 }

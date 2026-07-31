@@ -43,6 +43,13 @@ func (s *Service) handleSummary(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveSummary(w, r, userID)
+}
+
+// serveSummary renders the summary for a resolved user — the shared half of
+// the session route and its public sibling (public.go). WHO may ask is each
+// route's own gate; WHAT a summary is must not fork between them.
+func (s *Service) serveSummary(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	summary, err := s.store.Summary(r.Context(), userID, time.Now().UTC())
 	if err != nil {
 		s.writeError(w, r, err)
@@ -68,6 +75,12 @@ func (s *Service) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveActivity(w, r, userID)
+}
+
+// serveActivity renders the activity calendar for a resolved user (shared with
+// the public route; see serveSummary).
+func (s *Service) serveActivity(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	days := activityDaysDefault
 	if raw := r.URL.Query().Get("days"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -106,6 +119,12 @@ func (s *Service) handleHistogram(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveHistogram(w, r, userID)
+}
+
+// serveHistogram renders the wpm histogram for a resolved user (shared with
+// the public route; see serveSummary).
+func (s *Service) serveHistogram(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	buckets, err := s.store.Histogram(r.Context(), userID)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -151,6 +170,12 @@ func (s *Service) handleTimeseries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveTimeseries(w, r, userID)
+}
+
+// serveTimeseries renders the charts series for a resolved user (shared with
+// the public route; see serveSummary).
+func (s *Service) serveTimeseries(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	from := time.Unix(0, 0).UTC()
 	if raw := r.URL.Query().Get("from"); raw != "" {
 		parsed, ok := parseDayBound(raw)
@@ -234,8 +259,16 @@ func (s *Service) handlePBs(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.servePBs(w, pbs)
+}
+
+// servePBs decorates and renders a PB slice — shared by the session route
+// (raw entries: a player's own bests are their own data) and the public route
+// (ban-filtered entries; see public.go). The decoration must not fork.
+func (s *Service) servePBs(w http.ResponseWriter, pbs []PB) {
 	out := pbsResponse{PBs: make([]pbView, len(pbs))}
-	for i, pb := range pbs {
+	for i := range pbs {
+		pb := &pbs[i]
 		view := pbView{
 			Bucket:     pb.BucketKey,
 			Source:     pb.QuoteSource,
@@ -292,6 +325,14 @@ func (s *Service) handleKeyboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.serveKeyboard(w, r, userID)
+}
+
+// serveKeyboard renders the keyboard aggregates for a resolved user. Shared
+// with the PUBLIC portrait route — which serves it only behind the portrait's
+// own opt-in (public.go); the biometric argument for that gate is in
+// docs/PROFILE.md, "Privacy".
+func (s *Service) serveKeyboard(w http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	keys, lang, err := s.store.Keyboard(r.Context(), userID)
 	if err != nil {
 		s.writeError(w, r, err)

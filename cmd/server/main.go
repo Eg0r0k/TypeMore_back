@@ -286,6 +286,11 @@ func run() error {
 				ReplayTimeout: cfg.ReplayTimeout,
 				ShutdownGrace: cfg.ReplayShutdownGrace,
 				Decider:       decider,
+				// Unset until a human sets it — see the config field. An
+				// instance with no epoch judges every run exactly as it did
+				// before the canary detectors existed, which is the state this
+				// deployment is in until the rendering client is out.
+				CanaryEpoch: cfg.ReplayCanaryEpoch,
 			},
 			logger,
 		)
@@ -306,8 +311,10 @@ func run() error {
 	// CORS for the browser SPA: allow exactly the configured frontend origin and
 	// let it send the session cookie (credentials).
 	router.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{cfg.FrontendOrigin},
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowedOrigins: []string{cfg.FrontendOrigin},
+		// PATCH is here for /me/settings; nothing else on the API mutates
+		// with it.
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodOptions},
 		AllowedHeaders:   []string{"Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -349,6 +356,10 @@ func run() error {
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
+		// The account's privacy switches. RequireOrigin because it mutates —
+		// /me itself is a safe read and deliberately carries no CSRF check.
+		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
+			Patch("/me/settings", authSvc.HandleUpdateSettings)
 		// The dictionary catalogue is a public asset too — no session: guests
 		// play client-side and still need to pick a language.
 		r.Mount("/dictionaries", dictSvc.Routes())
@@ -366,6 +377,11 @@ func run() error {
 		// subtree carries its own RequireAuth so no route can be added public
 		// by accident (docs/PROFILE.md, "Privacy").
 		r.Mount("/profile", profileSvc.Routes(authSvc.RequireAuth))
+		// Public profiles: /users/{name}/… — no session required, but
+		// OptionalAuth resolves one when present, which is what lets an owner
+		// through their own closed profile. Privacy is enforced inside these
+		// handlers (403 profile_closed), server-side, before any query runs.
+		r.With(authSvc.OptionalAuth).Mount("/users", profileSvc.PublicRoutes())
 		// The layouts asset, public and cacheable like the dictionaries: the
 		// heatmap needs geometry before it needs data, and a guest reading a
 		// public page one day will too.

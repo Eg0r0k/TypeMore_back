@@ -210,14 +210,19 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", authSvc.AuthRoutes())
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
+		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
+			Patch("/me/settings", authSvc.HandleUpdateSettings)
 		r.Mount("/runs", runsSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
 		r.Mount("/profile", profileSvc.Routes(authSvc.RequireAuth))
 		r.Mount("/layouts", layouts.Routes(logger))
 		// /me needs a session; the auth middleware is applied inside the group
-		// so the two public routes stay public, as in cmd/server.
+		// so the two public routes stay public, as in cmd/server. The public
+		// profile surface sits in the same group: sessionless, but an owner
+		// with a cookie is recognised.
 		r.Group(func(r chi.Router) {
 			r.Use(authSvc.OptionalAuth)
 			r.Mount("/leaderboards", boardSvc.Routes())
+			r.Mount("/users", profileSvc.PublicRoutes())
 		})
 	})
 	server := httptest.NewServer(r)
@@ -243,6 +248,20 @@ func (h *harness) post(path string, body any) *http.Response {
 		reader = bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(http.MethodPost, h.server.URL+path, reader)
+	require.NoError(h.t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", frontendOrigin)
+	resp, err := h.client.Do(req)
+	require.NoError(h.t, err)
+	return resp
+}
+
+// patch sends a JSON PATCH with the CSRF Origin header (the settings route).
+func (h *harness) patch(path string, body any) *http.Response {
+	h.t.Helper()
+	b, err := json.Marshal(body)
+	require.NoError(h.t, err)
+	req, err := http.NewRequest(http.MethodPatch, h.server.URL+path, bytes.NewReader(b))
 	require.NoError(h.t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", frontendOrigin)
@@ -308,6 +327,13 @@ func (h *harness) login(email, password, name string) string {
 	require.NoError(h.t, json.NewDecoder(resp.Body).Decode(&me))
 	_ = resp.Body.Close()
 	return me.ID
+}
+
+// loginAs signs an EXISTING account back in (login registers a fresh one).
+func (h *harness) loginAs(email, password string) {
+	h.t.Helper()
+	requireStatus(h.t, h.post("/api/v1/auth/login",
+		map[string]string{"email": email, "password": password}), http.StatusOK)
 }
 
 // logout clears the current session cookie.

@@ -10,6 +10,15 @@ RETURNING *;
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1;
 
+-- name: UpdateUserSettings :one
+-- The two privacy switches, replaced as a pair. The handler resolves a partial
+-- PATCH against the current row before calling this, so the statement itself
+-- stays a plain write with no COALESCE cleverness to test.
+UPDATE users
+SET profile_public = $2, keyboard_public = $3
+WHERE id = $1
+RETURNING *;
+
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1;
 

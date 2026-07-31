@@ -501,3 +501,242 @@ func (q *Queries) GetProfileWpmPerHour(ctx context.Context, arg GetProfileWpmPer
 	err := row.Scan(&wpm_per_hour)
 	return wpm_per_hour, err
 }
+
+const getPublicProfilePBs = `-- name: GetPublicProfilePBs :many
+SELECT bucket_key, run_id, score, wpm::float8 AS wpm, raw::float8 AS raw,
+       acc::float8 AS acc, grade, mods, quote_source, achieved_at
+FROM leaderboard_entries e
+WHERE e.user_id = $1
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = e.user_id)
+ORDER BY achieved_at DESC
+`
+
+type GetPublicProfilePBsRow struct {
+	BucketKey   string
+	RunID       uuid.UUID
+	Score       int64
+	Wpm         float64
+	Raw         float64
+	Acc         float64
+	Grade       string
+	Mods        json.RawMessage
+	QuoteSource *string
+	AchievedAt  time.Time
+}
+
+// The PB cards as a STRANGER may see them: the same entries read as
+// GetProfilePBs, but through the ban predicate the boards read through. The
+// session-scoped read deliberately skips it (a player's own bests are their
+// own data); a public surface showing a banned player's records would leak
+// what every board hides. leaderboard_rows is not used here only because the
+// view does not carry quote_source; the predicate is the same active_bans
+// object, so the two cannot drift.
+func (q *Queries) GetPublicProfilePBs(ctx context.Context, userID uuid.UUID) ([]GetPublicProfilePBsRow, error) {
+	rows, err := q.db.Query(ctx, getPublicProfilePBs, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPublicProfilePBsRow{}
+	for rows.Next() {
+		var i GetPublicProfilePBsRow
+		if err := rows.Scan(
+			&i.BucketKey,
+			&i.RunID,
+			&i.Score,
+			&i.Wpm,
+			&i.Raw,
+			&i.Acc,
+			&i.Grade,
+			&i.Mods,
+			&i.QuoteSource,
+			&i.AchievedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPublicProfileRunsAfter = `-- name: GetPublicProfileRunsAfter :many
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang,
+       r.server_metrics, r.server_score, r.created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((r.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (r.server_metrics ->> 'consistency')::float8,
+           'chars',       r.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+WHERE r.user_id = $1
+  AND r.status = 'accepted'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+  AND r.created_at <= $2
+  AND (r.created_at < $2 OR (r.created_at = $2 AND r.id < $3))
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT $4
+`
+
+type GetPublicProfileRunsAfterParams struct {
+	UserID    uuid.UUID
+	CreatedAt time.Time
+	ID        uuid.UUID
+	Limit     int32
+}
+
+type GetPublicProfileRunsAfterRow struct {
+	ID            uuid.UUID
+	Mode          string
+	DurationMs    *int32
+	WordCount     *int32
+	Lang          string
+	ServerMetrics []byte
+	ServerScore   []byte
+	CreatedAt     time.Time
+	Derived       json.RawMessage
+}
+
+// Next public-history page after the (created_at, id) cursor — the same
+// longhand row-value comparison, with the redundant-looking `<=` SEEK conjunct,
+// as ListRunsAfter in internal/runs/queries.sql, and for the same measured
+// reason (migration 00015's 3-column index provides the start condition).
+func (q *Queries) GetPublicProfileRunsAfter(ctx context.Context, arg GetPublicProfileRunsAfterParams) ([]GetPublicProfileRunsAfterRow, error) {
+	rows, err := q.db.Query(ctx, getPublicProfileRunsAfter,
+		arg.UserID,
+		arg.CreatedAt,
+		arg.ID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPublicProfileRunsAfterRow{}
+	for rows.Next() {
+		var i GetPublicProfileRunsAfterRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Mode,
+			&i.DurationMs,
+			&i.WordCount,
+			&i.Lang,
+			&i.ServerMetrics,
+			&i.ServerScore,
+			&i.CreatedAt,
+			&i.Derived,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPublicProfileRunsFirst = `-- name: GetPublicProfileRunsFirst :many
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang,
+       r.server_metrics, r.server_score, r.created_at,
+       (jsonb_strip_nulls(jsonb_build_object(
+           'grade',       run_grade((r.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (r.server_metrics ->> 'consistency')::float8,
+           'chars',       r.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+WHERE r.user_id = $1
+  AND r.status = 'accepted'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+ORDER BY r.created_at DESC, r.id DESC
+LIMIT $2
+`
+
+type GetPublicProfileRunsFirstParams struct {
+	UserID uuid.UUID
+	Limit  int32
+}
+
+type GetPublicProfileRunsFirstRow struct {
+	ID            uuid.UUID
+	Mode          string
+	DurationMs    *int32
+	WordCount     *int32
+	Lang          string
+	ServerMetrics []byte
+	ServerScore   []byte
+	CreatedAt     time.Time
+	Derived       json.RawMessage
+}
+
+// First page of a profile's PUBLIC run history. The WHERE clause is the board
+// surface's visibility rule, spelled the same way as the public replay pair in
+// internal/runs/queries.sql: only ACCEPTED runs, and none at all while the
+// owner is banned (active_bans is THE ban/expiry predicate — docs/MODERATION.md).
+// Whether the profile answers a stranger at all is the handler's 403, decided
+// before this query runs; per-run visibility is decided here, in SQL, so no
+// new code path can reach a hidden run.
+//
+// The column list is an ALLOWLIST, deliberately narrower than the owner's own
+// feed: no client-reported numbers, no validation trail, no setup snapshot, no
+// restart counter. server_metrics/server_score and the derived cells are
+// exactly what the public replay route already serves per run.
+func (q *Queries) GetPublicProfileRunsFirst(ctx context.Context, arg GetPublicProfileRunsFirstParams) ([]GetPublicProfileRunsFirstRow, error) {
+	rows, err := q.db.Query(ctx, getPublicProfileRunsFirst, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPublicProfileRunsFirstRow{}
+	for rows.Next() {
+		var i GetPublicProfileRunsFirstRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Mode,
+			&i.DurationMs,
+			&i.WordCount,
+			&i.Lang,
+			&i.ServerMetrics,
+			&i.ServerScore,
+			&i.CreatedAt,
+			&i.Derived,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPublicProfileUser = `-- name: GetPublicProfileUser :one
+SELECT id, display_name, created_at, profile_public, keyboard_public
+FROM users
+WHERE display_name = $1
+`
+
+// The public surface's name resolution (docs/PROFILE.md, "Public profiles"):
+// display_name is citext UNIQUE, so the lookup is case-insensitive exactly the
+// way registration's uniqueness is. Nothing else about the account rides along
+// — the public payloads are explicit allowlists, and this row is where the
+// allowlist for the header STOPS.
+func (q *Queries) GetPublicProfileUser(ctx context.Context, displayName string) (User, error) {
+	row := q.db.QueryRow(ctx, getPublicProfileUser, displayName)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.ProfilePublic,
+		&i.KeyboardPublic,
+	)
+	return i, err
+}

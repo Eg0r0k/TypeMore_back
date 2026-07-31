@@ -178,6 +178,116 @@ func (s *Store) PBs(ctx context.Context, userID uuid.UUID) ([]profile.PB, error)
 	return out, nil
 }
 
+// PublicUser resolves a display name case-insensitively (citext) or reports
+// profile.ErrNotFound.
+func (s *Store) PublicUser(ctx context.Context, displayName string) (profile.PublicUser, error) {
+	row, err := s.q.GetPublicProfileUser(ctx, displayName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return profile.PublicUser{}, profile.ErrNotFound
+		}
+		return profile.PublicUser{}, err
+	}
+	return profile.PublicUser{
+		ID:             row.ID,
+		DisplayName:    row.DisplayName,
+		Joined:         row.CreatedAt,
+		ProfilePublic:  row.ProfilePublic,
+		KeyboardPublic: row.KeyboardPublic,
+	}, nil
+}
+
+// PublicRuns lists the publicly visible run history page — the queries own
+// the visibility predicate (accepted, owner not banned).
+func (s *Store) PublicRuns(ctx context.Context, userID uuid.UUID, after *profile.RunCursor, limit int32) ([]profile.PublicRun, error) {
+	if after == nil {
+		rows, err := s.q.GetPublicProfileRunsFirst(ctx, profiledb.GetPublicProfileRunsFirstParams{
+			UserID: userID, Limit: limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]profile.PublicRun, len(rows))
+		for i := range rows {
+			r := &rows[i]
+			out[i] = publicRunOf(r.ID, r.Mode, r.DurationMs, r.WordCount, r.Lang,
+				r.ServerMetrics, r.ServerScore, r.CreatedAt, r.Derived)
+		}
+		return out, nil
+	}
+	rows, err := s.q.GetPublicProfileRunsAfter(ctx, profiledb.GetPublicProfileRunsAfterParams{
+		UserID: userID, CreatedAt: after.CreatedAt, ID: after.ID, Limit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]profile.PublicRun, len(rows))
+	for i := range rows {
+		r := &rows[i]
+		out[i] = publicRunOf(r.ID, r.Mode, r.DurationMs, r.WordCount, r.Lang,
+			r.ServerMetrics, r.ServerScore, r.CreatedAt, r.Derived)
+	}
+	return out, nil
+}
+
+// publicRunOf assembles a PublicRun and unpacks the SQL-side derived cells the
+// same way the runs domain does: a decode failure leaves the row usable
+// without its derived cells rather than failing the page.
+func publicRunOf(id uuid.UUID, mode string, durationMs, wordCount *int32, lang string,
+	serverMetrics, serverScore json.RawMessage, createdAt time.Time, derived json.RawMessage,
+) profile.PublicRun {
+	out := profile.PublicRun{
+		ID: id, Mode: mode, DurationMs: durationMs, WordCount: wordCount, Lang: lang,
+		ServerMetrics: serverMetrics, ServerScore: serverScore, CreatedAt: createdAt,
+	}
+	if len(derived) == 0 {
+		return out
+	}
+	var cells struct {
+		Grade            *string         `json:"grade"`
+		Consistency      *float64        `json:"consistency"`
+		Chars            json.RawMessage `json:"chars"`
+		QuoteID          *uuid.UUID      `json:"quoteId"`
+		AdoptedFromRunID *uuid.UUID      `json:"adoptedFromRunId"`
+		Mods             json.RawMessage `json:"mods"`
+	}
+	if err := json.Unmarshal(derived, &cells); err != nil {
+		return out
+	}
+	out.Grade = cells.Grade
+	out.Consistency = cells.Consistency
+	out.Chars = cells.Chars
+	out.QuoteID = cells.QuoteID
+	out.AdoptedFromRunID = cells.AdoptedFromRunID
+	out.Mods = cells.Mods
+	return out
+}
+
+// PublicPBs returns the ban-filtered entries read — what a stranger may see.
+func (s *Store) PublicPBs(ctx context.Context, userID uuid.UUID) ([]profile.PB, error) {
+	rows, err := s.q.GetPublicProfilePBs(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]profile.PB, len(rows))
+	for i := range rows {
+		r := &rows[i]
+		out[i] = profile.PB{
+			BucketKey:   r.BucketKey,
+			RunID:       r.RunID,
+			Score:       r.Score,
+			Wpm:         r.Wpm,
+			Raw:         r.Raw,
+			Acc:         r.Acc,
+			Grade:       r.Grade,
+			Mods:        r.Mods,
+			QuoteSource: r.QuoteSource,
+			AchievedAt:  r.AchievedAt,
+		}
+	}
+	return out, nil
+}
+
 // Keyboard returns the user_keyboard_profile rows and the dominant language.
 func (s *Store) Keyboard(ctx context.Context, userID uuid.UUID) ([]profile.KeyboardKey, string, error) {
 	rows, err := s.q.GetProfileKeyboard(ctx, userID)

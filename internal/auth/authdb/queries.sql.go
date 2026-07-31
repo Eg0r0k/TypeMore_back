@@ -110,7 +110,7 @@ const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (display_name)
 VALUES ($1)
-RETURNING id, display_name, created_at
+RETURNING id, display_name, created_at, profile_public, keyboard_public
 `
 
 // Queries for the auth domain. sqlc generates type-safe Go from these into
@@ -119,7 +119,13 @@ RETURNING id, display_name, created_at
 func (q *Queries) CreateUser(ctx context.Context, displayName string) (User, error) {
 	row := q.db.QueryRow(ctx, createUser, displayName)
 	var i User
-	err := row.Scan(&i.ID, &i.DisplayName, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.ProfilePublic,
+		&i.KeyboardPublic,
+	)
 	return i, err
 }
 
@@ -268,13 +274,19 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, display_name, created_at FROM users WHERE id = $1
+SELECT id, display_name, created_at, profile_public, keyboard_public FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
 	var i User
-	err := row.Scan(&i.ID, &i.DisplayName, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.ProfilePublic,
+		&i.KeyboardPublic,
+	)
 	return i, err
 }
 
@@ -356,6 +368,35 @@ type TouchSessionParams struct {
 func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) error {
 	_, err := q.db.Exec(ctx, touchSession, arg.ID, arg.ExpiresAt)
 	return err
+}
+
+const updateUserSettings = `-- name: UpdateUserSettings :one
+UPDATE users
+SET profile_public = $2, keyboard_public = $3
+WHERE id = $1
+RETURNING id, display_name, created_at, profile_public, keyboard_public
+`
+
+type UpdateUserSettingsParams struct {
+	ID             uuid.UUID
+	ProfilePublic  bool
+	KeyboardPublic bool
+}
+
+// The two privacy switches, replaced as a pair. The handler resolves a partial
+// PATCH against the current row before calling this, so the statement itself
+// stays a plain write with no COALESCE cleverness to test.
+func (q *Queries) UpdateUserSettings(ctx context.Context, arg UpdateUserSettingsParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserSettings, arg.ID, arg.ProfilePublic, arg.KeyboardPublic)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.ProfilePublic,
+		&i.KeyboardPublic,
+	)
+	return i, err
 }
 
 const upsertCredential = `-- name: UpsertCredential :exec
