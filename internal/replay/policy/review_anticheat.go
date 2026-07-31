@@ -28,9 +28,14 @@ import (
 //
 // It continues the same sequence the policy had before it moved behind this
 // interface: v1 was the calibrated table, v2 pinned the telemetry flags at zero
-// by contract. Runs judged by a Noop carry no version at all, which is how they
-// stay re-judgeable.
-const currentVersion = 2
+// by contract, v3 weighted the two canary flags. Runs judged by a Noop carry no
+// version at all, which is how they stay re-judgeable.
+//
+// v3 is deliberately inert on its own: the canary flags cannot appear on a run
+// the epoch has not armed (replay.CanariesArmedAt), and the epoch is unset
+// until a human sets it. A revalidate pass at v3 with no epoch therefore
+// reproduces every v2 verdict exactly.
+const currentVersion = 3
 
 // Flag codes emitted by the core's validateLog (shared/core/validate.ts).
 // Listed here so the weights table is exhaustive by construction — a code the
@@ -47,6 +52,13 @@ const (
 	// FlagUnpairedKeyup is log v2's telemetry pairing sanity: a key release
 	// without a preceding press. Structural bookkeeping, not a cheat signal.
 	FlagUnpairedKeyup = "unpaired-keyup"
+	// FlagCanaryGrapheme is an insert carrying an invisible codepoint that only
+	// the display layer ever emits. Direct evidence the text was read off the
+	// screen rather than typed.
+	FlagCanaryGrapheme = "canary-grapheme"
+	// FlagCanaryCommit is repeated commits landing exactly on seed-scheduled
+	// offsets. Circumstantial, and scored as such.
+	FlagCanaryCommit = "canary-commit"
 )
 
 // TelemetryOnlyFlags are the codes derived from log v2's keyboard telemetry.
@@ -92,11 +104,26 @@ var TelemetryOnlyFlags = []string{FlagUnpairedKeyup}
 //     so it must not fill the review queue. Non-zero on purpose so a run that is
 //     BOTH mostly idle and otherwise suspicious still tips a little.
 //   - unpaired-keyup (0.00) — see TelemetryOnlyFlags.
+//   - canary-grapheme (1.00) — an invisible codepoint that exists ONLY in the
+//     rendered text reached the event log. No keyboard, layout, IME or compose
+//     sequence produces it, and pasted text is a different flag entirely, so it
+//     belongs in the zero-variance class: one occurrence is worth review by
+//     itself. The core already emits score 1 whatever the count.
+//   - canary-commit (0.60) — commits landing on seed-scheduled offsets. Real
+//     evidence, but positional rather than impossible: the core already refuses
+//     to raise it below three hits and scales severity from there, so the
+//     weight is set so a MINIMUM hit (0.25) stays well under the threshold
+//     while a saturated one (1.0) needs one more weak signal to cross. 0.60 is
+//     a STARTING point — the number to revisit with `make calibrate` once armed
+//     runs exist; there is no armed population to calibrate against yet, and
+//     inventing precision here would be inventing data.
 var defaultFlagWeights = map[string]float64{
 	FlagZeroVariance:        1.00,
+	FlagCanaryGrapheme:      1.00,
 	FlagUniformIntervals:    0.90,
 	FlagSuperhumanBurst:     0.80,
 	FlagPaste:               0.80,
+	FlagCanaryCommit:        0.60,
 	FlagMultiGraphemeInsert: 0.50,
 	FlagMinInterval:         0.30,
 	FlagAfkHeavy:            0.02,

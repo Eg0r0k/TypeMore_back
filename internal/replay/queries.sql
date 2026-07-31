@@ -7,8 +7,14 @@
 -- broker and no 'processing' status: a row another worker already holds is
 -- stepped over, and a worker that dies rolls its rows straight back to
 -- claimable. Oldest first, so nothing starves. Uses runs_pending_idx.
+--
+-- created_at rides along because the judgement depends on it: the canary
+-- detectors are armed per run against the canary epoch (docs/REPLAY.md), and a
+-- run created before the canary-rendering client shipped must be judged exactly
+-- as it was. It is an already-selected column of the same row, so carrying it
+-- costs nothing.
 SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts
+       log, attempts, created_at
 FROM runs
 WHERE status = 'pending'
 ORDER BY created_at
@@ -38,7 +44,7 @@ LIMIT $1;
 -- can run at the same time without either seeing the other's rows. Uses
 -- runs_stale_policy_idx.
 SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts
+       log, attempts, created_at
 FROM runs
 WHERE status <> 'pending'
   AND (policy_version IS NULL

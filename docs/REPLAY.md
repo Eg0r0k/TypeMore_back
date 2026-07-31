@@ -312,6 +312,45 @@ independently:
 `policy_version IS NULL` means the run was judged before the policy existed
 (the original "any flag ⇒ flagged" rule).
 
+### Canary epoch
+
+Two flags — `canary-grapheme` and `canary-commit` — are only raised for runs the
+worker judges with the core's canary detectors **armed**, and arming is decided
+per run by one comparison:
+
+```
+armed = epoch is set AND run.created_at >= epoch
+```
+
+`TYPEMORE_REPLAY_CANARY_EPOCH` (RFC3339) is that epoch, it is **unset by
+default**, and unset arms nothing at all — no run, at any age.
+
+That gate is not caution, it is correctness. The canary schedule is a pure
+function of a run's **seed**, so it is computable for every run ever stored,
+including the entire archive submitted by clients that never drew a canary. An
+ungated judge would score those runs' coincidental early commits as evidence —
+and `make revalidate` walks all of history in one pass, so it would do it to
+every stored run at once.
+
+The epoch is therefore set **by hand, once, after the rendering client is
+deployed** — not by a default, not by a migration:
+
+1. Ship the core + this server with the epoch unset. Everything is inert:
+   `validateLog` is bit-identical to its pre-canary self, and the golden vectors
+   prove it.
+2. Deploy the frontend that renders canaries.
+3. Set `TYPEMORE_REPLAY_CANARY_EPOCH` to that deploy instant and restart.
+
+Runs created before the epoch keep being judged exactly as they always were, so
+step 3 is safe to combine with a `revalidate` pass — and a pre-epoch run
+re-judged afterwards produces a bit-identical verdict
+(`TestAPreEpochRunIsJudgedBitIdenticallyToNoEpochAtAll`).
+
+Note what the epoch does **not** move: `policy_version`. The rules changed when
+the two flags got weights (v2 → v3); the epoch decides which runs those rules
+can ever see a canary flag on. Both matter, and they are set in different
+places for the same reason `bundle_sha` and `policy_version` are two columns.
+
 ## Tooling
 
 ### `make calibrate` — dry run, writes nothing

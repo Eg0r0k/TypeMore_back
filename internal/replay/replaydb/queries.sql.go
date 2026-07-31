@@ -61,7 +61,7 @@ func (q *Queries) ApplyReplayDecision(ctx context.Context, arg ApplyReplayDecisi
 const claimPendingRuns = `-- name: ClaimPendingRuns :many
 
 SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts
+       log, attempts, created_at
 FROM runs
 WHERE status = 'pending'
 ORDER BY created_at
@@ -79,6 +79,7 @@ type ClaimPendingRunsRow struct {
 	ClientScore   json.RawMessage
 	Log           []byte
 	Attempts      int16
+	CreatedAt     time.Time
 }
 
 // Replay worker queue + revalidation (docs/REPLAY.md). The claim and the
@@ -88,6 +89,12 @@ type ClaimPendingRunsRow struct {
 // broker and no 'processing' status: a row another worker already holds is
 // stepped over, and a worker that dies rolls its rows straight back to
 // claimable. Oldest first, so nothing starves. Uses runs_pending_idx.
+//
+// created_at rides along because the judgement depends on it: the canary
+// detectors are armed per run against the canary epoch (docs/REPLAY.md), and a
+// run created before the canary-rendering client shipped must be judged exactly
+// as it was. It is an already-selected column of the same row, so carrying it
+// costs nothing.
 func (q *Queries) ClaimPendingRuns(ctx context.Context, limit int32) ([]ClaimPendingRunsRow, error) {
 	rows, err := q.db.Query(ctx, claimPendingRuns, limit)
 	if err != nil {
@@ -107,6 +114,7 @@ func (q *Queries) ClaimPendingRuns(ctx context.Context, limit int32) ([]ClaimPen
 			&i.ClientScore,
 			&i.Log,
 			&i.Attempts,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -120,7 +128,7 @@ func (q *Queries) ClaimPendingRuns(ctx context.Context, limit int32) ([]ClaimPen
 
 const claimStalePolicyRuns = `-- name: ClaimStalePolicyRuns :many
 SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts
+       log, attempts, created_at
 FROM runs
 WHERE status <> 'pending'
   AND (policy_version IS NULL
@@ -147,6 +155,7 @@ type ClaimStalePolicyRunsRow struct {
 	ClientScore   json.RawMessage
 	Log           []byte
 	Attempts      int16
+	CreatedAt     time.Time
 }
 
 // The revalidation scan: runs already judged, but by rules or by CODE that are
@@ -189,6 +198,7 @@ func (q *Queries) ClaimStalePolicyRuns(ctx context.Context, arg ClaimStalePolicy
 			&i.ClientScore,
 			&i.Log,
 			&i.Attempts,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

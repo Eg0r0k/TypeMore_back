@@ -35,6 +35,13 @@ type PendingRun struct {
 	Log []byte
 	// Attempts is how many times replay has already failed on this run.
 	Attempts int16
+	// CreatedAt is when the run was submitted. It is an INPUT to the judgement,
+	// not bookkeeping: the canary detectors are armed only for runs created at
+	// or after the canary epoch (WorkerConfig.CanaryEpoch), because the canary
+	// schedule is computable from any historical seed and an ungated judge
+	// would read coincidence as evidence on runs whose client never rendered
+	// one. See docs/REPLAY.md, "Canary epoch".
+	CreatedAt time.Time
 }
 
 // Decision is the worker's verdict for one run: the new status plus everything
@@ -95,5 +102,4 @@ type CalibrationRun struct {
 	PendingRun
 	Status        runstatus.Status
 	PolicyVersion *int16
-	CreatedAt     time.Time
 }

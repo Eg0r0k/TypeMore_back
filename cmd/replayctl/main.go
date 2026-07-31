@@ -192,7 +192,7 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, decider replay.Decider, 
 	for i := range rows {
 		// The exact path the worker takes — a report from a different code path
 		// would be a fiction.
-		d := replay.Judge(ctx, core, reg, quotes, decider, rows[i].PendingRun)
+		d := replay.Judge(ctx, core, reg, quotes, decider, rows[i].PendingRun, cfg.ReplayCanaryEpoch)
 
 		var doc auditDoc
 		_ = json.Unmarshal(d.Validation, &doc)
@@ -372,6 +372,10 @@ func revalidate(ctx context.Context, pool *pgxpool.Pool, decider replay.Decider,
 			BatchSize:     batch,
 			ReplayTimeout: cfg.ReplayTimeout,
 			Decider:       decider,
+			// The same epoch the server judges under: `revalidate` re-judges
+			// stored runs, so an epoch that differed here would rewrite history
+			// under rules the live worker does not use.
+			CanaryEpoch: cfg.ReplayCanaryEpoch,
 		},
 		logger,
 	)

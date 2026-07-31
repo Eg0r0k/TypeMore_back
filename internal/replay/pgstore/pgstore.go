@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -83,7 +84,8 @@ func (q *Queue) ProcessBatch(ctx context.Context, limit int32, decide func(conte
 		out := make([]replay.PendingRun, len(rows))
 		for i := range rows {
 			out[i] = toPendingRun(rows[i].ID, rows[i].Seed, rows[i].DictHash, rows[i].ScoreVersion,
-				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts)
+				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts,
+				rows[i].CreatedAt)
 		}
 		return out, nil
 	})
@@ -107,7 +109,8 @@ func (q *Queue) ProcessStalePolicyBatch(ctx context.Context, policyVersion int16
 		out := make([]replay.PendingRun, len(rows))
 		for i := range rows {
 			out[i] = toPendingRun(rows[i].ID, rows[i].Seed, rows[i].DictHash, rows[i].ScoreVersion,
-				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts)
+				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts,
+				rows[i].CreatedAt)
 		}
 		return out, nil
 	})
@@ -168,6 +171,7 @@ func (q *Queue) inTx(
 func toPendingRun(
 	id uuid.UUID, seed int64, dictHash string, scoreVersion int16,
 	setup, clientMetrics, clientScore json.RawMessage, log []byte, attempts int16,
+	createdAt time.Time,
 ) replay.PendingRun {
 	return replay.PendingRun{
 		ID:            id,
@@ -179,6 +183,7 @@ func toPendingRun(
 		ClientScore:   clientScore,
 		Log:           log,
 		Attempts:      attempts,
+		CreatedAt:     createdAt,
 	}
 }
 
@@ -216,10 +221,10 @@ func (q *Queue) ListForCalibration(ctx context.Context, limit int32) ([]replay.C
 	for i := range rows {
 		out[i] = replay.CalibrationRun{
 			PendingRun: toPendingRun(rows[i].ID, rows[i].Seed, rows[i].DictHash, rows[i].ScoreVersion,
-				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts),
+				rows[i].Setup, rows[i].ClientMetrics, rows[i].ClientScore, rows[i].Log, rows[i].Attempts,
+				rows[i].CreatedAt),
 			Status:        rows[i].Status,
 			PolicyVersion: rows[i].PolicyVersion,
-			CreatedAt:     rows[i].CreatedAt,
 		}
 	}
 	return out, nil

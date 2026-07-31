@@ -93,6 +93,57 @@ func TestTelemetryFlagsMoveSuspicionByNothing(t *testing.T) {
 	}
 }
 
+// --- canary flags -------------------------------------------------------------
+
+// The direct canary is zero-variance class: an invisible codepoint that exists
+// only in the RENDERED text reached the log, and no keyboard, layout or IME
+// produces one. A single occurrence must reach review on its own.
+func TestCanaryGraphemeReachesReviewAlone(t *testing.T) {
+	p := mustPolicy(t, Config{})
+	// The core emits score 1 whatever the count — one is the whole signal.
+	d := p.Judge([]Flag{{Code: FlagCanaryGrapheme, Score: 1}}, RunMeta{DurationSec: 30})
+
+	assert.True(t, d.NeedsReview, "a rendered-only codepoint in the log must reach review")
+	assert.GreaterOrEqual(t, d.Suspicion, d.Threshold)
+	assert.Empty(t, d.Reasons, "this is a magnitude, not a shape rule")
+}
+
+// The positional canary is evidence, not proof: the core refuses to raise it
+// below three hits, and the weight is set so the minimum severity stays under
+// the threshold while a saturated one needs one more weak signal to cross.
+func TestCanaryCommitScalesWithSeverity(t *testing.T) {
+	p := mustPolicy(t, Config{})
+
+	minimum := p.Judge([]Flag{{Code: FlagCanaryCommit, Score: 0.25}}, RunMeta{DurationSec: 30})
+	assert.False(t, minimum.NeedsReview, "three positional hits alone must not reach review")
+	assert.InDelta(t, 0.15, minimum.Suspicion, 1e-12)
+
+	saturated := p.Judge([]Flag{{Code: FlagCanaryCommit, Score: 1}}, RunMeta{DurationSec: 30})
+	assert.False(t, saturated.NeedsReview, "even saturated, the positional flag is not proof by itself")
+	assert.InDelta(t, 0.60, saturated.Suspicion, 1e-12)
+
+	// …but it is most of the way there: one ordinary weak signal tips it.
+	together := p.Judge([]Flag{
+		{Code: FlagCanaryCommit, Score: 1},
+		{Code: FlagSuperhumanBurst, Score: 0.5},
+	}, RunMeta{DurationSec: 30})
+	assert.True(t, together.NeedsReview)
+}
+
+// No combination rule was added for the canaries: a shape rule fires whatever
+// the weights say, which is exactly the wrong property for a flag whose weight
+// is a starting point awaiting calibration on a real armed population.
+func TestCanaryFlagsTakePartInNoShapeRule(t *testing.T) {
+	p := mustPolicy(t, Config{})
+	d := p.Judge([]Flag{
+		{Code: FlagCanaryGrapheme, Score: 1},
+		{Code: FlagCanaryCommit, Score: 1},
+	}, RunMeta{DurationSec: 300})
+
+	assert.Empty(t, d.Reasons)
+	assert.Empty(t, d.UnknownFlags, "both codes must be known to the table")
+}
+
 // --- suspicion arithmetic -----------------------------------------------------
 
 func TestSuspicionIsWeightedSeverity(t *testing.T) {
@@ -120,7 +171,7 @@ func TestWeightsTableCoversEveryCoreFlag(t *testing.T) {
 	emitted := []string{
 		FlagMultiGraphemeInsert, FlagPaste, FlagMinInterval, FlagUniformIntervals,
 		FlagZeroVariance, FlagSuperhumanBurst, FlagAfkHeavy, FlagTrailingAfk,
-		FlagUnpairedKeyup,
+		FlagUnpairedKeyup, FlagCanaryGrapheme, FlagCanaryCommit,
 	}
 	desc, ok := Describe(mustPolicy(t, Config{}))
 	require.True(t, ok)

@@ -502,6 +502,14 @@ type Input struct {
 	Log json.RawMessage
 	// ScoreVersion routes the score recomputation (1 → scoreOfLog, 2 → scoreV2OfLog).
 	ScoreVersion int16
+	// CanariesArmed asks validateLog to run its canary detectors for this run.
+	//
+	// FALSE (the zero value) is the pre-canary contract, byte for byte: the
+	// core's disarmed report is bit-identical to the report it produced before
+	// the detectors existed, which is what keeps every stored run, every golden
+	// vector and every re-judgement of history reproducible. Set only from
+	// CanariesArmedAt — the epoch gate — and never from a per-call default.
+	CanariesArmed bool
 }
 
 // QuoteText is one quote as the registry holds it: the bytes the run was
@@ -614,6 +622,15 @@ func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
 	}
 	doc.WriteString(`,"log":`)
 	doc.Write(in.Log)
+	// Written unconditionally, including the `false` a pre-epoch run carries:
+	// the core's own default IS false, so the two agree, and a key that is
+	// always present is one fewer shape for the bundle to branch on.
+	doc.WriteString(`,"canariesArmed":`)
+	if in.CanariesArmed {
+		doc.WriteString(`true`)
+	} else {
+		doc.WriteString(`false`)
+	}
 	doc.WriteString(`}`)
 
 	parsed, err := c.parseJSON(ctx, doc.String())

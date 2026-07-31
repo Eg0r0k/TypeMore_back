@@ -202,6 +202,22 @@ type Config struct {
 	// Cost: a deploy may wait two minutes for a batch to land, down from ten.
 	ReplayShutdownGrace time.Duration `env:"REPLAY_SHUTDOWN_GRACE" envDefault:"120s"`
 
+	// ReplayCanaryEpoch is the instant the client that RENDERS display canaries
+	// went live. A run created at or after it is judged with the canary
+	// detectors armed; every earlier run is judged exactly as it always was.
+	//
+	// UNSET (the zero value, and the default) means NO run is ever armed. That
+	// is the whole point of the knob, not a conservative default to be tidied
+	// away later: the canary schedule is computable from any historical seed,
+	// so an ungated judge would score coincidental early commits on runs whose
+	// client never drew a canary — and `make revalidate` walks all of history,
+	// so it would do it to the entire archive at once.
+	//
+	// Set it BY HAND, once, to the frontend deploy instant, and only after that
+	// deploy is out (docs/REPLAY.md, "Canary epoch"). RFC3339, e.g.
+	// TYPEMORE_REPLAY_CANARY_EPOCH=2026-08-01T12:00:00Z.
+	ReplayCanaryEpoch time.Time `env:"REPLAY_CANARY_EPOCH"`
+
 	// --- Replay review policy (docs/REPLAY.md, "Review policy") ---
 	//
 	// Which plausibility flags are worth what, and how much weighted severity

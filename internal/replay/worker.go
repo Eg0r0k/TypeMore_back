@@ -51,6 +51,18 @@ type WorkerConfig struct {
 	// means the open default: policy.Noop, which judges nothing. Build one with
 	// NewDecider — it is where an unusable judge version is refused.
 	Decider Decider
+	// CanaryEpoch is the instant the canary-RENDERING client went live. A run
+	// created at or after it is judged with the core's canary detectors armed;
+	// an earlier one is judged exactly as it was before the detectors existed.
+	//
+	// The ZERO VALUE ARMS NOTHING, and that is the safety property, not a
+	// placeholder: the canary schedule is a pure function of a run's seed, so
+	// it is computable for every run ever stored — including the entire archive
+	// that predates the render. Arming those would score coincidence as
+	// evidence, and `make revalidate` walks all of history in one pass. The
+	// epoch is therefore set BY A HUMAN, after the frontend deploy, and never
+	// defaulted (platform.Config.ReplayCanaryEpoch; docs/REPLAY.md).
+	CanaryEpoch time.Time
 }
 
 func (c WorkerConfig) withDefaults() WorkerConfig {
@@ -245,7 +257,7 @@ func (w *Worker) runBatch(
 	started := time.Now()
 
 	claimed, err := process(func(ctx context.Context, run PendingRun) Decision {
-		d := Judge(ctx, core, w.reg, w.quotes, w.cfg.Decider, run)
+		d := Judge(ctx, core, w.reg, w.quotes, w.cfg.Decider, run, w.cfg.CanaryEpoch)
 		switch d.Status {
 		case StatusAccepted:
 			tally.accepted++
@@ -288,12 +300,16 @@ func (w *Worker) runBatch(
 // gets its bytes from the quote registry and never touches the dictionary
 // registry at all — its dict_hash is dictVersion([text]) and would not resolve
 // there, so a shared lookup would reject every quote run before it began.
-func Judge(ctx context.Context, core *Core, reg *Registry, quotes QuoteResolver, decider Decider, run PendingRun) Decision {
+//
+// canaryEpoch arms the core's canary detectors per run (see CanariesArmedAt);
+// the zero instant arms nothing at all.
+func Judge(ctx context.Context, core *Core, reg *Registry, quotes QuoteResolver, decider Decider, run PendingRun, canaryEpoch time.Time) Decision {
 	in := Input{
-		Seed:         run.Seed,
-		DictHash:     run.DictHash,
-		Setup:        run.Setup,
-		ScoreVersion: run.ScoreVersion,
+		Seed:          run.Seed,
+		DictHash:      run.DictHash,
+		Setup:         run.Setup,
+		ScoreVersion:  run.ScoreVersion,
+		CanariesArmed: CanariesArmedAt(run.CreatedAt, canaryEpoch),
 	}
 
 	ref, isQuote, err := quoteRefOf(run.Setup)
@@ -320,6 +336,25 @@ func Judge(ctx context.Context, core *Core, reg *Registry, quotes QuoteResolver,
 
 	res, err := core.Replay(ctx, in)
 	return decider.Decide(run, res, err)
+}
+
+// CanariesArmedAt reports whether a run created at createdAt is judged with the
+// canary detectors armed under the given epoch.
+//
+// ONE function, so the worker, `revalidate`, `calibrate` and the tests cannot
+// disagree about what "armed" means. The two rules it encodes:
+//
+//   - an UNSET epoch (the zero instant) arms nothing, whatever the run's age.
+//     There is no run old enough or new enough to be armed by an operator who
+//     has not said when the rendering client shipped;
+//   - otherwise the run is armed iff it was created at or after the epoch. A
+//     run submitted by a client that never drew a canary can only produce
+//     coincidences, and coincidence must never be read as evidence.
+func CanariesArmedAt(createdAt, epoch time.Time) bool {
+	if epoch.IsZero() {
+		return false
+	}
+	return !createdAt.Before(epoch)
 }
 
 // quoteRef is a run's own claim about which fixed text it was typed against.
