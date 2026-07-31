@@ -28,6 +28,7 @@ Success/JSON bodies are shown; errors are `{"error":"<code>","message":"..."}`.
 | POST | `/api/v1/auth/email/add` | session | Add an email identity to an OAuth-only account, send verification |
 | POST | `/api/v1/auth/password/set` | session | One-time first password for an account with a verified email and no credentials |
 | GET  | `/api/v1/me` | session | Current user |
+| PATCH | `/api/v1/me/settings` | session | The account's privacy switches (partial body `{profilePublic?, keyboardPublic?}`); answers with the `/me` user view. See `docs/PROFILE.md`, "Public profiles" |
 
 `{provider}` is `github` or `google`. OAuth callbacks redirect to
 `<frontend>/auth/callback?status=ok` (or `?error=<code>`, e.g.
@@ -41,9 +42,11 @@ endpoint takes the field.
 ### Success bodies
 
 All success responses are `200 OK` with `Content-Type: application/json`
-(OAuth `start`/`callback` are `302` redirects with no body). The two user-object
-endpoints share one shape — the `userView` `{id, displayName, createdAt}`,
-lower-camelCase, `createdAt` an RFC 3339 string:
+(OAuth `start`/`callback` are `302` redirects with no body). The user-object
+endpoints share one shape — the `userView` `{id, displayName, createdAt,
+restricted, profilePublic, keyboardPublic}`, lower-camelCase, `createdAt` an
+RFC 3339 string (the two privacy switches: `docs/PROFILE.md`, "Public
+profiles"):
 
 | Endpoint | Body |
 |---|---|
