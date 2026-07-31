@@ -74,6 +74,9 @@ var TypeMoreCore = (() => {
   // src/index.ts
   var index_exports = {};
   __export(index_exports, {
+    CANARY_CODEPOINTS: () => CANARY_CODEPOINTS,
+    CANARY_DIRECT: () => CANARY_DIRECT,
+    CANARY_SOFT: () => CANARY_SOFT,
     CODE_MAX_EXTRA_CHARS: () => CODE_MAX_EXTRA_CHARS,
     CORE_PACKAGE_VERSION: () => CORE_PACKAGE_VERSION,
     DEFAULT_MAX_EXTRA_CHARS: () => DEFAULT_MAX_EXTRA_CHARS,
@@ -99,6 +102,7 @@ var TypeMoreCore = (() => {
     asMs: () => asMs,
     asSeq: () => asSeq,
     bufferOf: () => bufferOf,
+    canaryAt: () => canaryAt,
     charObservationsOf: () => charObservationsOf,
     comboMultiplier: () => comboMultiplier,
     commitEvent: () => commitEvent,
@@ -893,6 +897,34 @@ var TypeMoreCore = (() => {
       capitalizeNext = context.generation.punctuation && SENTENCE_END.includes((_a = decorated[decorated.length - 1]) != null ? _a : "");
     }
     return ok({ words, context, dictName: dict.name });
+  }
+
+  // src/canary.ts
+  var CANARY_SOFT = "\u200B";
+  var CANARY_DIRECT = "\u2063";
+  var CANARY_CODEPOINTS = /* @__PURE__ */ new Set([
+    "\u2061",
+    "\u2062",
+    "\u2063",
+    "\u2064"
+  ]);
+  var RATE = 0.12;
+  var SOFT_SHARE = 0.8;
+  function canaryAt(seed, wordIndex, word) {
+    if (word.length < 4) return null;
+    for (let i = 0; i < word.length; i++) {
+      const unit = word.charCodeAt(i);
+      if (unit >= 55296 && unit <= 57343) return null;
+      const char = word[i];
+      if (char === "	" || char === "\n") return null;
+      if (isSpaceGrapheme(char)) return null;
+      if (CANARY_CODEPOINTS.has(char)) return null;
+    }
+    const rng = mulberry32(fnv1a(`${seed}:canary:${wordIndex}`));
+    if (rng() >= RATE) return null;
+    const slot = 1 + Math.floor(rng() * (word.length - 1));
+    const grapheme = rng() < SOFT_SHARE ? CANARY_SOFT : CANARY_DIRECT;
+    return { slot, grapheme };
   }
 
   // src/game-core.ts
@@ -2085,7 +2117,7 @@ var TypeMoreCore = (() => {
     return [...text].length;
   }
   function validateLog(input) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
     const thresholds = __spreadValues(__spreadValues({}, DEFAULT_THRESHOLDS), input.thresholds);
     const { config, generation } = input.configSnapshot;
     const seedContext = makeSeedContext(input.dictionary, input.seed, generation);
@@ -2237,6 +2269,55 @@ var TypeMoreCore = (() => {
         });
       }
     }
+    if (input.canariesArmed === true) {
+      let canaryInserts = 0;
+      for (const event of stateEvents) {
+        if (event.kind !== "insert") continue;
+        for (const char of event.text) {
+          if (CANARY_CODEPOINTS.has(char)) {
+            canaryInserts++;
+            break;
+          }
+        }
+      }
+      if (canaryInserts > 0) {
+        flags.push({
+          code: "canary-grapheme",
+          score: 1,
+          detail: `${canaryInserts} insert event(s) carry an invisible canary codepoint`
+        });
+      }
+      if (!config.nospace) {
+        let hits = 0;
+        let aborted = false;
+        try {
+          let replayState = initialStateOf(ctx);
+          for (const event of stateEvents) {
+            replayState = settle(ctx, replayState, event.t);
+            if (event.kind === "commit") {
+              const index = replayState.wordIndex;
+              const canary = canaryAt(input.seed, index, (_j = ctx.words[index]) != null ? _j : "");
+              if (canary !== null && bufferOf(replayState, index).length === canary.slot) hits++;
+            }
+            const next = reduce(ctx, replayState, event);
+            if (next.isErr()) {
+              aborted = true;
+              break;
+            }
+            replayState = next.value;
+          }
+        } catch (e) {
+          aborted = true;
+        }
+        if (!aborted && hits >= 3) {
+          flags.push({
+            code: "canary-commit",
+            score: Math.min(1, (hits - 2) * 0.25),
+            detail: `${hits} commit(s) landed exactly on a seed-scheduled canary offset`
+          });
+        }
+      }
+    }
     return ok({ verdict: "valid", flags, metrics });
   }
 
@@ -2354,4 +2435,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"ec30c943aa940accc65ec9aa0716d9db380f08a0","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"0cdf187d494bbc59a6286fd6913abf60f64c3f7f","gitDirty":false}
