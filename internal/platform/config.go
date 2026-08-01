@@ -58,6 +58,11 @@ type Config struct {
 	// origin, the Origin header value mutating endpoints require (CSRF defense),
 	// and the base URL for links embedded in emails.
 	FrontendOrigin string `env:"FRONTEND_ORIGIN" envDefault:"http://localhost:5173"`
+	// Admins is the admin bootstrap list (docs/MODERATION.md): emails whose
+	// VERIFIED accounts are promoted to the admin role at startup. Promotion
+	// only — removing an email demotes nobody. Empty (the default) means no
+	// admin surface: the /api/v1/admin subtree is not mounted at all.
+	Admins []string `env:"ADMINS" envSeparator:","`
 	// CookieName is the session cookie name.
 	CookieName string `env:"COOKIE_NAME" envDefault:"tm_session"`
 	// CookieDomain scopes the session cookie; empty = host-only (dev default).

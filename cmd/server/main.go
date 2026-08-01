@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/typemore/typemore-server/api"
 	"github.com/typemore/typemore-server/internal/auth"
 	"github.com/typemore/typemore-server/internal/auth/pgstore"
 	"github.com/typemore/typemore-server/internal/keyboard"
@@ -118,6 +119,21 @@ func run() error {
 	// tokens. Tied to ctx, so the shutdown signal stops it with the server.
 	if cfg.AuthCleanupInterval > 0 {
 		go auth.RunJanitor(ctx, authStore, cfg.AuthCleanupInterval, logger)
+	}
+
+	// Admin bootstrap (docs/MODERATION.md, "The admin surface"): the accounts
+	// behind TYPEMORE_ADMINS' VERIFIED emails are promoted to the admin role.
+	// Promotion only — the env list is how the first admin appears, never a
+	// sync source that demotes. An empty list is also the mount switch below:
+	// no admins configured, no /admin subtree, no surface to attack.
+	adminSurface := len(cfg.Admins) > 0
+	if adminSurface {
+		promoted, err := authSvc.BootstrapAdmins(ctx, cfg.Admins)
+		if err != nil {
+			logger.Error("admin bootstrap", "err", err)
+			return err
+		}
+		logger.Info("admin bootstrap", "configured", len(cfg.Admins), "promoted", promoted)
 	}
 
 	// Build the runs domain: run ingestion + own-runs listing + the public
@@ -312,9 +328,10 @@ func run() error {
 	// let it send the session cookie (credentials).
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins: []string{cfg.FrontendOrigin},
-		// PATCH is here for /me/settings; nothing else on the API mutates
-		// with it.
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodOptions},
+		// PATCH is here for /me/settings; DELETE for the admin surface's
+		// unban (docs/MODERATION.md) — without it the browser preflight
+		// refuses the request before the server ever sees it.
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders:   []string{"Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -354,6 +371,10 @@ func run() error {
 	}()
 
 	router.Route("/api/v1", func(r chi.Router) {
+		// The machine-readable contract of everything mounted below — public
+		// and cacheable like the other assets, so the frontend can point
+		// Swagger UI / codegen at a live instance (api/api.go has the why).
+		r.Get("/openapi.yaml", api.Handler())
 		r.Mount("/auth", authSvc.AuthRoutes())
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
 		// The account's privacy switches. RequireOrigin because it mutates —
@@ -390,6 +411,29 @@ func run() error {
 		// this subtree varies by who is asking, so it is mounted bare rather
 		// than behind OptionalAuth like the boards.
 		r.Mount("/quotes", quoteSvc.Routes())
+		// The admin surface (docs/MODERATION.md): per-route PERMISSION gates
+		// whose refusal is a 404, so the subtree is invisible to anyone it
+		// does not belong to. OptionalAuth rather than RequireAuth on purpose
+		// — RequireAuth's 401 would already confirm to an anonymous prober
+		// that something lives here, while OptionalAuth + a permission miss
+		// answers exactly like a route that does not exist. The permission
+		// check runs BEFORE the Origin (CSRF) check for the same reason:
+		// nobody without the permission learns anything, whatever they send.
+		// Mounted at all only when admins are configured — a deployment with
+		// no admins has no admin routes, not admin routes nobody can pass.
+		if adminSurface {
+			moderationSvc := moderation.NewService(moderationStore,
+				func(req *http.Request) (moderation.Actor, bool) {
+					u, ok := auth.UserFrom(req.Context())
+					return moderation.Actor{ID: u.ID, Name: u.DisplayName}, ok
+				}, logger)
+			requireWrite := func(next http.Handler) http.Handler {
+				return authSvc.RequirePermission(auth.PermBansWrite)(authSvc.RequireOrigin(next))
+			}
+			r.With(authSvc.OptionalAuth).
+				Mount("/admin", moderationSvc.AdminRoutes(
+					authSvc.RequirePermission(auth.PermBansRead), requireWrite))
+		}
 		// Room discovery, served by the WS handler's registry but mounted HERE,
 		// as a public HTTP read — deliberately outside the protocol
 		// (docs/PROTOCOL.md §5): browsing the lobby is a stateless question,

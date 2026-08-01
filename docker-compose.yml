@@ -31,6 +31,11 @@ services:
       TYPEMORE_SMTP_FROM: "no-reply@typemore.local"
       TYPEMORE_FRONTEND_ORIGIN: "http://localhost:5173"
       TYPEMORE_COOKIE_SECURE: "false"
+      # Admin bootstrap (docs/MODERATION.md): comma-separated emails whose
+      # VERIFIED accounts are promoted at startup. Empty (the default) means
+      # the /api/v1/admin subtree is not mounted at all. Set it in your local
+      # (gitignored) .env like the OAuth secrets.
+      TYPEMORE_ADMINS: "${TYPEMORE_ADMINS:-}"
       # OAuth: values come from your local (gitignored) .env or shell env — never
       # hard-coded here. OAUTH_REDIRECT_BASE must match the callback registered
       # with the provider (default http://localhost:8080).
