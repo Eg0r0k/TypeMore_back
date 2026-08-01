@@ -474,7 +474,7 @@ func TestKeyboardProjectionIsExactlyOnceAcrossRevalidate(t *testing.T) {
 
 	// Simulate history judged by an older bundle — exactly the backfill shape —
 	// and run the revalidate pass that re-replays it.
-	_, err := h.pool.Exec(context.Background(), `UPDATE runs SET bundle_sha = 'deadbeef'`)
+	_, err := h.pool.Exec(context.Background(), `UPDATE run_verdicts SET bundle_sha = 'deadbeef'`)
 	require.NoError(t, err)
 	h.revalidateOnce(t, policytest.NewFake())
 

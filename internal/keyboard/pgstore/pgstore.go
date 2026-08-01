@@ -2,7 +2,10 @@
 // replay worker's KeyboardProjector seam, folding the core's per-character
 // observations through the layouts asset into user_keyboard_profile rows —
 // inside the verdict transaction, exactly-once per run via the
-// runs.keyboard_projected stamp (migration 00016).
+// keyboard_projected_runs stamp table (migrations 00016, 00020). The stamp is
+// presence: a row means "this run's contribution is counted", stamping is an
+// INSERT, unstamping is a DELETE — and both tables written here belong to this
+// domain; runs is only ever read.
 package pgstore
 
 import (
@@ -49,12 +52,17 @@ type keyDelta struct {
 // accepted beats silently unbalancing the aggregates.
 func (p *Projector) ProjectKeyboard(ctx context.Context, tx pgx.Tx, runID uuid.UUID,
 	accepted bool, observations []replay.CharObservation) error {
-
+	// The stamp read is serialized by the verdict transaction's claim lock on
+	// the runs row (FOR UPDATE SKIP LOCKED), not by this query — no two verdict
+	// transactions ever hold the same run.
 	var userID uuid.UUID
 	var lang string
 	var stamped bool
 	if err := tx.QueryRow(ctx,
-		`SELECT user_id, lang, keyboard_projected FROM runs WHERE id = $1`, runID).
+		`SELECT r.user_id, r.lang, (k.run_id IS NOT NULL)
+		 FROM runs r
+		          LEFT JOIN keyboard_projected_runs k ON k.run_id = r.id
+		 WHERE r.id = $1`, runID).
 		Scan(&userID, &lang, &stamped); err != nil {
 		return fmt.Errorf("keyboard/pgstore: read run %s: %w", runID, err)
 	}
@@ -128,9 +136,17 @@ func (p *Projector) ProjectKeyboard(ctx context.Context, tx pgx.Tx, runID uuid.U
 		}
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE runs SET keyboard_projected = $2 WHERE id = $1`, runID, add); err != nil {
-		return fmt.Errorf("keyboard/pgstore: stamp run %s: %w", runID, err)
+	if add {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO keyboard_projected_runs (run_id) VALUES ($1)
+			 ON CONFLICT (run_id) DO NOTHING`, runID); err != nil {
+			return fmt.Errorf("keyboard/pgstore: stamp run %s: %w", runID, err)
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM keyboard_projected_runs WHERE run_id = $1`, runID); err != nil {
+			return fmt.Errorf("keyboard/pgstore: unstamp run %s: %w", runID, err)
+		}
 	}
 	return nil
 }

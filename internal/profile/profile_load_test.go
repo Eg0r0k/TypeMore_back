@@ -94,6 +94,18 @@ func buildFixture(t *testing.T) (*loadFixture, error) {
 	if err := migrate.Up(ctx, dsn); err != nil {
 		return nil, err
 	}
+	// Production planner constants BEFORE the pool opens its sessions. The
+	// container ships random_page_cost = 4 — a spinning-disk model that prices
+	// an index visit at 4× a sequential page. Every deployment target is
+	// SSD/NVMe (≈1.1, the community convention), and the 00019 split made the
+	// narrow runs table cheap enough to seq-scan that the disk model decides
+	// these plans: under rust arithmetic the planner walks 1M+ rows
+	// sequentially rather than index into the profile user's 100k. The pinned
+	// property is "index-driven under production constants", so the fixture
+	// must plan under them.
+	if err := perf.SetPlannerCosts(ctx, dsn); err != nil {
+		return nil, err
+	}
 	pool, err := db.NewPool(ctx, dsn, 8)
 	if err != nil {
 		return nil, err
@@ -151,40 +163,43 @@ func buildFixture(t *testing.T) (*loadFixture, error) {
 const sqlCounts = `
 SELECT count(*)::bigint,
        coalesce(sum(restarts_since_last_submit), 0)::bigint,
-       coalesce(sum((server_metrics ->> 'durationSec')::float8 * 1000)
-                FILTER (WHERE status = 'accepted'), 0)::bigint,
-       coalesce(sum(((server_metrics -> 'chars' ->> 'correct')::float8
-                   + (server_metrics -> 'chars' ->> 'incorrect')::float8
-                   + (server_metrics -> 'chars' ->> 'extra')::float8
-                   + (server_metrics ->> 'spaces')::float8) / 5)
-                FILTER (WHERE status = 'accepted'), 0)::float8
-FROM runs
-WHERE user_id = $1`
+       coalesce(sum((v.server_metrics ->> 'durationSec')::float8 * 1000)
+                FILTER (WHERE r.status = 'accepted'), 0)::bigint,
+       coalesce(sum(((v.server_metrics -> 'chars' ->> 'correct')::float8
+                   + (v.server_metrics -> 'chars' ->> 'incorrect')::float8
+                   + (v.server_metrics -> 'chars' ->> 'extra')::float8
+                   + (v.server_metrics ->> 'spaces')::float8) / 5)
+                FILTER (WHERE r.status = 'accepted'), 0)::float8
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1`
 
 const sqlMetricStats = `
-SELECT coalesce(max((server_metrics ->> 'wpm')::float8), 0)::float8,
-       coalesce(avg((server_metrics ->> 'wpm')::float8), 0)::float8,
-       coalesce(max((server_metrics ->> 'raw')::float8), 0)::float8,
-       coalesce(avg((server_metrics ->> 'raw')::float8), 0)::float8,
-       coalesce(max((server_metrics ->> 'accuracy')::float8), 0)::float8,
-       coalesce(avg((server_metrics ->> 'accuracy')::float8), 0)::float8,
-       coalesce(max((server_metrics ->> 'consistency')::float8), 0)::float8,
-       coalesce(avg((server_metrics ->> 'consistency')::float8), 0)::float8
-FROM runs
-WHERE user_id = $1 AND status = 'accepted'`
+SELECT coalesce(max((v.server_metrics ->> 'wpm')::float8), 0)::float8,
+       coalesce(avg((v.server_metrics ->> 'wpm')::float8), 0)::float8,
+       coalesce(max((v.server_metrics ->> 'raw')::float8), 0)::float8,
+       coalesce(avg((v.server_metrics ->> 'raw')::float8), 0)::float8,
+       coalesce(max((v.server_metrics ->> 'accuracy')::float8), 0)::float8,
+       coalesce(avg((v.server_metrics ->> 'accuracy')::float8), 0)::float8,
+       coalesce(max((v.server_metrics ->> 'consistency')::float8), 0)::float8,
+       coalesce(avg((v.server_metrics ->> 'consistency')::float8), 0)::float8
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.status = 'accepted'`
 
 const sqlLast10 = `
 SELECT coalesce(avg(t.wpm), 0)::float8,
        coalesce(avg(t.raw), 0)::float8,
        coalesce(avg(t.acc), 0)::float8,
        coalesce(avg(t.consistency), 0)::float8
-FROM (SELECT (server_metrics ->> 'wpm')::float8         AS wpm,
-             (server_metrics ->> 'raw')::float8         AS raw,
-             (server_metrics ->> 'accuracy')::float8    AS acc,
-             (server_metrics ->> 'consistency')::float8 AS consistency
-      FROM runs
-      WHERE user_id = $1 AND status = 'accepted'
-      ORDER BY created_at DESC, id DESC
+FROM (SELECT (v.server_metrics ->> 'wpm')::float8         AS wpm,
+             (v.server_metrics ->> 'raw')::float8         AS raw,
+             (v.server_metrics ->> 'accuracy')::float8    AS acc,
+             (v.server_metrics ->> 'consistency')::float8 AS consistency
+      FROM runs r
+               JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+      WHERE r.user_id = $1 AND r.status = 'accepted'
+      ORDER BY r.created_at DESC, r.id DESC
       LIMIT 10) t`
 
 const sqlStreaks = `
@@ -207,43 +222,50 @@ FROM (SELECT lang, count(*)::int AS tests
       GROUP BY lang) t`
 
 const sqlActivity = `
-SELECT (created_at AT TIME ZONE 'UTC')::date,
+SELECT (r.created_at AT TIME ZONE 'UTC')::date,
        count(*)::int,
-       coalesce(sum((server_metrics ->> 'durationSec')::float8 * 1000)
-                FILTER (WHERE status = 'accepted'), 0)::bigint
-FROM runs
-WHERE user_id = $1 AND created_at >= $2
+       coalesce(sum((v.server_metrics ->> 'durationSec')::float8 * 1000)
+                FILTER (WHERE r.status = 'accepted'), 0)::bigint
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.created_at >= $2
 GROUP BY 1
 ORDER BY 1`
 
 const sqlHistogram = `
-SELECT (floor((server_metrics ->> 'wpm')::float8 / 10) * 10)::int,
+SELECT (floor((v.server_metrics ->> 'wpm')::float8 / 10) * 10)::int,
        count(*)::int
-FROM runs
-WHERE user_id = $1 AND status = 'accepted'
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.status = 'accepted'
 GROUP BY 1
 ORDER BY 1`
 
 const sqlTimeseries = `
-SELECT (created_at AT TIME ZONE 'UTC')::date,
-       coalesce(sum((server_metrics ->> 'durationSec')::float8 * 1000)
-                FILTER (WHERE status = 'accepted'), 0)::bigint,
-       coalesce(avg((server_metrics ->> 'wpm')::float8)
-                FILTER (WHERE status = 'accepted'), 0)::float8,
-       coalesce(avg((server_metrics ->> 'accuracy')::float8)
-                FILTER (WHERE status = 'accepted'), 0)::float8
-FROM runs
-WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
+SELECT (r.created_at AT TIME ZONE 'UTC')::date,
+       coalesce(sum((v.server_metrics ->> 'durationSec')::float8 * 1000)
+                FILTER (WHERE r.status = 'accepted'), 0)::bigint,
+       coalesce(avg((v.server_metrics ->> 'wpm')::float8)
+                FILTER (WHERE r.status = 'accepted'), 0)::float8,
+       coalesce(avg((v.server_metrics ->> 'accuracy')::float8)
+                FILTER (WHERE r.status = 'accepted'), 0)::float8
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.created_at >= $2 AND r.created_at < $3
 GROUP BY 1
 ORDER BY 1`
 
 const sqlWpmPerHour = `
-WITH days AS (SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
-                     avg((server_metrics ->> 'wpm')::float8)          AS wpm,
-                     sum((server_metrics ->> 'durationSec')::float8)  AS secs
-              FROM runs
-              WHERE user_id = $1 AND status = 'accepted'
-                AND created_at >= $2 AND created_at < $3
+WITH raw AS MATERIALIZED (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date        AS day,
+               (v.server_metrics ->> 'wpm')::float8         AS wpm,
+               (v.server_metrics ->> 'durationSec')::float8 AS secs
+        FROM runs r
+                 JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+        WHERE r.user_id = $1 AND r.status = 'accepted'
+          AND r.created_at >= $2 AND r.created_at < $3),
+     days AS (SELECT day, avg(wpm) AS wpm, sum(secs) AS secs
+              FROM raw
               GROUP BY 1),
      pts AS (SELECT wpm, sum(secs) OVER (ORDER BY day) / 3600.0 AS hours
              FROM days)
@@ -262,37 +284,39 @@ ORDER BY achieved_at DESC`
 // deep continuation both walk (user_id, created_at DESC) with a LIMIT, never
 // sort, never scan.
 const sqlRunsFirst = `
-SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
-       setup, client_metrics, client_score, score_version, status,
-       server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at,
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.setup, r.client_metrics, r.client_score, r.score_version, r.status,
+       v.server_metrics, v.server_score, v.validation, v.validated_at,
+       r.log_bytes, r.restarts_since_last_submit, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
-           'consistency', (server_metrics ->> 'consistency')::float8,
-           'chars',       server_metrics -> 'chars',
-           'quoteId',     run_quote_id(setup),
-           'mods',        run_mods(setup))))::jsonb AS derived
-FROM runs
-WHERE user_id = $1
-ORDER BY created_at DESC, id DESC
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1
+ORDER BY r.created_at DESC, r.id DESC
 LIMIT $2`
 
 const sqlRunsAfter = `
-SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
-       setup, client_metrics, client_score, score_version, status,
-       server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at,
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.setup, r.client_metrics, r.client_score, r.score_version, r.status,
+       v.server_metrics, v.server_score, v.validation, v.validated_at,
+       r.log_bytes, r.restarts_since_last_submit, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
-           'consistency', (server_metrics ->> 'consistency')::float8,
-           'chars',       server_metrics -> 'chars',
-           'quoteId',     run_quote_id(setup),
-           'mods',        run_mods(setup))))::jsonb AS derived
-FROM runs
-WHERE user_id = $1
-  AND created_at <= $2
-  AND (created_at < $2 OR (created_at = $2 AND id < $3))
-ORDER BY created_at DESC, id DESC
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1
+  AND r.created_at <= $2
+  AND (r.created_at < $2 OR (r.created_at = $2 AND r.id < $3))
+ORDER BY r.created_at DESC, r.id DESC
 LIMIT $4`
 
 // --- plans ------------------------------------------------------------------
@@ -508,7 +532,8 @@ func TestLoadProfileKeyboardBudgets(t *testing.T) {
 	var runID uuid.UUID
 	require.NoError(t, f.pool.QueryRow(ctx, `
 		SELECT id FROM runs
-		WHERE user_id = $1 AND status = 'accepted' AND NOT keyboard_projected
+		WHERE user_id = $1 AND status = 'accepted'
+		  AND NOT EXISTS (SELECT 1 FROM keyboard_projected_runs k WHERE k.run_id = runs.id)
 		LIMIT 1`, f.user).Scan(&runID))
 	observations := make([]replay.CharObservation, 0, 46)
 	for c := 'a'; c <= 'z'; c++ {

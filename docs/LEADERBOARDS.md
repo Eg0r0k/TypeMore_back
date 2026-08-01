@@ -93,7 +93,10 @@ test ([`RUNS.md`](RUNS.md), "Dimensions"). Its length is a property of the text.
 
 The list lives in the `leaderboard_eligible_runs` view, in one place, read by
 both the incremental projection and the rebuild. Widening it is a migration plus
-`make rebuild-leaderboards`.
+`make rebuild-leaderboards`. Since 00019 the view reads the server numbers
+through an inner join to `run_verdicts` (the verdict's own table); its output
+columns are unchanged, and `status = 'accepted'` guarantees the joined row
+exists.
 
 ## Eligibility
 

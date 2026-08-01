@@ -28,12 +28,14 @@ type AuthIdentity struct {
 type Ban struct {
 	UserID uuid.UUID
 	// Internal moderation note. NEVER exposed to the player: the banner they see is deliberately opaque (docs/MODERATION.md).
-	Reason    string
-	IssuedBy  *string
-	IssuedAt  time.Time
-	ExpiresAt *time.Time
-	ID        uuid.UUID
-	RevokedAt *time.Time
+	Reason        string
+	IssuedBy      *string
+	IssuedAt      time.Time
+	ExpiresAt     *time.Time
+	ID            uuid.UUID
+	RevokedAt     *time.Time
+	IssuedByUser  *uuid.UUID
+	RevokedByUser *uuid.UUID
 }
 
 type EmailToken struct {
@@ -44,6 +46,10 @@ type EmailToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type KeyboardProjectedRun struct {
+	RunID uuid.UUID
 }
 
 type LeaderboardEligibleRun struct {
@@ -166,16 +172,20 @@ type Run struct {
 	Log                     []byte
 	LogBytes                int32
 	CreatedAt               time.Time
-	ServerMetrics           []byte
-	ServerScore             []byte
-	Validation              []byte
-	BundleSha               *string
-	ValidatedAt             *time.Time
 	Attempts                int16
 	LastError               *string
-	PolicyVersion           *int16
 	RestartsSinceLastSubmit int32
-	KeyboardProjected       bool
+}
+
+type RunVerdict struct {
+	RunID         uuid.UUID
+	UserID        uuid.UUID
+	ServerMetrics []byte
+	ServerScore   []byte
+	Validation    json.RawMessage
+	BundleSha     *string
+	PolicyVersion *int16
+	ValidatedAt   time.Time
 }
 
 type Session struct {
@@ -193,6 +203,8 @@ type User struct {
 	CreatedAt      time.Time
 	ProfilePublic  bool
 	KeyboardPublic bool
+	UpdatedAt      time.Time
+	Role           string
 }
 
 type UserCredential struct {

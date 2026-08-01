@@ -130,6 +130,11 @@ func buildFixture(t *testing.T, baseDSN string) (*fixture, error) {
 	if err := migrate.Up(ctx, dsn); err != nil {
 		return nil, fmt.Errorf("migrate perf database: %w", err)
 	}
+	// Production planner constants before the pool opens its sessions — the
+	// same SSD-vs-rust reasoning as the profile fixture (perf.SetPlannerCosts).
+	if err := perf.SetPlannerCosts(ctx, dsn); err != nil {
+		return nil, err
+	}
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {

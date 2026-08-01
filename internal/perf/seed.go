@@ -220,13 +220,15 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, spec SeedSpec) (SeedResult, e
 		res.ColdBuckets = append(res.ColdBuckets, b)
 	}
 
-	// --- runs ---
+	// --- runs (+ their verdict rows: the payload lives on run_verdicts, 00019) ---
 	runCols := []string{
 		"id", "user_id", "mode", "duration_ms", "word_count", "lang", "seed",
 		"dict_hash", "setup", "client_metrics", "client_score", "score_version",
 		"status", "log", "log_bytes", "created_at",
-		"server_metrics", "server_score", "validation", "bundle_sha",
-		"policy_version", "validated_at",
+	}
+	verdictCols := []string{
+		"run_id", "user_id", "server_metrics", "server_score", "validation",
+		"bundle_sha", "policy_version", "validated_at",
 	}
 
 	setup := MustJSON(BuildSetup(SetupSpec{Mode: "time", DurationMs: 60_000}))
@@ -238,7 +240,7 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, spec SeedSpec) (SeedResult, e
 	log := Gzip([]byte(`{"version":1,"events":[{"kind":"insert","seq":1,"t":10,"text":"a"}]}`))
 
 	base := time.Now().UTC().Add(-365 * 24 * time.Hour)
-	var runRows [][]any
+	var runRows, verdictRows [][]any
 	flush := func() error {
 		if len(runRows) == 0 {
 			return nil
@@ -246,8 +248,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, spec SeedSpec) (SeedResult, e
 		if err := copyRows(ctx, pool, "runs", runCols, runRows); err != nil {
 			return err
 		}
+		if err := copyRows(ctx, pool, "run_verdicts", verdictCols, verdictRows); err != nil {
+			return err
+		}
 		res.TotalRuns += len(runRows)
 		runRows = runRows[:0]
+		verdictRows = verdictRows[:0]
 		return nil
 	}
 
@@ -261,10 +267,14 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, spec SeedSpec) (SeedResult, e
 		}
 		acc := 0.85 + rng.Float64()*0.15
 		wpm := 40 + rng.Float64()*120
+		id := uuid.New()
 		runRows = append(runRows, []any{
-			uuid.New(), user, b.Mode, b.DurationMs, b.WordCount, b.Lang,
+			id, user, b.Mode, b.DurationMs, b.WordCount, b.Lang,
 			int64(rng.Uint32()), "804728e8", setup, clientMetrics, clientScore,
 			int16(2), status, log, int32(64), at,
+		})
+		verdictRows = append(verdictRows, []any{
+			id, user,
 			[]byte(fmt.Sprintf(`{"wpm":%.6f,"raw":%.6f,"accuracy":%.6f}`, wpm, wpm+1, acc)),
 			[]byte(fmt.Sprintf(`{"version":2,"total":%d}`, score)),
 			validation, "perfbundle", int16(1), at,
@@ -302,7 +312,11 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, spec SeedSpec) (SeedResult, e
 		return res, err
 	}
 
-	if _, err := pool.Exec(ctx, `ANALYZE users, auth_identities, bans, runs`); err != nil {
+	// VACUUM, not just ANALYZE: a COPY'd table has no visibility map, and
+	// without one the planner cannot price an index-only scan — the plan
+	// production autovacuum would give these queries. ANALYZE alone leaves the
+	// fixture pinning plans against a table state production never stays in.
+	if _, err := pool.Exec(ctx, `VACUUM ANALYZE users, auth_identities, bans, runs, run_verdicts`); err != nil {
 		return res, fmt.Errorf("perf: analyze: %w", err)
 	}
 
@@ -399,9 +413,11 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 	runCols := []string{
 		"id", "user_id", "mode", "duration_ms", "word_count", "lang", "seed",
 		"dict_hash", "setup", "client_metrics", "client_score", "score_version",
-		"status", "log", "log_bytes", "created_at",
-		"server_metrics", "server_score", "validation", "bundle_sha",
-		"policy_version", "validated_at", "restarts_since_last_submit",
+		"status", "log", "log_bytes", "created_at", "restarts_since_last_submit",
+	}
+	verdictCols := []string{
+		"run_id", "user_id", "server_metrics", "server_score", "validation",
+		"bundle_sha", "policy_version", "validated_at",
 	}
 	setup := MustJSON(BuildSetup(SetupSpec{Mode: "time", DurationMs: 60_000}))
 	clientMetrics := []byte(`{"wpm":100,"raw":100,"acc":1}`)
@@ -410,7 +426,7 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 	log := Gzip([]byte(`{"version":1,"events":[{"kind":"insert","seq":1,"t":10,"text":"a"}]}`))
 
 	base := time.Now().UTC().Add(-time.Duration(spec.Days) * 24 * time.Hour)
-	var rows [][]any
+	var rows, verdictRows [][]any
 	flush := func() error {
 		if len(rows) == 0 {
 			return nil
@@ -418,8 +434,12 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 		if err := copyRows(ctx, pool, "runs", runCols, rows); err != nil {
 			return err
 		}
+		if err := copyRows(ctx, pool, "run_verdicts", verdictCols, verdictRows); err != nil {
+			return err
+		}
 		res.TotalRuns += len(rows)
 		rows = rows[:0]
+		verdictRows = verdictRows[:0]
 		return nil
 	}
 
@@ -462,12 +482,15 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 		if status == "accepted" {
 			res.Accepted++
 		}
+		id := uuid.New()
 		rows = append(rows, []any{
-			uuid.New(), res.UserID, shape.mode, durationMs, wordCount,
+			id, res.UserID, shape.mode, durationMs, wordCount,
 			langs[rng.IntN(len(langs))], int64(rng.Uint32()), "804728e8",
 			setup, clientMetrics, clientScore, int16(2), status, log, int32(64),
-			at, serverMetrics, serverScore, validation, "perfbundle", int16(1),
 			at, restarts,
+		})
+		verdictRows = append(verdictRows, []any{
+			id, res.UserID, serverMetrics, serverScore, validation, "perfbundle", int16(1), at,
 		})
 		if len(rows) >= 50_000 {
 			if err := flush(); err != nil {
@@ -501,7 +524,7 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 	}
 	// The entries FK references runs(id); the fixture's PB run ids are
 	// synthetic, so plant matching skeleton runs first.
-	var pbRunRows [][]any
+	var pbRunRows, pbVerdictRows [][]any
 	for _, row := range pbRows {
 		d := int32(60_000)
 		// An accepted run always carries its server metrics in production, so
@@ -516,11 +539,16 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 		pbRunRows = append(pbRunRows, []any{
 			row[2], res.UserID, "time", &d, nil, "en", int64(rng.Uint32()),
 			"804728e8", setup, clientMetrics, clientScore, int16(2), "accepted",
-			log, int32(64), row[9], m, sc, validation, "perfbundle", int16(1),
-			row[9], int32(0),
+			log, int32(64), row[9], int32(0),
+		})
+		pbVerdictRows = append(pbVerdictRows, []any{
+			row[2], res.UserID, m, sc, validation, "perfbundle", int16(1), row[9],
 		})
 	}
 	if err := copyRows(ctx, pool, "runs", runCols, pbRunRows); err != nil {
+		return res, err
+	}
+	if err := copyRows(ctx, pool, "run_verdicts", verdictCols, pbVerdictRows); err != nil {
 		return res, err
 	}
 	res.TotalRuns += len(pbRunRows)
@@ -530,7 +558,7 @@ func SeedProfileUser(ctx context.Context, pool *pgxpool.Pool, spec ProfileSeedSp
 		return res, err
 	}
 
-	if _, err := pool.Exec(ctx, `ANALYZE users, auth_identities, runs, leaderboard_entries`); err != nil {
+	if _, err := pool.Exec(ctx, `VACUUM ANALYZE users, auth_identities, runs, run_verdicts, leaderboard_entries`); err != nil {
 		return res, fmt.Errorf("perf: analyze: %w", err)
 	}
 	res.Elapsed = time.Since(started)

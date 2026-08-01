@@ -14,12 +14,13 @@ import (
 )
 
 const getProfileActivity = `-- name: GetProfileActivity :many
-SELECT (created_at AT TIME ZONE 'UTC')::date                        AS day,
+SELECT (r.created_at AT TIME ZONE 'UTC')::date                        AS day,
        count(*)::int                                                AS tests,
-       coalesce(sum((server_metrics ->> 'durationSec')::float8 * 1000)
-                FILTER (WHERE status = 'accepted'), 0)::bigint      AS time_ms
-FROM runs
-WHERE user_id = $1 AND created_at >= $2
+       coalesce(sum((v.server_metrics ->> 'durationSec')::float8 * 1000)
+                FILTER (WHERE r.status = 'accepted'), 0)::bigint      AS time_ms
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.created_at >= $2
 GROUP BY 1
 ORDER BY 1
 `
@@ -62,15 +63,16 @@ func (q *Queries) GetProfileActivity(ctx context.Context, arg GetProfileActivity
 const getProfileCounts = `-- name: GetProfileCounts :one
 SELECT count(*)::bigint                                            AS tests_completed,
        coalesce(sum(restarts_since_last_submit), 0)::bigint        AS restarts,
-       coalesce(sum((server_metrics ->> 'durationSec')::float8 * 1000)
-                FILTER (WHERE status = 'accepted'), 0)::bigint     AS time_typing_ms,
-       coalesce(sum(((server_metrics -> 'chars' ->> 'correct')::float8
-                   + (server_metrics -> 'chars' ->> 'incorrect')::float8
-                   + (server_metrics -> 'chars' ->> 'extra')::float8
-                   + (server_metrics ->> 'spaces')::float8) / 5)
-                FILTER (WHERE status = 'accepted'), 0)::float8     AS estimated_words
-FROM runs
-WHERE user_id = $1
+       coalesce(sum((v.server_metrics ->> 'durationSec')::float8 * 1000)
+                FILTER (WHERE r.status = 'accepted'), 0)::bigint     AS time_typing_ms,
+       coalesce(sum(((v.server_metrics -> 'chars' ->> 'correct')::float8
+                   + (v.server_metrics -> 'chars' ->> 'incorrect')::float8
+                   + (v.server_metrics -> 'chars' ->> 'extra')::float8
+                   + (v.server_metrics ->> 'spaces')::float8) / 5)
+                FILTER (WHERE r.status = 'accepted'), 0)::float8     AS estimated_words
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1
 `
 
 type GetProfileCountsRow struct {
@@ -115,10 +117,11 @@ func (q *Queries) GetProfileDominantLang(ctx context.Context, userID uuid.UUID) 
 }
 
 const getProfileHistogram = `-- name: GetProfileHistogram :many
-SELECT (floor((server_metrics ->> 'wpm')::float8 / 10) * 10)::int AS bucket,
-       count(*)::int                                              AS tests
-FROM runs
-WHERE user_id = $1 AND status = 'accepted'
+SELECT (floor((v.server_metrics ->> 'wpm')::float8 / 10) * 10)::int AS bucket,
+       count(*)::int                                                AS tests
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.status = 'accepted'
 GROUP BY 1
 ORDER BY 1
 `
@@ -215,13 +218,14 @@ SELECT coalesce(avg(t.wpm), 0)::float8         AS wpm_average,
        coalesce(avg(t.raw), 0)::float8         AS raw_average,
        coalesce(avg(t.acc), 0)::float8         AS acc_average,
        coalesce(avg(t.consistency), 0)::float8 AS consistency_average
-FROM (SELECT (server_metrics ->> 'wpm')::float8         AS wpm,
-             (server_metrics ->> 'raw')::float8         AS raw,
-             (server_metrics ->> 'accuracy')::float8    AS acc,
-             (server_metrics ->> 'consistency')::float8 AS consistency
-      FROM runs
-      WHERE user_id = $1 AND status = 'accepted'
-      ORDER BY created_at DESC, id DESC
+FROM (SELECT (v.server_metrics ->> 'wpm')::float8         AS wpm,
+             (v.server_metrics ->> 'raw')::float8         AS raw,
+             (v.server_metrics ->> 'accuracy')::float8    AS acc,
+             (v.server_metrics ->> 'consistency')::float8 AS consistency
+      FROM runs r
+               JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+      WHERE r.user_id = $1 AND r.status = 'accepted'
+      ORDER BY r.created_at DESC, r.id DESC
       LIMIT 10) t
 `
 
@@ -248,16 +252,17 @@ func (q *Queries) GetProfileLast10(ctx context.Context, userID uuid.UUID) (GetPr
 }
 
 const getProfileMetricStats = `-- name: GetProfileMetricStats :one
-SELECT coalesce(max((server_metrics ->> 'wpm')::float8), 0)::float8         AS wpm_highest,
-       coalesce(avg((server_metrics ->> 'wpm')::float8), 0)::float8         AS wpm_average,
-       coalesce(max((server_metrics ->> 'raw')::float8), 0)::float8         AS raw_highest,
-       coalesce(avg((server_metrics ->> 'raw')::float8), 0)::float8         AS raw_average,
-       coalesce(max((server_metrics ->> 'accuracy')::float8), 0)::float8    AS acc_highest,
-       coalesce(avg((server_metrics ->> 'accuracy')::float8), 0)::float8    AS acc_average,
-       coalesce(max((server_metrics ->> 'consistency')::float8), 0)::float8 AS consistency_highest,
-       coalesce(avg((server_metrics ->> 'consistency')::float8), 0)::float8 AS consistency_average
-FROM runs
-WHERE user_id = $1 AND status = 'accepted'
+SELECT coalesce(max((v.server_metrics ->> 'wpm')::float8), 0)::float8         AS wpm_highest,
+       coalesce(avg((v.server_metrics ->> 'wpm')::float8), 0)::float8         AS wpm_average,
+       coalesce(max((v.server_metrics ->> 'raw')::float8), 0)::float8         AS raw_highest,
+       coalesce(avg((v.server_metrics ->> 'raw')::float8), 0)::float8         AS raw_average,
+       coalesce(max((v.server_metrics ->> 'accuracy')::float8), 0)::float8    AS acc_highest,
+       coalesce(avg((v.server_metrics ->> 'accuracy')::float8), 0)::float8    AS acc_average,
+       coalesce(max((v.server_metrics ->> 'consistency')::float8), 0)::float8 AS consistency_highest,
+       coalesce(avg((v.server_metrics ->> 'consistency')::float8), 0)::float8 AS consistency_average
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.status = 'accepted'
 `
 
 type GetProfileMetricStatsRow struct {
@@ -384,15 +389,16 @@ func (q *Queries) GetProfileStreaks(ctx context.Context, arg GetProfileStreaksPa
 }
 
 const getProfileTimeseries = `-- name: GetProfileTimeseries :many
-SELECT (created_at AT TIME ZONE 'UTC')::date                        AS day,
-       coalesce(sum((server_metrics ->> 'durationSec')::float8 * 1000)
-                FILTER (WHERE status = 'accepted'), 0)::bigint      AS time_ms,
-       coalesce(avg((server_metrics ->> 'wpm')::float8)
-                FILTER (WHERE status = 'accepted'), 0)::float8      AS avg_wpm,
-       coalesce(avg((server_metrics ->> 'accuracy')::float8)
-                FILTER (WHERE status = 'accepted'), 0)::float8      AS avg_acc
-FROM runs
-WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
+SELECT (r.created_at AT TIME ZONE 'UTC')::date                        AS day,
+       coalesce(sum((v.server_metrics ->> 'durationSec')::float8 * 1000)
+                FILTER (WHERE r.status = 'accepted'), 0)::bigint      AS time_ms,
+       coalesce(avg((v.server_metrics ->> 'wpm')::float8)
+                FILTER (WHERE r.status = 'accepted'), 0)::float8      AS avg_wpm,
+       coalesce(avg((v.server_metrics ->> 'accuracy')::float8)
+                FILTER (WHERE r.status = 'accepted'), 0)::float8      AS avg_acc
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+WHERE r.user_id = $1 AND r.created_at >= $2 AND r.created_at < $3
 GROUP BY 1
 ORDER BY 1
 `
@@ -454,7 +460,14 @@ type GetProfileUserRow struct {
 //
 // Two aggregation rules, stated once (and asserted by tests):
 //   - METRIC aggregates (wpm/raw/acc/consistency, estimated words) read
-//     ACCEPTED runs only — the server-verified numbers in server_metrics.
+//     ACCEPTED runs only — the server-verified numbers in server_metrics,
+//     which since 00019 live on the run_verdicts satellite (1:1 by run_id;
+//     LEFT JOIN where the base set includes unjudged runs, INNER where
+//     status = 'accepted' already implies the verdict row exists). Every join
+//     carries the redundant-looking `v.user_id = r.user_id`: it is what lets
+//     the planner propagate the $1 equality onto run_verdicts and drive BOTH
+//     sides through player-scoped indexes (run_verdicts_user_idx) instead of
+//     hashing the whole verdict table — the zone-9 plan pins are the test.
 //   - COUNTERS read every submitted run regardless of verdict (a flagged run
 //     was still played), and tests_started additionally folds in the
 //     client-reported restart counts: started = count(*) + sum(restarts).
@@ -466,12 +479,16 @@ func (q *Queries) GetProfileUser(ctx context.Context, id uuid.UUID) (GetProfileU
 }
 
 const getProfileWpmPerHour = `-- name: GetProfileWpmPerHour :one
-WITH days AS (SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
-                     avg((server_metrics ->> 'wpm')::float8)          AS wpm,
-                     sum((server_metrics ->> 'durationSec')::float8)  AS secs
-              FROM runs
-              WHERE user_id = $1 AND status = 'accepted'
-                AND created_at >= $2 AND created_at < $3
+WITH raw AS MATERIALIZED (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date        AS day,
+               (v.server_metrics ->> 'wpm')::float8         AS wpm,
+               (v.server_metrics ->> 'durationSec')::float8 AS secs
+        FROM runs r
+                 JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
+        WHERE r.user_id = $1 AND r.status = 'accepted'
+          AND r.created_at >= $2 AND r.created_at < $3),
+     days AS (SELECT day, avg(wpm) AS wpm, sum(secs) AS secs
+              FROM raw
               GROUP BY 1),
      pts AS (SELECT wpm, sum(secs) OVER (ORDER BY day) / 3600.0 AS hours
              FROM days)
@@ -495,6 +512,13 @@ type GetProfileWpmPerHourParams struct {
 // scale, while ≤366 day points sort in a page (the zone-9 plan check is what
 // caught it). NULL (fewer than two days, or zero variance in x) collapses to
 // 0 — the "no trend yet" answer.
+//
+// `raw` is MATERIALIZED on purpose: it narrows each tuple to (day, wpm, secs)
+// BEFORE the grouping sort. Without the fence the planner flattens the CTE
+// and sorts rows still carrying the whole server_metrics document — ~200
+// bytes each — which at 100k accepted runs is exactly the disk-spilling sort
+// the day-bucket design exists to avoid (the zone-9 spill check caught that
+// too, when 00019 moved the metrics behind a join).
 func (q *Queries) GetProfileWpmPerHour(ctx context.Context, arg GetProfileWpmPerHourParams) (float64, error) {
 	row := q.db.QueryRow(ctx, getProfileWpmPerHour, arg.UserID, arg.CreatedAt, arg.CreatedAt_2)
 	var wpm_per_hour float64
@@ -564,15 +588,16 @@ func (q *Queries) GetPublicProfilePBs(ctx context.Context, userID uuid.UUID) ([]
 
 const getPublicProfileRunsAfter = `-- name: GetPublicProfileRunsAfter :many
 SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang,
-       r.server_metrics, r.server_score, r.created_at,
+       v.server_metrics, v.server_score, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((r.server_metrics ->> 'accuracy')::numeric),
-           'consistency', (r.server_metrics ->> 'consistency')::float8,
-           'chars',       r.server_metrics -> 'chars',
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
            'quoteId',     run_quote_id(r.setup),
            'adoptedFromRunId', run_adopted_from(r.setup),
            'mods',        run_mods(r.setup))))::jsonb AS derived
 FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
 WHERE r.user_id = $1
   AND r.status = 'accepted'
   AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
@@ -642,15 +667,16 @@ func (q *Queries) GetPublicProfileRunsAfter(ctx context.Context, arg GetPublicPr
 
 const getPublicProfileRunsFirst = `-- name: GetPublicProfileRunsFirst :many
 SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang,
-       r.server_metrics, r.server_score, r.created_at,
+       v.server_metrics, v.server_score, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((r.server_metrics ->> 'accuracy')::numeric),
-           'consistency', (r.server_metrics ->> 'consistency')::float8,
-           'chars',       r.server_metrics -> 'chars',
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
            'quoteId',     run_quote_id(r.setup),
            'adoptedFromRunId', run_adopted_from(r.setup),
            'mods',        run_mods(r.setup))))::jsonb AS derived
 FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id AND v.user_id = r.user_id
 WHERE r.user_id = $1
   AND r.status = 'accepted'
   AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
@@ -723,14 +749,22 @@ FROM users
 WHERE display_name = $1
 `
 
+type GetPublicProfileUserRow struct {
+	ID             uuid.UUID
+	DisplayName    string
+	CreatedAt      time.Time
+	ProfilePublic  bool
+	KeyboardPublic bool
+}
+
 // The public surface's name resolution (docs/PROFILE.md, "Public profiles"):
 // display_name is citext UNIQUE, so the lookup is case-insensitive exactly the
 // way registration's uniqueness is. Nothing else about the account rides along
 // — the public payloads are explicit allowlists, and this row is where the
 // allowlist for the header STOPS.
-func (q *Queries) GetPublicProfileUser(ctx context.Context, displayName string) (User, error) {
+func (q *Queries) GetPublicProfileUser(ctx context.Context, displayName string) (GetPublicProfileUserRow, error) {
 	row := q.db.QueryRow(ctx, getPublicProfileUser, displayName)
-	var i User
+	var i GetPublicProfileUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.DisplayName,

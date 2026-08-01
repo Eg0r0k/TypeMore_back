@@ -87,6 +87,11 @@ type board struct {
 	server *httptest.Server
 	// asUser is the identity the /me route sees. uuid.Nil means anonymous.
 	asUser uuid.UUID
+	// pendingVerdicts stashes the verdict payload of runs planted 'pending', so
+	// a later judge() can write it the way production does: the run_verdicts row
+	// lands WITH the verdict, not at ingestion (a pending run has no verdict row
+	// — that absence IS the pending state since 00019).
+	pendingVerdicts map[uuid.UUID][]any
 }
 
 type boardOpts struct {
@@ -112,7 +117,7 @@ func newBoard(t *testing.T, mutators ...func(*boardOpts)) *board {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := leaderboardpg.New(pool, opts.requireVerifiedEmail)
 
-	b := &board{t: t, pool: pool, store: store}
+	b := &board{t: t, pool: pool, store: store, pendingVerdicts: map[uuid.UUID][]any{}}
 	svc := leaderboard.NewService(store, func(context.Context) (uuid.UUID, bool) {
 		if b.asUser == uuid.Nil {
 			return uuid.Nil, false
@@ -286,22 +291,21 @@ func (b *board) addRun(spec runSpec) uuid.UUID {
 	err = b.pool.QueryRow(context.Background(), `
 		INSERT INTO runs (user_id, mode, duration_ms, word_count, lang, seed, dict_hash,
 		                  setup, client_metrics, client_score, score_version,
-		                  log, log_bytes, created_at,
-		                  server_metrics, server_score, validation, bundle_sha,
-		                  policy_version, validated_at)
+		                  log, log_bytes, created_at)
 		VALUES ($1, $2, $3, $4, $5, 1, 'testhash',
 		        $6::jsonb, '{}'::jsonb, '{}'::jsonb, 2,
-		        '\x1f8b'::bytea, 0, $7,
-		        jsonb_build_object('wpm', $8::float8, 'raw', $9::float8, 'accuracy', $10::float8),
-		        jsonb_build_object('version', 2, 'total', $11::bigint),
-		        $12::jsonb, 'testbundle', 1, now())
+		        '\x1f8b'::bytea, 0, $7)
 		RETURNING id`,
 		spec.user, spec.mode, spec.durationMs, spec.wordCount, spec.lang,
 		spec.setup, spec.achievedAt,
-		spec.wpm, spec.raw, spec.acc, spec.score, validation,
 	).Scan(&id)
 	require.NoError(b.t, err, "insert run")
 
+	// A judged spec gets its verdict row the way production writes one —
+	// payload into run_verdicts, THEN the status transition + projection. A
+	// 'pending' spec gets neither: pending means "no verdict row exists" since
+	// 00019, so its payload is stashed for the judge() a test calls later.
+	b.pendingVerdicts[id] = []any{id, spec.user, spec.wpm, spec.raw, spec.acc, spec.score, validation}
 	if spec.status != "pending" {
 		b.judge(id, spec.status)
 	}
@@ -319,7 +323,24 @@ func (b *board) judge(runID uuid.UUID, status string) {
 	require.NoError(b.t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, `UPDATE runs SET status = $1, validated_at = now() WHERE id = $2`, status, runID)
+	// First verdict for this run writes the stashed payload; a re-judge only
+	// refreshes validated_at — exactly the two halves ApplyReplayDecision's
+	// successors (UpsertRunVerdict + ApplyRunOutcome) commit together.
+	if args, ok := b.pendingVerdicts[runID]; ok {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO run_verdicts (run_id, user_id, server_metrics, server_score,
+			                          validation, bundle_sha, policy_version, validated_at)
+			VALUES ($1, $2,
+			        jsonb_build_object('wpm', $3::float8, 'raw', $4::float8, 'accuracy', $5::float8),
+			        jsonb_build_object('version', 2, 'total', $6::bigint),
+			        $7::jsonb, 'testbundle', 1, now())`, args...)
+		require.NoError(b.t, err, "insert verdict")
+		delete(b.pendingVerdicts, runID)
+	} else {
+		_, err = tx.Exec(ctx, `UPDATE run_verdicts SET validated_at = now() WHERE run_id = $1`, runID)
+		require.NoError(b.t, err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE runs SET status = $1 WHERE id = $2`, status, runID)
 	require.NoError(b.t, err)
 	require.NoError(b.t, b.store.ProjectRun(ctx, tx, runID))
 	require.NoError(b.t, tx.Commit(ctx))

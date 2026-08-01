@@ -60,6 +60,7 @@ func seedWhale(t *testing.T, f *fixture) (uuid.UUID, uuid.UUID) {
 		var noWords *int32
 
 		rows := make([][]any, whaleRuns)
+		verdicts := make([][]any, whaleRuns)
 		for i := range rows {
 			id := uuid.New()
 			if i == whaleRuns/2 {
@@ -70,6 +71,9 @@ func seedWhale(t *testing.T, f *fixture) (uuid.UUID, uuid.UUID) {
 				id, whaleUser, "time", duration, noWords, "en", int64(i), "804728e8",
 				setup, []byte(`{"wpm":100,"raw":100,"acc":1}`), []byte(`{"version":2,"total":1000}`),
 				int16(2), "accepted", log, int32(64), at,
+			}
+			verdicts[i] = []any{
+				id, whaleUser,
 				[]byte(`{"wpm":100.0,"raw":101.0,"accuracy":0.97}`),
 				[]byte(fmt.Sprintf(`{"version":2,"total":%d}`, 100+i%9000)),
 				validation, "perfbundle", int16(1), at,
@@ -79,14 +83,17 @@ func seedWhale(t *testing.T, f *fixture) (uuid.UUID, uuid.UUID) {
 			"id", "user_id", "mode", "duration_ms", "word_count", "lang", "seed",
 			"dict_hash", "setup", "client_metrics", "client_score", "score_version",
 			"status", "log", "log_bytes", "created_at",
-			"server_metrics", "server_score", "validation", "bundle_sha",
-			"policy_version", "validated_at",
 		}, pgx.CopyFromRows(rows))
 		require.NoError(t, err, "seed the whale's runs")
+		_, err = f.pool.CopyFrom(ctx, pgx.Identifier{"run_verdicts"}, []string{
+			"run_id", "user_id", "server_metrics", "server_score", "validation",
+			"bundle_sha", "policy_version", "validated_at",
+		}, pgx.CopyFromRows(verdicts))
+		require.NoError(t, err, "seed the whale's verdicts")
 
 		// Without fresh statistics the planner still believes every user holds
 		// ~8 runs, and would pick a plan for a player who does not exist.
-		_, err = f.pool.Exec(ctx, `ANALYZE runs`)
+		_, err = f.pool.Exec(ctx, `ANALYZE runs, run_verdicts`)
 		require.NoError(t, err)
 		whaleSeeded = time.Since(started)
 	})
@@ -543,15 +550,25 @@ func TestLoadPlanRebuildEnumerate(t *testing.T) {
 	f := loadFixture(t)
 	ctx := context.Background()
 
+	// The EXPLAIN runs under the same session the shipped path uses:
+	// Store.Rebuild grants its transaction `SET LOCAL work_mem = '256MB'`
+	// before enumerating (pgstore.go carries the why), and a plan measured
+	// under a different work_mem than production runs would pin nothing real.
+	tx, err := f.pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `SET LOCAL work_mem = '256MB'`)
+	require.NoError(t, err)
+
 	start := time.Now()
-	plan, err := perf.Explain(ctx, f.pool, sqlEnumerateCells, noEmailGate)
+	plan, err := perf.Explain(ctx, tx, sqlEnumerateCells, noEmailGate)
 	require.NoError(t, err)
 	perf.AssertPlan(t, plan, perf.PlanAssertion{Zone: zone4, Query: "EnumerateLeaderboardCells (gate off)"})
 	perf.Report(t, zone4, "enumerate cells, gate off", fmt.Sprintf(
 		"%v, %.0f ms of planner-reported execution, %s wall, sorts=%v",
 		plan.Nodes, plan.TotalMs, time.Since(start).Round(time.Millisecond), plan.SortMethods))
 
-	gated, err := perf.ExplainOnly(ctx, f.pool, sqlEnumerateCells, requireVerifiedEmail)
+	gated, err := perf.ExplainOnly(ctx, tx, sqlEnumerateCells, requireVerifiedEmail)
 	require.NoError(t, err)
 	perf.Report(t, zone4, "enumerate cells, gate on (planned, not executed)", fmt.Sprintf("%v", gated.Nodes))
 	perf.Report(t, zone4, "enumerate cells plan, gate on (raw)", "\n"+gated.Raw)

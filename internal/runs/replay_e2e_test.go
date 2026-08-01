@@ -115,7 +115,7 @@ func (h *harness) supersedeQuote(t *testing.T, id uuid.UUID) {
 // test that wants to see a run judged AGAIN has to say so.
 func (h *harness) stalePolicyVersion(t *testing.T) {
 	t.Helper()
-	_, err := h.pool.Exec(context.Background(), `UPDATE runs SET policy_version = 0`)
+	_, err := h.pool.Exec(context.Background(), `UPDATE run_verdicts SET policy_version = 0`)
 	require.NoError(t, err)
 }
 

@@ -138,8 +138,20 @@ func (q *Queue) inTx(
 	}
 	for i := range runs {
 		d := decide(ctx, runs[i])
-		if err := qtx.ApplyReplayDecision(ctx, toDecisionParams(runs[i].ID, d)); err != nil {
-			return 0, fmt.Errorf("replay/pgstore: apply decision for run %s: %w", runs[i].ID, err)
+		// One decision, two tables, one transaction: the verdict payload lands
+		// in run_verdicts, the lifecycle half (status, retry bookkeeping) on
+		// runs. Committing them together is the invariant
+		// "status <> 'pending' <=> a verdict row exists".
+		if err := qtx.UpsertRunVerdict(ctx, toVerdictParams(runs[i].ID, d)); err != nil {
+			return 0, fmt.Errorf("replay/pgstore: write verdict for run %s: %w", runs[i].ID, err)
+		}
+		if err := qtx.ApplyRunOutcome(ctx, replaydb.ApplyRunOutcomeParams{
+			ID:        runs[i].ID,
+			Status:    d.Status,
+			Attempts:  d.Attempts,
+			LastError: d.LastError,
+		}); err != nil {
+			return 0, fmt.Errorf("replay/pgstore: apply outcome for run %s: %w", runs[i].ID, err)
 		}
 		// Unconditionally, not "when the status changed": the projection is a
 		// recompute, so running it on an unchanged verdict is a no-op, while
@@ -187,7 +199,7 @@ func toPendingRun(
 	}
 }
 
-func toDecisionParams(id uuid.UUID, d replay.Decision) replaydb.ApplyReplayDecisionParams {
+func toVerdictParams(id uuid.UUID, d replay.Decision) replaydb.UpsertRunVerdictParams {
 	var bundle *string
 	if d.BundleSHA != "" {
 		bundle = &d.BundleSHA
@@ -196,16 +208,13 @@ func toDecisionParams(id uuid.UUID, d replay.Decision) replaydb.ApplyReplayDecis
 	if d.PolicyVersion > 0 {
 		policy = &d.PolicyVersion
 	}
-	return replaydb.ApplyReplayDecisionParams{
-		ID:            id,
-		Status:        d.Status,
+	return replaydb.UpsertRunVerdictParams{
+		RunID:         id,
 		ServerMetrics: d.ServerMetrics,
 		ServerScore:   d.ServerScore,
 		Validation:    d.Validation,
 		BundleSha:     bundle,
 		PolicyVersion: policy,
-		Attempts:      d.Attempts,
-		LastError:     d.LastError,
 	}
 }
 

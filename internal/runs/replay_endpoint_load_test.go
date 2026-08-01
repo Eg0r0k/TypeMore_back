@@ -78,14 +78,21 @@ func storeMaxAcceptedRun(t *testing.T, h *harness) (id string, rawLogBytes int) 
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	_, err = tx.Exec(ctx, `UPDATE runs SET status = 'accepted' WHERE id = $1`, row.ID)
+	require.NoError(t, err)
 	_, err = tx.Exec(ctx, `
-		UPDATE runs
-		SET status = 'accepted',
-		    server_metrics = '{"wpm":101.2,"raw":105.4,"accuracy":0.987,"chars":{"correct":9990}}'::jsonb,
-		    server_score   = '{"version":2,"total":1234,"base":1000,"comboPeak":42}'::jsonb,
-		    validation     = '{"verdict":"valid","reason":"","flags":[]}'::jsonb,
-		    validated_at   = now()
-		WHERE id = $1`, row.ID)
+		INSERT INTO run_verdicts (run_id, user_id, server_metrics, server_score, validation, validated_at)
+		SELECT id, user_id,
+		       '{"wpm":101.2,"raw":105.4,"accuracy":0.987,"chars":{"correct":9990}}'::jsonb,
+		       '{"version":2,"total":1234,"base":1000,"comboPeak":42}'::jsonb,
+		       '{"verdict":"valid","reason":"","flags":[]}'::jsonb,
+		       now()
+		FROM runs WHERE id = $1
+		ON CONFLICT (run_id) DO UPDATE SET
+		    server_metrics = excluded.server_metrics,
+		    server_score   = excluded.server_score,
+		    validation     = excluded.validation,
+		    validated_at   = now()`, row.ID)
 	require.NoError(t, err)
 	require.NoError(t, h.board.ProjectRun(ctx, tx, uuid.MustParse(row.ID)))
 	require.NoError(t, tx.Commit(ctx))
@@ -292,24 +299,28 @@ func TestLoadReplayRateLimitShedsBeforeMemory(t *testing.T) {
 // Copied rather than imported because the generated constants are unexported;
 // if they drift, the assertions below stop describing the endpoints and this
 // comment is the reason to re-copy them.
-const getPublicReplaySQL = `SELECT r.setup, r.server_metrics, r.server_score,
-       run_grade((r.server_metrics ->> 'accuracy')::numeric)::text AS grade,
+const getPublicReplaySQL = `SELECT r.setup, v.server_metrics, v.server_score,
+       run_grade((v.server_metrics ->> 'accuracy')::numeric)::text AS grade,
        r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
        r.created_at, u.display_name
 FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
          JOIN users u ON u.id = r.user_id
 WHERE r.id = $1
   AND r.status = 'accepted'
-  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
-  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)`
+  AND jsonb_typeof(v.server_metrics -> 'accuracy') = 'number'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+  AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id))`
 
 const getPublicReplayLogSQL = `SELECT r.log
 FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
          JOIN users u ON u.id = r.user_id
 WHERE r.id = $1
   AND r.status = 'accepted'
-  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
-  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)`
+  AND jsonb_typeof(v.server_metrics -> 'accuracy') = 'number'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
+  AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id))`
 
 // TestLoadPlanPublicReplay pins the SHAPE of BOTH queries the pair of public
 // routes runs — watching a row is two requests now, so one pinned plan would

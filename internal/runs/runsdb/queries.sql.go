@@ -75,15 +75,16 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (CreateRun
 }
 
 const getPublicReplay = `-- name: GetPublicReplay :one
-SELECT r.setup, r.server_metrics, r.server_score,
-       run_grade((r.server_metrics ->> 'accuracy')::numeric)::text AS grade,
+SELECT r.setup, v.server_metrics, v.server_score,
+       run_grade((v.server_metrics ->> 'accuracy')::numeric)::text AS grade,
        r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
        r.created_at, u.display_name
 FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
          JOIN users u ON u.id = r.user_id
 WHERE r.id = $1
   AND r.status = 'accepted'
-  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
+  AND jsonb_typeof(v.server_metrics -> 'accuracy') = 'number'
   AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
   AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id))
 `
@@ -148,10 +149,11 @@ func (q *Queries) GetPublicReplay(ctx context.Context, runID uuid.UUID) (GetPubl
 const getPublicReplayLog = `-- name: GetPublicReplayLog :one
 SELECT r.log
 FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
          JOIN users u ON u.id = r.user_id
 WHERE r.id = $1
   AND r.status = 'accepted'
-  AND jsonb_typeof(r.server_metrics -> 'accuracy') = 'number'
+  AND jsonb_typeof(v.server_metrics -> 'accuracy') = 'number'
   AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
   AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id))
 `
@@ -170,19 +172,20 @@ func (q *Queries) GetPublicReplayLog(ctx context.Context, runID uuid.UUID) ([]by
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
-       setup, client_metrics, client_score, score_version, status,
-       server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at,
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.setup, r.client_metrics, r.client_score, r.score_version, r.status,
+       v.server_metrics, v.server_score, v.validation, v.validated_at,
+       r.log_bytes, r.restarts_since_last_submit, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
-           'consistency', (server_metrics ->> 'consistency')::float8,
-           'chars',       server_metrics -> 'chars',
-           'quoteId',     run_quote_id(setup),
-           'adoptedFromRunId', run_adopted_from(setup),
-           'mods',        run_mods(setup))))::jsonb AS derived
-FROM runs
-WHERE id = $1 AND user_id = $2
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id
+WHERE r.id = $1 AND r.user_id = $2
 `
 
 type GetRunParams struct {
@@ -261,22 +264,23 @@ func (q *Queries) GetRunLog(ctx context.Context, arg GetRunLogParams) ([]byte, e
 }
 
 const listRunsAfter = `-- name: ListRunsAfter :many
-SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
-       setup, client_metrics, client_score, score_version, status,
-       server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at,
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.setup, r.client_metrics, r.client_score, r.score_version, r.status,
+       v.server_metrics, v.server_score, v.validation, v.validated_at,
+       r.log_bytes, r.restarts_since_last_submit, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
-           'consistency', (server_metrics ->> 'consistency')::float8,
-           'chars',       server_metrics -> 'chars',
-           'quoteId',     run_quote_id(setup),
-           'adoptedFromRunId', run_adopted_from(setup),
-           'mods',        run_mods(setup))))::jsonb AS derived
-FROM runs
-WHERE user_id = $1
-  AND created_at <= $2
-  AND (created_at < $2 OR (created_at = $2 AND id < $3))
-ORDER BY created_at DESC, id DESC
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id
+WHERE r.user_id = $1
+  AND r.created_at <= $2
+  AND (r.created_at < $2 OR (r.created_at = $2 AND r.id < $3))
+ORDER BY r.created_at DESC, r.id DESC
 LIMIT $4
 `
 
@@ -366,20 +370,21 @@ func (q *Queries) ListRunsAfter(ctx context.Context, arg ListRunsAfterParams) ([
 }
 
 const listRunsFirst = `-- name: ListRunsFirst :many
-SELECT id, mode, duration_ms, word_count, lang, seed, dict_hash,
-       setup, client_metrics, client_score, score_version, status,
-       server_metrics, server_score, validation, validated_at,
-       log_bytes, restarts_since_last_submit, created_at,
+SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
+       r.setup, r.client_metrics, r.client_score, r.score_version, r.status,
+       v.server_metrics, v.server_score, v.validation, v.validated_at,
+       r.log_bytes, r.restarts_since_last_submit, r.created_at,
        (jsonb_strip_nulls(jsonb_build_object(
-           'grade',       run_grade((server_metrics ->> 'accuracy')::numeric),
-           'consistency', (server_metrics ->> 'consistency')::float8,
-           'chars',       server_metrics -> 'chars',
-           'quoteId',     run_quote_id(setup),
-           'adoptedFromRunId', run_adopted_from(setup),
-           'mods',        run_mods(setup))))::jsonb AS derived
-FROM runs
-WHERE user_id = $1
-ORDER BY created_at DESC, id DESC
+           'grade',       run_grade((v.server_metrics ->> 'accuracy')::numeric),
+           'consistency', (v.server_metrics ->> 'consistency')::float8,
+           'chars',       v.server_metrics -> 'chars',
+           'quoteId',     run_quote_id(r.setup),
+           'adoptedFromRunId', run_adopted_from(r.setup),
+           'mods',        run_mods(r.setup))))::jsonb AS derived
+FROM runs r
+         LEFT JOIN run_verdicts v ON v.run_id = r.id
+WHERE r.user_id = $1
+ORDER BY r.created_at DESC, r.id DESC
 LIMIT $2
 `
 
@@ -412,9 +417,11 @@ type ListRunsFirstRow struct {
 }
 
 // First page of a user's runs, newest first. Keyset pagination continues via
-// ListRunsAfter using the (created_at, id) of the last row. The replay columns
-// (server_metrics/server_score/validation/validated_at) are NULL until the
-// worker has judged the run.
+// ListRunsAfter using the (created_at, id) of the last row. The verdict
+// columns (server_metrics/server_score/validation/validated_at) come from the
+// run_verdicts satellite (00019) through a LEFT JOIN: a pending run has no
+// verdict row yet, and the join's NULLs are exactly the "not judged yet" the
+// columns themselves used to carry.
 //
 // The trailing `derived` document carries the profile table's cells, lifted
 // server-side so the client renders rows without parsing the whole
@@ -425,14 +432,13 @@ type ListRunsFirstRow struct {
 // plus run_adopted_from — the seeded-repeat marker, which is what lets a row
 // render "saved, not counted" without the client re-deriving eligibility.
 //
-// Every cell is a pure function of columns this table already holds. There is
-// deliberately NO join here, to quotes or to anything else: this is the profile
+// The verdict join is the ONLY join here — a primary-key probe per row on the
+// 1:1 satellite. Still none to quotes or anything else: this is the profile
 // page's hot query with pinned plans on a 100k-run account (docs/PERFORMANCE.md
 // zone 9), and a quote's own text and length band are already served, cached by
 // id, by GET /quotes/{id} — the same call the quote board's heading makes.
 // One jsonb document rather than five columns so nullability stays a property
 // of the data (jsonb_strip_nulls) instead of five hand-annotated scan types.
-// Additive: every pre-existing column is untouched.
 func (q *Queries) ListRunsFirst(ctx context.Context, arg ListRunsFirstParams) ([]ListRunsFirstRow, error) {
 	rows, err := q.db.Query(ctx, listRunsFirst, arg.UserID, arg.Limit)
 	if err != nil {

@@ -186,8 +186,10 @@ vocabulary), lifetime press count, error rate and mean inter-key interval.
   next one). A run's language picks the layout (ru → ЙЦУКЕН, else qwerty);
   unmapped characters bucket to the reserved key `other`, never disappear.
 - **Exactly-once accounting**: a run's contribution is added when its verdict
-  lands accepted and the `runs.keyboard_projected` stamp is off, and reversed
-  (floored at zero) when a stamped run is re-judged to anything else. So
+  lands accepted and no `keyboard_projected_runs` stamp row exists for it, and
+  reversed (floored at zero) when a stamped run is re-judged to anything else —
+  the stamp is presence in that table (INSERT to stamp, DELETE to unstamp;
+  migration 00020), serialized by the verdict transaction's claim lock. So
   `make revalidate` — which already re-replays every stale run — IS the
   backfill mechanism: after a bundle change it walks all history, and the
   projection fills in exactly once per accepted run.

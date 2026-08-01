@@ -13,44 +13,28 @@ import (
 	"github.com/google/uuid"
 )
 
-const applyReplayDecision = `-- name: ApplyReplayDecision :exec
+const applyRunOutcome = `-- name: ApplyRunOutcome :exec
 UPDATE runs
-SET status         = $1,
-    server_metrics = $2,
-    server_score   = $3,
-    validation     = $4,
-    bundle_sha     = $5,
-    policy_version = $6,
-    attempts       = $7,
-    last_error     = NULLIF($8::text, ''),
-    validated_at   = now()
-WHERE id = $9
+SET status     = $1,
+    attempts   = $2,
+    last_error = NULLIF($3::text, '')
+WHERE id = $4
 `
 
-type ApplyReplayDecisionParams struct {
-	Status        string
-	ServerMetrics []byte
-	ServerScore   []byte
-	Validation    []byte
-	BundleSha     *string
-	PolicyVersion *int16
-	Attempts      int16
-	LastError     string
-	ID            uuid.UUID
+type ApplyRunOutcomeParams struct {
+	Status    string
+	Attempts  int16
+	LastError string
+	ID        uuid.UUID
 }
 
-// Record one verdict. client_metrics / client_score are deliberately untouched:
-// the client's numbers and the server's sit side by side forever, because the
-// pair IS the evidence a mismatch is judged on. bundle_sha and policy_version
-// together say which code and which rules produced this row.
-func (q *Queries) ApplyReplayDecision(ctx context.Context, arg ApplyReplayDecisionParams) error {
-	_, err := q.db.Exec(ctx, applyReplayDecision,
+// The lifecycle half of the same decision: status transition plus the queue's
+// retry bookkeeping. Always executed in the same transaction as
+// UpsertRunVerdict; the invariant "status <> 'pending' <=> a verdict row
+// exists" is exactly the pair of these two statements committing together.
+func (q *Queries) ApplyRunOutcome(ctx context.Context, arg ApplyRunOutcomeParams) error {
+	_, err := q.db.Exec(ctx, applyRunOutcome,
 		arg.Status,
-		arg.ServerMetrics,
-		arg.ServerScore,
-		arg.Validation,
-		arg.BundleSha,
-		arg.PolicyVersion,
 		arg.Attempts,
 		arg.LastError,
 		arg.ID,
@@ -85,6 +69,12 @@ type ClaimPendingRunsRow struct {
 // Replay worker queue + revalidation (docs/REPLAY.md). The claim and the
 // decision are executed inside the SAME transaction: the claim takes the row
 // locks, the decision writes the verdict, and the commit releases both together.
+//
+// Since 00019 the verdict payload lives in run_verdicts (1:1 with runs, row
+// exists <=> judged); runs keeps the lifecycle (status) and the queue's retry
+// bookkeeping (attempts, last_error). A decision is therefore two statements —
+// UpsertRunVerdict + ApplyRunOutcome — issued back to back in the claim's
+// transaction, which is the same atomicity the old single UPDATE had.
 // The queue scan. FOR UPDATE SKIP LOCKED lets N workers share one queue with no
 // broker and no 'processing' status: a row another worker already holds is
 // stepped over, and a worker that dies rolls its rows straight back to
@@ -127,15 +117,15 @@ func (q *Queries) ClaimPendingRuns(ctx context.Context, limit int32) ([]ClaimPen
 }
 
 const claimStalePolicyRuns = `-- name: ClaimStalePolicyRuns :many
-SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts, created_at
-FROM runs
-WHERE status <> 'pending'
-  AND (policy_version IS NULL
-       OR policy_version < $1
-       OR bundle_sha IS DISTINCT FROM $2::text)
-ORDER BY created_at
-FOR UPDATE SKIP LOCKED
+SELECT r.id, r.seed, r.dict_hash, r.score_version, r.setup, r.client_metrics,
+       r.client_score, r.log, r.attempts, r.created_at
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
+WHERE v.policy_version IS NULL
+   OR v.policy_version < $1
+   OR v.bundle_sha IS DISTINCT FROM $2::text
+ORDER BY r.created_at
+FOR UPDATE OF r, v SKIP LOCKED
 LIMIT $3
 `
 
@@ -159,9 +149,11 @@ type ClaimStalePolicyRunsRow struct {
 }
 
 // The revalidation scan: runs already judged, but by rules or by CODE that are
-// no longer current. Two independent reasons to re-judge, because bundle_sha and
-// policy_version answer different questions (docs/REPLAY.md, "Policy
-// versioning"):
+// no longer current. The join IS the "judged" predicate — a verdict row exists
+// exactly for judged runs, so this claim walks the verdict table where it used
+// to walk the status <> 'pending' partial index. Two independent reasons to
+// re-judge, because bundle_sha and policy_version answer different questions
+// (docs/REPLAY.md, "Policy versioning"):
 //
 //	policy_version behind (or NULL, i.e. judged before the policy existed)
 //	    the rules that turned the numbers into a status have moved
@@ -176,9 +168,10 @@ type ClaimStalePolicyRunsRow struct {
 // IS DISTINCT FROM, not <>, so a row judged before bundle_sha was recorded
 // (NULL) is claimed rather than skipped by three-valued logic.
 //
-// Same locking discipline as the queue, so a revalidation pass and the worker
-// can run at the same time without either seeing the other's rows. Uses
-// runs_stale_policy_idx.
+// FOR UPDATE OF r, v: both halves of the run are locked, with the same SKIP
+// LOCKED discipline as the queue, so a revalidation pass and the worker can run
+// at the same time without either seeing the other's rows (their claims are
+// disjoint anyway — a pending run has no verdict row to join).
 func (q *Queries) ClaimStalePolicyRuns(ctx context.Context, arg ClaimStalePolicyRunsParams) ([]ClaimStalePolicyRunsRow, error) {
 	rows, err := q.db.Query(ctx, claimStalePolicyRuns, arg.PolicyVersion, arg.BundleSha, arg.RowLimit)
 	if err != nil {
@@ -211,11 +204,12 @@ func (q *Queries) ClaimStalePolicyRuns(ctx context.Context, arg ClaimStalePolicy
 }
 
 const listRunsForCalibration = `-- name: ListRunsForCalibration :many
-SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts, status, policy_version, created_at
-FROM runs
-WHERE status <> 'pending'
-ORDER BY created_at
+SELECT r.id, r.seed, r.dict_hash, r.score_version, r.setup, r.client_metrics,
+       r.client_score, r.log, r.attempts, r.status, v.policy_version,
+       r.created_at
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
+ORDER BY r.created_at
 LIMIT $1
 `
 
@@ -234,9 +228,11 @@ type ListRunsForCalibrationRow struct {
 	CreatedAt     time.Time
 }
 
-// Read-only sample for `make calibrate`: everything the decision needs, plus the
-// status the run currently carries so a dry run can report what would change.
-// No locking, no ordering surprises — oldest first, bounded by the caller.
+// Read-only sample for `make calibrate`: everything the decision needs, plus
+// the status and policy_version the run currently carries so a dry run can
+// report what would change. The verdict join doubles as the "judged only"
+// filter. No locking, no ordering surprises — oldest first, bounded by the
+// caller.
 func (q *Queries) ListRunsForCalibration(ctx context.Context, rowLimit int32) ([]ListRunsForCalibrationRow, error) {
 	rows, err := q.db.Query(ctx, listRunsForCalibration, rowLimit)
 	if err != nil {
@@ -268,4 +264,51 @@ func (q *Queries) ListRunsForCalibration(ctx context.Context, rowLimit int32) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertRunVerdict = `-- name: UpsertRunVerdict :exec
+INSERT INTO run_verdicts (run_id, user_id, server_metrics, server_score,
+                          validation, bundle_sha, policy_version, validated_at)
+SELECT r.id, r.user_id, $1::jsonb, $2::jsonb,
+       $3::jsonb, $4, $5, now()
+FROM runs r
+WHERE r.id = $6
+ON CONFLICT (run_id) DO UPDATE SET
+    server_metrics = excluded.server_metrics,
+    server_score   = excluded.server_score,
+    validation     = excluded.validation,
+    bundle_sha     = excluded.bundle_sha,
+    policy_version = excluded.policy_version,
+    validated_at   = now()
+`
+
+type UpsertRunVerdictParams struct {
+	ServerMetrics json.RawMessage
+	ServerScore   json.RawMessage
+	Validation    json.RawMessage
+	BundleSha     *string
+	PolicyVersion *int16
+	RunID         uuid.UUID
+}
+
+// Record one verdict's payload. client_metrics / client_score on runs are
+// deliberately untouched: the client's numbers and the server's sit side by
+// side forever, because the pair IS the evidence a mismatch is judged on.
+// bundle_sha and policy_version together say which code and which rules
+// produced this row. The upsert is what makes revalidation a rewrite of the
+// SAME verdict identity rather than a second one.
+//
+// user_id is sourced from the runs row right here (INSERT..SELECT), so the
+// snapshot column cannot be miswritten by a caller and the Decision type
+// never needs to carry it. On conflict it is left alone: it is immutable.
+func (q *Queries) UpsertRunVerdict(ctx context.Context, arg UpsertRunVerdictParams) error {
+	_, err := q.db.Exec(ctx, upsertRunVerdict,
+		arg.ServerMetrics,
+		arg.ServerScore,
+		arg.Validation,
+		arg.BundleSha,
+		arg.PolicyVersion,
+		arg.RunID,
+	)
+	return err
 }

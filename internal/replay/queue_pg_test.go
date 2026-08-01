@@ -206,9 +206,11 @@ func fetchRun(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) runRow {
 	t.Helper()
 	var r runRow
 	err := pool.QueryRow(context.Background(), `
-		SELECT status, server_metrics, server_score, validation, bundle_sha,
-		       policy_version, validated_at, attempts, last_error
-		FROM runs WHERE id = $1`, id).
+		SELECT r.status, v.server_metrics, v.server_score, v.validation, v.bundle_sha,
+		       v.policy_version, v.validated_at, r.attempts, r.last_error
+		FROM runs r
+		         LEFT JOIN run_verdicts v ON v.run_id = r.id
+		WHERE r.id = $1`, id).
 		Scan(&r.Status, &r.ServerMetrics, &r.ServerScore, &r.Validation, &r.BundleSha,
 			&r.PolicyVersion, &r.ValidatedAt, &r.Attempts, &r.LastError)
 	require.NoError(t, err)
@@ -382,7 +384,8 @@ func TestTwoWorkersNeverProcessTheSameRunTwice(t *testing.T) {
 
 	var judged int
 	require.NoError(t, pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM runs WHERE status = 'accepted' AND validated_at IS NOT NULL`).Scan(&judged))
+		`SELECT count(*) FROM runs r JOIN run_verdicts v ON v.run_id = r.id
+		 WHERE r.status = 'accepted' AND v.validated_at IS NOT NULL`).Scan(&judged))
 	assert.Equal(t, len(ids), judged)
 }
 
@@ -460,10 +463,10 @@ func TestRevalidateIsBoundedAndIdempotent(t *testing.T) {
 	// Simulate rows judged by an older policy (and, for one of them, by no
 	// policy at all — the pre-policy NULL).
 	_, err = pool.Exec(context.Background(),
-		`UPDATE runs SET policy_version = 0 WHERE id = ANY($1)`, ids[:2])
+		`UPDATE run_verdicts SET policy_version = 0 WHERE run_id = ANY($1)`, ids[:2])
 	require.NoError(t, err)
 	_, err = pool.Exec(context.Background(),
-		`UPDATE runs SET policy_version = NULL WHERE id = $1`, ids[2])
+		`UPDATE run_verdicts SET policy_version = NULL WHERE run_id = $1`, ids[2])
 	require.NoError(t, err)
 
 	n, err = w.RevalidateBatch(context.Background(), core, discardLogger())
@@ -516,9 +519,9 @@ func TestRevalidateClaimsRunsJudgedByAnotherBundle(t *testing.T) {
 	// One row judged by an older bundle, one by a bundle that was never
 	// recorded at all — three-valued logic would skip the NULL under `<>`,
 	// which is why the claim says IS DISTINCT FROM.
-	_, err = pool.Exec(ctx, `UPDATE runs SET bundle_sha = 'deadbeef' WHERE id = $1`, ids[0])
+	_, err = pool.Exec(ctx, `UPDATE run_verdicts SET bundle_sha = 'deadbeef' WHERE run_id = $1`, ids[0])
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `UPDATE runs SET bundle_sha = NULL WHERE id = $1`, ids[1])
+	_, err = pool.Exec(ctx, `UPDATE run_verdicts SET bundle_sha = NULL WHERE run_id = $1`, ids[1])
 	require.NoError(t, err)
 
 	// policy_version is deliberately left current on both, so the ONLY thing
@@ -599,7 +602,7 @@ func TestRevalidateBackfillKeepsVerdictsAndEnrichesMetrics(t *testing.T) {
 		legacy, err := json.Marshal(m)
 		require.NoError(t, err)
 		_, err = pool.Exec(ctx,
-			`UPDATE runs SET bundle_sha = 'deadbeef', server_metrics = $2 WHERE id = $1`, id, legacy)
+			`UPDATE run_verdicts SET bundle_sha = 'deadbeef', server_metrics = $2 WHERE run_id = $1`, id, legacy)
 		require.NoError(t, err)
 	}
 
@@ -657,7 +660,10 @@ func TestRevalidateAppliesTheCurrentPolicy(t *testing.T) {
 	_, err = w.RunBatch(context.Background(), core, discardLogger())
 	require.NoError(t, err)
 	_, err = pool.Exec(context.Background(),
-		`UPDATE runs SET status = 'flagged', policy_version = NULL`)
+		`UPDATE runs SET status = 'flagged' WHERE status <> 'pending'`)
+	require.NoError(t, err)
+	_, err = pool.Exec(context.Background(),
+		`UPDATE run_verdicts SET policy_version = NULL`)
 	require.NoError(t, err)
 
 	n, err := w.RevalidateBatch(context.Background(), core, discardLogger())
@@ -675,7 +681,7 @@ func TestRevalidateAppliesTheCurrentPolicy(t *testing.T) {
 	// see why it was close.
 	var validation []byte
 	require.NoError(t, pool.QueryRow(context.Background(),
-		`SELECT validation FROM runs WHERE id = $1`, weak).Scan(&validation))
+		`SELECT validation FROM run_verdicts WHERE run_id = $1`, weak).Scan(&validation))
 	var doc struct {
 		Flags  []map[string]any `json:"flags"`
 		Policy struct {

@@ -371,10 +371,11 @@ the same `FOR UPDATE SKIP LOCKED` discipline as the queue so it can run while
 the worker is live:
 
 ```sql
-WHERE status <> 'pending'
-  AND (policy_version IS NULL          -- judged before the policy existed
-       OR policy_version < @policy_version   -- the RULES moved
-       OR bundle_sha IS DISTINCT FROM @bundle_sha)  -- the CODE moved
+FROM runs r
+JOIN run_verdicts v ON v.run_id = r.id      -- the join IS the "judged" filter
+WHERE v.policy_version IS NULL              -- judged before the policy existed
+   OR v.policy_version < @policy_version    -- the RULES moved
+   OR v.bundle_sha IS DISTINCT FROM @bundle_sha  -- the CODE moved
 ```
 
 It re-runs the **full replay**, not just the scoring rules, so a claimed run is
@@ -446,18 +447,30 @@ rule above.
 
 ## Storage
 
-`00004_replay.sql` and `00005_replay_policy.sql` add to `runs`:
+The verdict payload lives in `run_verdicts`, a 1:1 satellite of `runs`
+(`00019_run_verdicts.sql`; the columns started life on `runs` in
+`00004_replay.sql` / `00005_replay_policy.sql`). A row exists **iff** the run
+has been judged — "pending" is the absence of a verdict row, and the
+"a decision writes everything at once" invariant is structural rather than
+conventional:
 
-| Column | Meaning |
+| `run_verdicts` column | Meaning |
 |---|---|
-| `server_metrics` | The core's recomputed `Metrics`, verbatim |
-| `server_score` | The core's recomputed `ScoreResult`, verbatim |
-| `validation` | `{verdict, reason?, flags[], policy{}, divergence?}` |
+| `run_id` | PK, FK to `runs` — one verdict identity per run, rewritten in place by revalidation |
+| `user_id` | Denormalized snapshot of `runs.user_id` (immutable), indexed — the player-scoped access path the profile aggregates plan through |
+| `server_metrics` | The core's recomputed `Metrics`, verbatim (NULL only for `error` verdicts) |
+| `server_score` | The core's recomputed `ScoreResult`, verbatim (same) |
+| `validation` | `{verdict, reason?, flags[], policy{}, divergence?}` — NOT NULL |
 | `bundle_sha` | SHA-256 of the bundle that produced the numbers |
 | `policy_version` | The rule set that turned them into a status (NULL = pre-policy) |
-| `validated_at` | When the verdict was written |
-| `attempts` | Failed replays so far (timeout / core error only) |
-| `last_error` | The last failure, for operator triage |
+| `validated_at` | When the verdict was written — NOT NULL |
+
+What stays on `runs` is the run's own lifecycle and the queue's mechanics —
+`status` (the partial index `runs_pending_idx` and every accepted-only read key
+on it), `attempts` (failed replays so far: timeout / core error only) and
+`last_error` (the last failure, for operator triage). The worker writes the two
+tables back to back in the claim's transaction, so the pair commits or rolls
+back as one fact.
 
 `verdict` is the core's `valid` / `invalid`, or the server's own `error` when the
 run could not be replayed at all. `divergence` names the first field that
@@ -580,10 +593,12 @@ judged by it, and the verdict is only meaningful with the `bundle_sha` beside it
    place. Regenerate the vectors (`node internal/replay/testdata/generate.mjs`)
    only once you have decided the change is intended, and read the diff.
 4. Runs already judged are **not** re-judged automatically. Re-running them
-   through the new bundle is what `make revalidate` does once
-   `CurrentPolicyVersion` is bumped; to re-judge without a policy change,
-   requeue deliberately:
-   `UPDATE runs SET status='pending' WHERE bundle_sha = '<old>'`.
+   through the new bundle is what `make revalidate` does — its claim's bundle
+   arm (`v.bundle_sha IS DISTINCT FROM <current>`) picks up every run the old
+   bundle judged, policy change or not. The emergency requeue, should the
+   revalidation path itself be broken, is
+   `UPDATE runs SET status='pending' WHERE id IN
+   (SELECT run_id FROM run_verdicts WHERE bundle_sha = '<old>')`.
 
 ## Changing the review policy
 

@@ -163,6 +163,17 @@ func (s *Store) Rebuild(ctx context.Context) (RebuildStats, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.q.WithTx(tx)
 
+	// The enumerate's DISTINCT digests every eligible run — ~50MB of on-disk
+	// sort volume at 1M runs, which is ~2× that as an in-memory sort, far past
+	// the default 4MB work_mem — since 00019's verdict join tipped its plan
+	// from a hash aggregate into a sort (the zone-4 plan check asserts the
+	// no-spill contract). SET LOCAL is scoped to this transaction, and the
+	// rebuild is a singleton maintenance operation — one session, one grant,
+	// released at commit — so this is a bounded allowance, not a global knob.
+	if _, err := tx.Exec(ctx, `SET LOCAL work_mem = '256MB'`); err != nil {
+		return stats, fmt.Errorf("leaderboard/pgstore: set work_mem: %w", err)
+	}
+
 	if stats.Before, err = q.CountLeaderboardEntries(ctx); err != nil {
 		return stats, fmt.Errorf("leaderboard/pgstore: count before: %w", err)
 	}

@@ -1,6 +1,12 @@
 -- Replay worker queue + revalidation (docs/REPLAY.md). The claim and the
 -- decision are executed inside the SAME transaction: the claim takes the row
 -- locks, the decision writes the verdict, and the commit releases both together.
+--
+-- Since 00019 the verdict payload lives in run_verdicts (1:1 with runs, row
+-- exists <=> judged); runs keeps the lifecycle (status) and the queue's retry
+-- bookkeeping (attempts, last_error). A decision is therefore two statements —
+-- UpsertRunVerdict + ApplyRunOutcome — issued back to back in the claim's
+-- transaction, which is the same atomicity the old single UPDATE had.
 
 -- name: ClaimPendingRuns :many
 -- The queue scan. FOR UPDATE SKIP LOCKED lets N workers share one queue with no
@@ -23,9 +29,11 @@ LIMIT $1;
 
 -- name: ClaimStalePolicyRuns :many
 -- The revalidation scan: runs already judged, but by rules or by CODE that are
--- no longer current. Two independent reasons to re-judge, because bundle_sha and
--- policy_version answer different questions (docs/REPLAY.md, "Policy
--- versioning"):
+-- no longer current. The join IS the "judged" predicate — a verdict row exists
+-- exactly for judged runs, so this claim walks the verdict table where it used
+-- to walk the status <> 'pending' partial index. Two independent reasons to
+-- re-judge, because bundle_sha and policy_version answer different questions
+-- (docs/REPLAY.md, "Policy versioning"):
 --
 --   policy_version behind (or NULL, i.e. judged before the policy existed)
 --       the rules that turned the numbers into a status have moved
@@ -40,44 +48,67 @@ LIMIT $1;
 -- IS DISTINCT FROM, not <>, so a row judged before bundle_sha was recorded
 -- (NULL) is claimed rather than skipped by three-valued logic.
 --
--- Same locking discipline as the queue, so a revalidation pass and the worker
--- can run at the same time without either seeing the other's rows. Uses
--- runs_stale_policy_idx.
-SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts, created_at
-FROM runs
-WHERE status <> 'pending'
-  AND (policy_version IS NULL
-       OR policy_version < @policy_version
-       OR bundle_sha IS DISTINCT FROM @bundle_sha::text)
-ORDER BY created_at
-FOR UPDATE SKIP LOCKED
+-- FOR UPDATE OF r, v: both halves of the run are locked, with the same SKIP
+-- LOCKED discipline as the queue, so a revalidation pass and the worker can run
+-- at the same time without either seeing the other's rows (their claims are
+-- disjoint anyway — a pending run has no verdict row to join).
+SELECT r.id, r.seed, r.dict_hash, r.score_version, r.setup, r.client_metrics,
+       r.client_score, r.log, r.attempts, r.created_at
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
+WHERE v.policy_version IS NULL
+   OR v.policy_version < @policy_version
+   OR v.bundle_sha IS DISTINCT FROM @bundle_sha::text
+ORDER BY r.created_at
+FOR UPDATE OF r, v SKIP LOCKED
 LIMIT @row_limit;
 
--- name: ApplyReplayDecision :exec
--- Record one verdict. client_metrics / client_score are deliberately untouched:
--- the client's numbers and the server's sit side by side forever, because the
--- pair IS the evidence a mismatch is judged on. bundle_sha and policy_version
--- together say which code and which rules produced this row.
+-- name: UpsertRunVerdict :exec
+-- Record one verdict's payload. client_metrics / client_score on runs are
+-- deliberately untouched: the client's numbers and the server's sit side by
+-- side forever, because the pair IS the evidence a mismatch is judged on.
+-- bundle_sha and policy_version together say which code and which rules
+-- produced this row. The upsert is what makes revalidation a rewrite of the
+-- SAME verdict identity rather than a second one.
+--
+-- user_id is sourced from the runs row right here (INSERT..SELECT), so the
+-- snapshot column cannot be miswritten by a caller and the Decision type
+-- never needs to carry it. On conflict it is left alone: it is immutable.
+INSERT INTO run_verdicts (run_id, user_id, server_metrics, server_score,
+                          validation, bundle_sha, policy_version, validated_at)
+SELECT r.id, r.user_id, @server_metrics::jsonb, @server_score::jsonb,
+       @validation::jsonb, @bundle_sha, @policy_version, now()
+FROM runs r
+WHERE r.id = @run_id
+ON CONFLICT (run_id) DO UPDATE SET
+    server_metrics = excluded.server_metrics,
+    server_score   = excluded.server_score,
+    validation     = excluded.validation,
+    bundle_sha     = excluded.bundle_sha,
+    policy_version = excluded.policy_version,
+    validated_at   = now();
+
+-- name: ApplyRunOutcome :exec
+-- The lifecycle half of the same decision: status transition plus the queue's
+-- retry bookkeeping. Always executed in the same transaction as
+-- UpsertRunVerdict; the invariant "status <> 'pending' <=> a verdict row
+-- exists" is exactly the pair of these two statements committing together.
 UPDATE runs
-SET status         = @status,
-    server_metrics = @server_metrics,
-    server_score   = @server_score,
-    validation     = @validation,
-    bundle_sha     = @bundle_sha,
-    policy_version = @policy_version,
-    attempts       = @attempts,
-    last_error     = NULLIF(@last_error::text, ''),
-    validated_at   = now()
+SET status     = @status,
+    attempts   = @attempts,
+    last_error = NULLIF(@last_error::text, '')
 WHERE id = @id;
 
 -- name: ListRunsForCalibration :many
--- Read-only sample for `make calibrate`: everything the decision needs, plus the
--- status the run currently carries so a dry run can report what would change.
--- No locking, no ordering surprises — oldest first, bounded by the caller.
-SELECT id, seed, dict_hash, score_version, setup, client_metrics, client_score,
-       log, attempts, status, policy_version, created_at
-FROM runs
-WHERE status <> 'pending'
-ORDER BY created_at
+-- Read-only sample for `make calibrate`: everything the decision needs, plus
+-- the status and policy_version the run currently carries so a dry run can
+-- report what would change. The verdict join doubles as the "judged only"
+-- filter. No locking, no ordering surprises — oldest first, bounded by the
+-- caller.
+SELECT r.id, r.seed, r.dict_hash, r.score_version, r.setup, r.client_metrics,
+       r.client_score, r.log, r.attempts, r.status, v.policy_version,
+       r.created_at
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
+ORDER BY r.created_at
 LIMIT @row_limit;
