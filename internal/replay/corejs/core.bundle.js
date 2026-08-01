@@ -78,6 +78,7 @@ var TypeMoreCore = (() => {
     CANARY_DIRECT: () => CANARY_DIRECT,
     CANARY_SOFT: () => CANARY_SOFT,
     CODE_MAX_EXTRA_CHARS: () => CODE_MAX_EXTRA_CHARS,
+    COMMON_ACCENTS: () => COMMON_ACCENTS,
     CORE_PACKAGE_VERSION: () => CORE_PACKAGE_VERSION,
     DEFAULT_MAX_EXTRA_CHARS: () => DEFAULT_MAX_EXTRA_CHARS,
     DEFAULT_THRESHOLDS: () => DEFAULT_THRESHOLDS,
@@ -86,6 +87,7 @@ var TypeMoreCore = (() => {
     EVENT_LOG_VERSION_TELEMETRY: () => EVENT_LOG_VERSION_TELEMETRY,
     GameCore: () => GameCore,
     KEY_INTERVAL_CAP_MS: () => KEY_INTERVAL_CAP_MS,
+    LANGUAGE_ACCENTS: () => LANGUAGE_ACCENTS,
     MINSPEED_GRACE_MS: () => MINSPEED_GRACE_MS,
     MINSPEED_MULTIPLIERS: () => MINSPEED_MULTIPLIERS,
     MOD_MULTIPLIERS: () => MOD_MULTIPLIERS,
@@ -93,6 +95,7 @@ var TypeMoreCore = (() => {
     SCORE_VERSION: () => SCORE_VERSION,
     SCORE_VERSION_2: () => SCORE_VERSION_2,
     TICK_INTERVAL_MS: () => TICK_INTERVAL_MS,
+    accentsFor: () => accentsFor,
     activeModsV1: () => activeModsV1,
     afkBetween: () => afkBetween,
     afkOf: () => afkOf,
@@ -129,6 +132,7 @@ var TypeMoreCore = (() => {
     keyDownEvent: () => keyDownEvent,
     keyUpEvent: () => keyUpEvent,
     kogasa: () => kogasa,
+    languageMatches: () => languageMatches,
     makeNormalizer: () => makeNormalizer,
     makeSeedContext: () => makeSeedContext,
     metricsFrom: () => metricsFrom,
@@ -144,6 +148,7 @@ var TypeMoreCore = (() => {
     progressOf: () => progressOf,
     quoteOf: () => quoteOf,
     reduce: () => reduce,
+    replaceAccents: () => replaceAccents,
     replaceEvent: () => replaceEvent,
     reverseWord: () => reverseWord,
     scoreOfLog: () => scoreOfLog,
@@ -258,10 +263,10 @@ var TypeMoreCore = (() => {
     // layout slip, not a different letter.
     { id: "ru-yo", chars: ["\u0451", "\u0435", "e"], languages: ["russian"] }
   ];
+  var languageMatches = (name, language) => language !== void 0 && (language === name || language.startsWith(`${name}_`));
   var appliesTo = (group, language) => {
     if (group.languages === void 0) return true;
-    if (language === void 0) return false;
-    return group.languages.some((name) => language === name || language.startsWith(`${name}_`));
+    return group.languages.some((name) => languageMatches(name, language));
   };
   function makeNormalizer(groups) {
     const byChar = /* @__PURE__ */ new Map();
@@ -292,6 +297,166 @@ var TypeMoreCore = (() => {
   var normalizeGrapheme = defaultNormalizer.normalize;
   var SPACE_SET = new Set(SPACE_CHARS);
   var isSpaceGrapheme = (grapheme) => SPACE_SET.has(grapheme);
+
+  // src/accents.ts
+  var COMMON_ACCENTS = [
+    { from: ["\xE1", "\xE0", "\xE2", "\xE4", "\xE5", "\xE3", "\u0105", "\u0105\u0301", "\u0101", "\u0105\u0304", "\u0103"], to: "a" },
+    { from: ["\xE9", "\xE8", "\xEA", "\xEB", "\u1EBD", "\u0119", "\u0119\u0301", "\u0113", "\u0119\u0304", "\u0117", "\u011B"], to: "e" },
+    { from: ["\xED", "\xEC", "\xEE", "\xEF", "\u0129", "\u012F", "\u012F\u0301", "\u012B", "\u012F\u0304", "\u0131"], to: "i" },
+    { from: ["\xF3", "\xF2", "\xF4", "\xF6", "\xF8", "\xF5", "\u014D", "\u01EB", "\u01EB\u0301", "\u01ED", "\u0151"], to: "o" },
+    { from: ["\xFA", "\xF9", "\xFB", "\xFC", "\u016D", "\u0169", "\u016B", "\u016F", "\u0171"], to: "u" },
+    { from: ["\u0144", "\u0148", "\u1E47", "\u1E45"], to: "n" },
+    { from: ["\xE7", "\u0109", "\u010D", "\u0107"], to: "c" },
+    { from: ["\u0159", "\u0155", "\u1E5B"], to: "r" },
+    { from: ["\u010F", "\u0111", "\u1E0D"], to: "d" },
+    { from: ["\u0165", "\u021B", "\u1E6D"], to: "t" },
+    { from: ["\u1E43"], to: "m" },
+    { from: ["\xE6"], to: "ae" },
+    { from: ["\u0153"], to: "oe" },
+    { from: ["\u1E85", "\u0175"], to: "w" },
+    { from: ["\u011D", "\u011F", "g\u0303"], to: "g" },
+    { from: ["\u0125"], to: "h" },
+    { from: ["\u0135"], to: "j" },
+    { from: ["\u015D", "\u015B", "\u0161", "\u0219", "\u015F", "\u1E63"], to: "s" },
+    { from: ["\xDF"], to: "ss" },
+    { from: ["\u017C", "\u017A", "\u017E"], to: "z" },
+    { from: ["\xFF", "\u1EF9", "\xFD", "\u0177"], to: "y" },
+    { from: ["\u0142", "\u013E", "\u013A"], to: "l" },
+    { from: ["\xFE"], to: "th" },
+    // Cyrillic: the same ё/е pair `normalize.ts` forgives on input, here rewriting
+    // the target itself so the dotted form never appears.
+    { from: ["\u0451"], to: "\u0435" },
+    // Greek: tonos stripped, the letter kept.
+    { from: ["\u03AC"], to: "\u03B1" },
+    { from: ["\u03AD"], to: "\u03B5" },
+    { from: ["\u03AF"], to: "\u03B9" },
+    { from: ["\u03CD"], to: "\u03C5" },
+    { from: ["\u03CC"], to: "\u03BF" },
+    { from: ["\u03AE"], to: "\u03B7" },
+    { from: ["\u03CE"], to: "\u03C9" },
+    // Arabic: hamza forms collapse onto bare alef, and the harakat are DELETED
+    // (`to: ''`) rather than replaced — they are marks on a letter, not letters.
+    { from: ["\u0623", "\u0625", "\u0622"], to: "\u0627" },
+    {
+      from: ["\u064B", "\u064C", "\u064D", "\u064E", "\u064F", "\u0650", "\u0651", "\u0652"],
+      to: ""
+    }
+  ];
+  var LANGUAGE_ACCENTS = {
+    // German spells the umlauts out rather than dropping the diaeresis.
+    german: [
+      { from: ["\xE4"], to: "ae" },
+      { from: ["\xF6"], to: "oe" },
+      { from: ["\xFC"], to: "ue" }
+    ],
+    // Pinyin tone marks; `ü` is written `v`, the standard IME convention.
+    pinyin: [
+      { from: ["\u0101", "\xE1", "\u01CE", "\xE0"], to: "a" },
+      { from: ["\u014D", "\xF3", "\u01D2", "\xF2"], to: "o" },
+      { from: ["\u0113", "\xE9", "\u011B", "\xE8"], to: "e" },
+      { from: ["\u012B", "\xED", "\u01D0", "\xEC"], to: "i" },
+      { from: ["\u016B", "\xFA", "\u01D4", "\xF9"], to: "u" },
+      { from: ["\xFC", "\u01D6", "\u01D8", "\u01DA", "\u01DC"], to: "v" }
+    ],
+    quenya: [
+      { from: ["\xE4", "\xE1"], to: "a" },
+      { from: ["\xF6", "\xF3"], to: "o" },
+      { from: ["\xEB", "\xE9"], to: "e" },
+      { from: ["\xED"], to: "i" },
+      { from: ["\xDA", "\xFA"], to: "u" },
+      { from: ["\u03C7"], to: "x" },
+      { from: ["\xFE"], to: "p" }
+    ],
+    serbian_latin: [{ from: ["\u0111"], to: "dj" }],
+    vietnamese: [
+      {
+        from: ["\xE1", "\xE0", "\u0103", "\u1EAF", "\u1EB1", "\u1EB5", "\u1EB3", "\xE2", "\u1EA5", "\u1EA7", "\u1EAB", "\u1EA9", "\xE3", "\u1EA3", "\u1EA1", "\u1EB7", "\u1EAD"],
+        to: "a"
+      },
+      { from: ["\u0111"], to: "d" },
+      { from: ["\xE9", "\xE8", "\xEA", "\u1EBF", "\u1EC1", "\u1EC5", "\u1EC3", "\u1EBD", "\u1EBB", "\u1EB9", "\u1EC7"], to: "e" },
+      { from: ["\xED", "\xEC", "\u0129", "\u1EC9", "\u1ECB"], to: "i" },
+      {
+        from: ["\xF3", "\xF2", "\xF4", "\u1ED1", "\u1ED3", "\u1ED7", "\u1ED5", "\xF5", "\u1ECF", "\u01A1", "\u1EDB", "\u1EDD", "\u1EE1", "\u1EDF", "\u1EE3", "\u1ECD", "\u1ED9"],
+        to: "o"
+      },
+      { from: ["\xFA", "\xF9", "\u0169", "\u1EE7", "\u01B0", "\u1EE9", "\u1EEB", "\u1EEF", "\u1EED", "\u1EF1", "\u1EE5"], to: "u" },
+      { from: ["\xFD", "\u1EF3", "\u1EF9", "\u1EF7", "\u1EF5"], to: "y" }
+    ],
+    // Yiddish: base letter + niqqud, and the ligatures written as their two
+    // letters. Every source here is TWO code points bar the ligatures — the whole
+    // reason sources are graphemes rather than code points.
+    yiddish: [
+      { from: ["\u05D0\u05B7", "\u05D0\u05B8"], to: "\u05D0" },
+      { from: ["\u05D1\u05BC", "\u05D1\u05BF"], to: "\u05D1" },
+      { from: ["\u05D5\u05BC", "\u05D5\u05B9"], to: "\u05D5" },
+      { from: ["\u05D9\u05B4"], to: "\u05D9" },
+      { from: ["\u05DB\u05BC"], to: "\u05DB" },
+      { from: ["\u05E4\u05BC", "\u05E4\u05BF"], to: "\u05E4" },
+      { from: ["\u05E9\u05C2"], to: "\u05E9" },
+      { from: ["\u05EA\u05BC"], to: "\u05EA" },
+      { from: ["\u05F2\u05B7", "\u05F2"], to: "\u05D9\u05D9" },
+      { from: ["\u05F1"], to: "\u05D5\u05D9" },
+      { from: ["\u05F0"], to: "\u05D5\u05D5" }
+    ]
+  };
+  function compile(packs) {
+    const bySource = /* @__PURE__ */ new Map();
+    let maxLength = 0;
+    for (const pack of packs) {
+      for (const rule of pack) {
+        for (const source of rule.from) {
+          bySource.set(source.toLowerCase(), rule.to);
+          if (source.length > maxLength) maxLength = source.length;
+        }
+      }
+    }
+    return { bySource, maxLength };
+  }
+  var tables = /* @__PURE__ */ new Map();
+  function tableFor(language) {
+    const key = language != null ? language : "";
+    const cached = tables.get(key);
+    if (cached !== void 0) return cached;
+    const pack = Object.keys(LANGUAGE_ACCENTS).find((name) => languageMatches(name, language));
+    const compiled = compile(
+      pack === void 0 ? [COMMON_ACCENTS] : [COMMON_ACCENTS, LANGUAGE_ACCENTS[pack]]
+    );
+    tables.set(key, compiled);
+    return compiled;
+  }
+  function accentsFor(language) {
+    const pack = Object.keys(LANGUAGE_ACCENTS).find((name) => languageMatches(name, language));
+    return pack === void 0 ? COMMON_ACCENTS : [...COMMON_ACCENTS, ...LANGUAGE_ACCENTS[pack]];
+  }
+  function isUpper(char) {
+    return char !== char.toLowerCase();
+  }
+  function replaceAccents(word, language) {
+    const { bySource, maxLength } = tableFor(language);
+    let out = null;
+    let i = 0;
+    while (i < word.length) {
+      let length = Math.min(maxLength, word.length - i);
+      let replacement;
+      for (; length > 0; length--) {
+        replacement = bySource.get(word.slice(i, i + length).toLowerCase());
+        if (replacement !== void 0) break;
+      }
+      if (replacement === void 0) {
+        if (out !== null) out += word[i];
+        i++;
+        continue;
+      }
+      if (out === null) out = word.slice(0, i);
+      for (let j = 0; j < replacement.length; j++) {
+        const model = word[i + j];
+        out += model !== void 0 && isUpper(model) ? replacement[j].toUpperCase() : replacement[j];
+      }
+      i += length;
+    }
+    return out != null ? out : word;
+  }
 
   // ../../node_modules/.pnpm/neverthrow@8.2.0/node_modules/neverthrow/dist/index.es.js
   var defaultErrorConfig = {
@@ -880,6 +1045,7 @@ var TypeMoreCore = (() => {
     const rng = mulberry32(context.seed);
     const count = targetCount(context.generation);
     const raw = emitsRawTokens(context.generation);
+    const lazy = !raw && context.generation.lazy === true;
     const words = [];
     let prevIndex = -1;
     let capitalizeNext = !raw && context.generation.punctuation;
@@ -893,7 +1059,9 @@ var TypeMoreCore = (() => {
         continue;
       }
       const decorated = decorate(base, context.generation, rng, capitalizeNext);
-      words.push(context.generation.reverse ? reverseWord(decorated) : decorated);
+      let out = lazy ? replaceAccents(decorated, context.generation.language) : decorated;
+      if (context.generation.reverse) out = reverseWord(out);
+      words.push(out);
       capitalizeNext = context.generation.punctuation && SENTENCE_END.includes((_a = decorated[decorated.length - 1]) != null ? _a : "");
     }
     return ok({ words, context, dictName: dict.name });
@@ -1023,11 +1191,9 @@ var TypeMoreCore = (() => {
       cache: null
     };
   }
-  function matchingChars(target, typed) {
-    const shared = target.length < typed.length ? target.length : typed.length;
-    let correct = 0;
-    for (let k = 0; k < shared; k++) if (typed[k] === target[k]) correct++;
-    return correct;
+  function netCreditOf(target, typed) {
+    if (typed !== target) return 0;
+    return target.length + (endsLine(target) ? 0 : 1);
   }
   function buffersFor(ctx, state) {
     const core = coreOf(state);
@@ -1048,7 +1214,7 @@ var TypeMoreCore = (() => {
       store: core.store,
       version: core.version,
       sep: core.sep + (endsLine(word) ? 0 : 1),
-      correct: core.correct + matchingChars(word, typed),
+      correct: core.correct + netCreditOf(word, typed),
       target: core.target + word.length,
       cache: core.cache
     };
@@ -1061,7 +1227,7 @@ var TypeMoreCore = (() => {
       store: core.store,
       version: core.version,
       sep: core.sep - (endsLine(word) ? 0 : 1),
-      correct: core.correct - matchingChars(word, typed),
+      correct: core.correct - netCreditOf(word, typed),
       target: core.target - word.length,
       cache: core.cache
     };
@@ -1139,29 +1305,33 @@ var TypeMoreCore = (() => {
     return spaces;
   }
   function netCharsOf(ctx, state) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f;
     const core = coreOf(state);
     const incremental = core !== void 0 && core.store.words === ctx.words;
-    let correct = 0;
+    let credited = 0;
     if (incremental) {
-      correct = core.correct;
+      credited = core.correct;
     } else {
-      const committed = Math.min(state.wordIndex, ctx.words.length);
+      const committed2 = Math.min(state.wordIndex, ctx.words.length);
       const input = state.input;
-      for (let i = 0; i < committed; i++) {
-        const target = (_a = ctx.words[i]) != null ? _a : "";
-        const typed = (_b = input[i]) != null ? _b : "";
-        const n = Math.min(target.length, typed.length);
-        for (let k = 0; k < n; k++) if (typed[k] === target[k]) correct++;
+      for (let i = 0; i < committed2; i++) {
+        credited += netCreditOf((_a = ctx.words[i]) != null ? _a : "", (_b = input[i]) != null ? _b : "");
       }
     }
-    if (state.wordIndex < ctx.words.length) {
-      const target = (_c = ctx.words[state.wordIndex]) != null ? _c : "";
-      const buffer = incremental ? bufferOf(state, state.wordIndex) : (_d = state.input[state.wordIndex]) != null ? _d : "";
-      const n = Math.min(target.length, buffer.length);
-      for (let k = 0; k < n; k++) if (buffer[k] === target[k]) correct++;
+    const committed = Math.min(state.wordIndex, ctx.words.length);
+    const finishedByCount = state.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
+    if (finishedByCount && committed > 0) {
+      const last = committed - 1;
+      const target = (_c = ctx.words[last]) != null ? _c : "";
+      const typed = incremental ? bufferOf(state, last) : (_d = state.input[last]) != null ? _d : "";
+      if (typed === target && !endsLine(target)) credited -= 1;
     }
-    return correct + separatorsOf(ctx, state);
+    if (state.wordIndex < ctx.words.length) {
+      const target = (_e = ctx.words[state.wordIndex]) != null ? _e : "";
+      const buffer = incremental ? bufferOf(state, state.wordIndex) : (_f = state.input[state.wordIndex]) != null ? _f : "";
+      if (buffer.length > 0 && target.startsWith(buffer)) credited += buffer.length;
+    }
+    return credited;
   }
   function targetCharsOf(ctx, state) {
     var _a, _b, _c;
@@ -1680,7 +1850,7 @@ var TypeMoreCore = (() => {
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
     const durationSec = startedAt === null ? 0 : Math.max(0, (end - startedAt) / 1e3);
     const minutes = durationSec / 60;
-    const netChars = chars.correct + spaces;
+    const netChars = netCharsOf(ctx, analysis.finalState);
     const rawChars = chars.correct + chars.incorrect + chars.extra + spaces;
     return {
       wpm: minutes > 0 ? netChars / 5 / minutes : 0,
@@ -1702,47 +1872,52 @@ var TypeMoreCore = (() => {
     return timelineFrom(ctx, analyzeLog(ctx, events), endMs);
   }
   function timelineFrom(ctx, analysis, endMs) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e;
     const startedAt = analysis.finalState.startedAt;
     if (startedAt === null) return [];
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
     const seconds = Math.ceil(Math.max(0, (end - startedAt) / 1e3));
     if (seconds <= 0) return [];
     const finishedByCount = analysis.finalState.phase === "finished" && ctx.config.mode !== "time" && ctx.config.mode !== "free";
-    const spaceTimes = [];
+    const input = analysis.finalState.input;
+    const creditTimes = [];
+    const creditChars = [];
     for (let i = 0; i < analysis.commitTimes.length; i++) {
-      if (finishedByCount && i === analysis.commitTimes.length - 1) continue;
-      if (endsLine((_b = ctx.words[i]) != null ? _b : "")) continue;
-      spaceTimes.push(analysis.commitTimes[i]);
+      const target = (_b = ctx.words[i]) != null ? _b : "";
+      if (((_c = input[i]) != null ? _c : "") !== target) continue;
+      let credit = target.length;
+      if (!endsLine(target) && !(finishedByCount && i === analysis.commitTimes.length - 1)) credit++;
+      creditTimes.push(analysis.commitTimes[i]);
+      creditChars.push(credit);
+    }
+    const activeIndex = analysis.finalState.wordIndex;
+    if (activeIndex < ctx.words.length) {
+      const target = (_d = ctx.words[activeIndex]) != null ? _d : "";
+      const buffer = (_e = input[activeIndex]) != null ? _e : "";
+      if (buffer.length > 0 && target.startsWith(buffer)) {
+        creditTimes.push(end);
+        creditChars.push(buffer.length);
+      }
     }
     const { keyTimes, keyCorrect } = analysis;
     const rawInBucket = new Float64Array(seconds + 2);
     const errorsInBucket = new Float64Array(seconds + 2);
-    const correctByCheckpoint = new Float64Array(seconds + 2);
     for (let k = 0; k < keyTimes.length; k++) {
       const offset = keyTimes[k] - startedAt;
-      if (offset >= 0) {
-        const bucket = Math.floor(offset / 1e3) + 1;
-        if (bucket <= seconds) {
-          rawInBucket[bucket]++;
-          if (!keyCorrect[k]) errorsInBucket[bucket]++;
-        }
-      }
-      if (keyCorrect[k]) {
-        const from = offset <= 0 ? 0 : Math.ceil(offset / 1e3);
-        if (from <= seconds) correctByCheckpoint[from]++;
+      if (offset < 0) continue;
+      const bucket = Math.floor(offset / 1e3) + 1;
+      if (bucket <= seconds) {
+        rawInBucket[bucket]++;
+        if (!keyCorrect[k]) errorsInBucket[bucket]++;
       }
     }
-    const spacesByCheckpoint = new Float64Array(seconds + 2);
-    for (const t of spaceTimes) {
-      const offset = t - startedAt;
+    const netByCheckpoint = new Float64Array(seconds + 2);
+    for (let i = 0; i < creditTimes.length; i++) {
+      const offset = creditTimes[i] - startedAt;
       const from = offset <= 0 ? 0 : Math.ceil(offset / 1e3);
-      if (from <= seconds) spacesByCheckpoint[from]++;
+      if (from <= seconds) netByCheckpoint[from] += creditChars[i];
     }
-    for (let s = 1; s <= seconds; s++) {
-      correctByCheckpoint[s] += correctByCheckpoint[s - 1];
-      spacesByCheckpoint[s] += spacesByCheckpoint[s - 1];
-    }
+    for (let s = 1; s <= seconds; s++) netByCheckpoint[s] += netByCheckpoint[s - 1];
     const points = [];
     for (let s = 1; s <= seconds; s++) {
       const bucketStart = startedAt + (s - 1) * 1e3;
@@ -1750,35 +1925,33 @@ var TypeMoreCore = (() => {
       const checkpoint = Math.min(bucketEnd, end);
       const tail = checkpoint < bucketEnd;
       const rateStart = Math.max(startedAt, checkpoint - 1e3);
-      let correctSoFar;
+      let netSoFar;
       let rawInWindow;
       let errors;
-      let spacesSoFar;
       if (s < seconds) {
-        correctSoFar = correctByCheckpoint[s];
+        netSoFar = netByCheckpoint[s];
         rawInWindow = rawInBucket[s];
         errors = errorsInBucket[s];
-        spacesSoFar = spacesByCheckpoint[s];
       } else {
-        correctSoFar = 0;
+        netSoFar = 0;
         rawInWindow = 0;
         errors = 0;
-        spacesSoFar = 0;
         for (let k = 0; k < keyTimes.length; k++) {
           const t = keyTimes[k];
           const correct = keyCorrect[k];
-          if (t <= checkpoint && correct) correctSoFar++;
           if (t >= bucketStart && t < bucketEnd && !correct) errors++;
           const inWindow = tail ? t >= rateStart : t >= bucketStart && t < bucketEnd;
           if (inWindow) rawInWindow++;
         }
-        for (const t of spaceTimes) if (t <= checkpoint) spacesSoFar++;
+        for (let i = 0; i < creditTimes.length; i++) {
+          if (creditTimes[i] <= checkpoint) netSoFar += creditChars[i];
+        }
       }
       const elapsedMin = (checkpoint - startedAt) / 6e4;
       const rateMin = (checkpoint - rateStart) / 6e4;
       points.push({
         second: s,
-        wpm: elapsedMin > 0 ? (correctSoFar + spacesSoFar) / 5 / elapsedMin : 0,
+        wpm: elapsedMin > 0 ? netSoFar / 5 / elapsedMin : 0,
         raw: rateMin > 0 ? rawInWindow / 5 / rateMin : 0,
         errors
       });
@@ -2435,4 +2608,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"0cdf187d494bbc59a6286fd6913abf60f64c3f7f","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"8bdeedc3c3e9263ac9c6ee43bf416ea6420afcb7","gitDirty":false}
