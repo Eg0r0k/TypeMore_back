@@ -1,0 +1,1513 @@
+# TypeMore server — OpenAPI 3.0 description of the HTTP API.
+#
+# MAINTAINED BY HAND, verified against the handler view structs (the json tags
+# are the wire contract). Any change to a handler's request/response shape must
+# update this file in the same commit — the frontend generates types from it.
+#
+# Served by the running server at GET /api/v1/openapi.yaml, so the frontend can
+# point Swagger UI / Redoc / openapi-typescript at a live instance.
+#
+# Not described here: the WebSocket protocol (ws:// at /ws) — see
+# docs/PROTOCOL.md; frames are not an OpenAPI surface.
+openapi: 3.0.3
+info:
+  title: TypeMore API
+  version: "1"
+  description: |
+    The HTTP API of the TypeMore server (`/api/v1`, plus a few root-level
+    assets). Conventions:
+
+    * **Auth** is an opaque session cookie `tm_session` (HttpOnly, SameSite=Lax),
+      set by `POST /auth/login` and the OAuth callback. Send it with
+      `credentials: "include"`.
+    * **CSRF**: mutating requests (POST/PATCH/DELETE) must carry an `Origin`
+      header equal to the configured frontend origin, or they are refused with
+      403 `forbidden_origin`. GET/HEAD/OPTIONS are exempt.
+    * **Errors** share one envelope: `{"error": "<machine_code>", "message":
+      "<human text>"}`. Machine codes are stable; messages are not.
+    * **Pagination** is keyset: an opaque `cursor` string echoed back as
+      `nextCursor` (absent on the last page). Cursors are not to be parsed.
+    * **Timestamps** are RFC 3339 strings; UUIDs are canonical lowercase.
+    * The WebSocket endpoint is `GET /ws` (session cookie optional — a guest
+      upgrade succeeds). Its frame protocol is documented in docs/PROTOCOL.md.
+servers:
+  - url: http://localhost:8080
+    description: Local development (compose or `make run`)
+tags:
+  - name: auth
+    description: Registration, login, email verification, password reset, OAuth
+  - name: account
+    description: The caller's own account (/me)
+  - name: runs
+    description: Run ingestion, own history, public replays
+  - name: leaderboards
+  - name: profile
+    description: The caller's own statistics (session-scoped)
+  - name: public-profiles
+    description: /users/{name} — other players' public pages
+  - name: quotes
+  - name: assets
+    description: Dictionaries and keyboard layouts (public, cacheable)
+  - name: rooms
+    description: Lobby discovery (the realtime protocol itself is WebSocket)
+  - name: admin
+    description: |
+      Moderation surface. Mounted only when the deployment configures
+      `TYPEMORE_ADMINS`; to any caller without the required permission every
+      route here answers a plain-text 404 indistinguishable from an unknown
+      path. Permissions arrive on `GET /me` as `permissions`
+      (`bans:read`, `bans:write`).
+  - name: system
+
+paths:
+  # ------------------------------------------------------------------ auth --
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register an email account
+      description: |
+        Sends a verification email. Also requires a captcha token when the
+        deployment has Turnstile configured. The response is deliberately the
+        same whether or not the email already exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 8, maxLength: 128 }
+                displayName:
+                  type: string
+                  minLength: 3
+                  maxLength: 20
+                  pattern: "^[a-zA-Z0-9_.-]+$"
+                  description: Optional; derived from the email local part when absent.
+                turnstileToken: { type: string, description: Required iff captcha is enabled. }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+        "409": { $ref: "#/components/responses/ApiError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ApiError" }
+  /api/v1/auth/verify:
+    post:
+      tags: [auth]
+      summary: Confirm an email verification token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/ApiError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/verify/resend:
+    post:
+      tags: [auth]
+      summary: Re-send the verification email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                turnstileToken: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Log in with email and password
+      description: On success sets the `tm_session` cookie and returns the user view.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: Logged in; session cookie set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserView" }
+        "401": { $ref: "#/components/responses/ApiError" }
+        "403":
+          description: "`email_not_verified` or `forbidden_origin`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiErrorBody" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ApiError" }
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: End the current session
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: Session revoked, cookie cleared. Idempotent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, enum: [ok] } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/auth/password-reset/request:
+    post:
+      tags: [auth]
+      summary: Request a password-reset email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                turnstileToken: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      summary: Set a new password with a reset token
+      description: Revokes every session of the account on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string }
+                newPassword: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ApiError" }
+  /api/v1/auth/oauth/{provider}/start:
+    get:
+      tags: [auth]
+      summary: Begin an OAuth login (browser navigation)
+      parameters: [{ $ref: "#/components/parameters/OAuthProvider" }]
+      responses:
+        "302":
+          description: Redirect to the provider's authorize URL (PKCE + state cookies set).
+        "404": { $ref: "#/components/responses/ApiError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/auth/oauth/{provider}/callback:
+    get:
+      tags: [auth]
+      summary: OAuth provider callback (browser navigation)
+      description: |
+        Always answers with a redirect to `{frontend}/auth/callback`. Success:
+        `?status=ok` (login/registration, session cookie set) or
+        `?linked=<provider>` (identity linking). Failure: `?error=<code>` with
+        one of `invalid_state`, `oauth_denied`, `oauth_exchange_failed`,
+        `oauth_userinfo_failed`, `account_exists_use_linking`,
+        `provider_already_linked`.
+      parameters:
+        - { $ref: "#/components/parameters/OAuthProvider" }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: code, in: query, schema: { type: string } }
+      responses:
+        "302": { description: 'Redirect back to the frontend, outcome in the query string.' }
+        "404": { $ref: "#/components/responses/ApiError" }
+  /api/v1/auth/link/{provider}/start:
+    post:
+      tags: [auth]
+      summary: Begin linking an OAuth identity to the current account
+      security: [{ cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/OAuthProvider" }]
+      responses:
+        "200":
+          description: The provider authorize URL to navigate to.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { authorizeUrl: { type: string, format: uri } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/ApiError" }
+  /api/v1/auth/email/add:
+    post:
+      tags: [auth]
+      summary: Add an email identity to an OAuth-only account
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/ApiError" }
+  /api/v1/auth/password/set:
+    post:
+      tags: [auth]
+      summary: Set a first password (verified email required)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties: { password: { type: string, minLength: 8, maxLength: 128 } }
+      responses:
+        "200": { $ref: "#/components/responses/StatusMessage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/ApiError" }
+        "503": { $ref: "#/components/responses/ApiError" }
+
+  # --------------------------------------------------------------- account --
+  /api/v1/me:
+    get:
+      tags: [account]
+      summary: The current account
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: The caller's account view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/me/settings:
+    patch:
+      tags: [account]
+      summary: Update the account's privacy switches
+      description: Partial body — each switch updates only when present. Answers with the same view `/me` serves.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                profilePublic: { type: boolean }
+                keyboardPublic: { type: boolean }
+      responses:
+        "200":
+          description: Updated view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrigin" }
+
+  # ------------------------------------------------------------------ runs --
+  /api/v1/runs:
+    post:
+      tags: [runs]
+      summary: Submit a run
+      description: |
+        Structural validation only; the run lands `pending` and the replay
+        worker judges it asynchronously — poll `GET /runs/{id}` for the
+        verdict. Body cap 25 MiB. 422 carries one of the machine codes:
+        `unsupported_score_version`, `seed_out_of_range`,
+        `invalid_text_source`, `quote_text_submitted`, `invalid_adopted_from`,
+        `invalid_dimensions`, `duration_too_long`, `word_count_too_large`,
+        `invalid_restarts`, `malformed_log`, `unsupported_log_version`,
+        `log_too_large`, `empty_log`, `too_many_events`, `non_monotonic_seq`.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IngestRequest" }
+      responses:
+        "202":
+          description: Stored pending.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [pending] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`forbidden_origin`, or `account_restricted` (banned; the run is not stored)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiErrorBody" }
+        "413": { $ref: "#/components/responses/ApiError" }
+        "422":
+          description: Structural validation refused the run (codes above).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiErrorBody" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [runs]
+      summary: The caller's own runs, newest first
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Limit100" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunSummary" }
+                  nextCursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/runs/{id}:
+    get:
+      tags: [runs]
+      summary: One own run (or its raw event log with ?log=1)
+      description: |
+        Owner-only; a run that exists but belongs to someone else is the same
+        404 as one that does not exist. With `log=1` the response body is the
+        submitted EventLog JSON verbatim (no envelope).
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: log
+          in: query
+          schema: { type: string, enum: ["1"] }
+          description: Exactly "1" switches the response to the raw event log.
+      responses:
+        "200":
+          description: The run summary, or the raw EventLog JSON when `log=1`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/RunSummary"
+                  - type: object
+                    description: The raw EventLog document (log=1).
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/runs/{id}/replay:
+    get:
+      tags: [runs]
+      summary: Public replay metadata for an accepted run
+      description: |
+        Sessionless. 404 for a run that is not accepted, does not exist, or
+        whose owner is banned or has a closed profile without a board slot —
+        one indistinguishable answer. Rate limited per IP.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Everything needed to regenerate and watch the run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReplayView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/runs/{id}/replay/log:
+    get:
+      tags: [runs]
+      summary: The event log of a publicly watchable run
+      description: |
+        Same eligibility as `/replay`. The body is the stored gzip of the
+        EventLog served with `Content-Encoding: gzip` and immutable cache
+        headers (`ETag` = run id); supports `If-None-Match` → 304.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The EventLog JSON (transparently gunzipped by the browser).
+          content:
+            application/json:
+              schema: { type: object, description: The EventLog document. }
+        "304": { description: Not modified (ETag match). }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  # ---------------------------------------------------------- leaderboards --
+  /api/v1/leaderboards:
+    get:
+      tags: [leaderboards]
+      summary: The board index
+      description: Every board with at least one visible entry.
+      responses:
+        "200":
+          description: Board list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buckets]
+                properties:
+                  buckets:
+                    type: array
+                    items: { $ref: "#/components/schemas/BucketView" }
+  /api/v1/leaderboards/{bucket}:
+    get:
+      tags: [leaderboards]
+      summary: One board page
+      description: |
+        `{bucket}` is `<mode>:<size>:<lang>:seeded` (mode `time`|`words`, sizes
+        15000/30000/60000 ms or 25/50/100 words) or `quote:<uuid>`. Position
+        params `cursor` (rows after), `before` (rows above, prependable) and
+        `around=me` are mutually exclusive. `around=me` needs a session and
+        answers 204 when the caller holds no visible slot.
+      security: [{}, { cookieAuth: [] }]
+      parameters:
+        - { name: bucket, in: path, required: true, schema: { type: string }, example: "time:60000:en:seeded" }
+        - { $ref: "#/components/parameters/Limit100" }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { name: before, in: query, schema: { type: string }, description: Opaque cursor; page upward. }
+        - { name: around, in: query, schema: { type: string, enum: [me] } }
+      responses:
+        "200":
+          description: One page, ranks materialised per row.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BoardPage" }
+        "204": { description: "`around=me`: the caller has no visible entry here." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`unknown_bucket` — unparseable key or unranked shape."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiErrorBody" }
+  /api/v1/leaderboards/{bucket}/me:
+    get:
+      tags: [leaderboards]
+      summary: The caller's own row on one board
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: bucket, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The caller's entry.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [bucket, entry]
+                properties:
+                  bucket: { type: string }
+                  entry: { $ref: "#/components/schemas/BoardEntry" }
+        "204": { description: No visible slot on this board. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`unknown_bucket`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiErrorBody" }
+
+  # --------------------------------------------------------------- profile --
+  /api/v1/profile/summary:
+    get:
+      tags: [profile]
+      summary: The caller's aggregate statistics
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: Aggregates over the caller's runs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/profile/activity:
+    get:
+      tags: [profile]
+      summary: Daily activity calendar
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 366, default: 366 } }
+      responses:
+        "200":
+          description: Only days with runs are present.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days]
+                properties:
+                  days:
+                    type: array
+                    items: { $ref: "#/components/schemas/ActivityDay" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/profile/histogram:
+    get:
+      tags: [profile]
+      summary: Tests per 10-wpm band (accepted runs)
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: Histogram buckets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [buckets]
+                properties:
+                  buckets:
+                    type: array
+                    items: { $ref: "#/components/schemas/HistogramBucket" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/profile/timeseries:
+    get:
+      tags: [profile]
+      summary: Per-day chart series and the wpm-per-hour trend
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/FromDate" }
+        - { $ref: "#/components/parameters/ToDate" }
+      responses:
+        "200":
+          description: Day series inside [from, to).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeseriesResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/profile/pbs:
+    get:
+      tags: [profile]
+      summary: Personal bests, one per board
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: PB cards.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pbs]
+                properties:
+                  pbs:
+                    type: array
+                    items: { $ref: "#/components/schemas/PBView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/profile/keyboard:
+    get:
+      tags: [profile]
+      summary: The caller's keyboard heatmap
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: Per-key aggregates plus the default layout.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyboardResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ------------------------------------------------------- public profiles --
+  /api/v1/users/{name}:
+    get:
+      tags: [public-profiles]
+      summary: Public profile header
+      description: Returned 200 even for a closed profile — `public` says whether the data routes will answer.
+      parameters: [{ $ref: "#/components/parameters/ProfileName" }]
+      responses:
+        "200":
+          description: Header.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, joined, public]
+                properties:
+                  name: { type: string }
+                  joined: { type: string, format: date-time }
+                  public: { type: boolean }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/summary:
+    get:
+      tags: [public-profiles]
+      summary: Public profile aggregates
+      security: [{}, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ProfileName" }]
+      responses:
+        "200":
+          description: Same shape as the owner's /profile/summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileSummary" }
+        "403": { $ref: "#/components/responses/ProfileClosed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/activity:
+    get:
+      tags: [public-profiles]
+      summary: Public activity calendar
+      parameters:
+        - { $ref: "#/components/parameters/ProfileName" }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 366 } }
+      responses:
+        "200":
+          description: Same shape as /profile/activity.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days:
+                    type: array
+                    items: { $ref: "#/components/schemas/ActivityDay" }
+        "403": { $ref: "#/components/responses/ProfileClosed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/histogram:
+    get:
+      tags: [public-profiles]
+      summary: Public wpm histogram
+      parameters: [{ $ref: "#/components/parameters/ProfileName" }]
+      responses:
+        "200":
+          description: Same shape as /profile/histogram.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buckets:
+                    type: array
+                    items: { $ref: "#/components/schemas/HistogramBucket" }
+        "403": { $ref: "#/components/responses/ProfileClosed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/timeseries:
+    get:
+      tags: [public-profiles]
+      summary: Public chart series
+      parameters:
+        - { $ref: "#/components/parameters/ProfileName" }
+        - { $ref: "#/components/parameters/FromDate" }
+        - { $ref: "#/components/parameters/ToDate" }
+      responses:
+        "200":
+          description: Same shape as /profile/timeseries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TimeseriesResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ProfileClosed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/pbs:
+    get:
+      tags: [public-profiles]
+      summary: Public personal bests (ban-filtered)
+      parameters: [{ $ref: "#/components/parameters/ProfileName" }]
+      responses:
+        "200":
+          description: PB cards.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pbs:
+                    type: array
+                    items: { $ref: "#/components/schemas/PBView" }
+        "403": { $ref: "#/components/responses/ProfileClosed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/runs:
+    get:
+      tags: [public-profiles]
+      summary: Public run history (accepted runs only)
+      parameters:
+        - { $ref: "#/components/parameters/ProfileName" }
+        - { $ref: "#/components/parameters/Limit100" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: One page; the column set is a deliberate allowlist (no client numbers, no validation).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/PublicRunView" }
+                  nextCursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/ProfileClosed" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/users/{name}/portrait:
+    get:
+      tags: [public-profiles]
+      summary: Public keyboard portrait (its own opt-in)
+      description: Requires the owner's `keyboardPublic` switch in addition to an open profile; `403 portrait_closed` otherwise.
+      parameters: [{ $ref: "#/components/parameters/ProfileName" }]
+      responses:
+        "200":
+          description: Same shape as /profile/keyboard.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyboardResponse" }
+        "403":
+          description: "`profile_closed` or `portrait_closed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiErrorBody" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- quotes --
+  /api/v1/quotes:
+    get:
+      tags: [quotes]
+      summary: Quote catalogue (metadata only, no text)
+      parameters:
+        - { name: lang, in: query, schema: { type: string } }
+        - { name: group, in: query, schema: { type: string, enum: [short, medium, long, thicc] } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [quotes]
+                properties:
+                  quotes:
+                    type: array
+                    items: { $ref: "#/components/schemas/QuoteMeta" }
+                  nextCursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/v1/quotes/random:
+    get:
+      tags: [quotes]
+      summary: One random live quote
+      parameters:
+        - { name: lang, in: query, schema: { type: string } }
+        - { name: group, in: query, schema: { type: string, enum: [short, medium, long, thicc] } }
+      responses:
+        "200":
+          description: A quote with its text. Never a superseded revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Quote" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/quotes/{id}:
+    get:
+      tags: [quotes]
+      summary: One quote by id (superseded revisions stay resolvable)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The quote, `superseded` flagged when retired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Quote" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- assets --
+  /api/v1/dictionaries:
+    get:
+      tags: [assets]
+      summary: The dictionary catalogue
+      description: "A bare JSON array. Cacheable (`max-age=60`, ETag → 304)."
+      responses:
+        "200":
+          description: Catalogue.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DictionaryEntry" }
+        "304": { description: Not modified. }
+  /static/dictionaries/{dictHash}.json:
+    get:
+      tags: [assets]
+      summary: One dictionary body by hash (immutable)
+      description: "Root-level static asset. `Cache-Control: immutable`, ETag = hash."
+      parameters:
+        - { name: dictHash, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The dictionary document (name, words, …) verbatim.
+          content:
+            application/json:
+              schema: { type: object }
+        "304": { description: Not modified. }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/layouts:
+    get:
+      tags: [assets]
+      summary: Keyboard layout geometry (qwerty, jcuken)
+      responses:
+        "200":
+          description: All layouts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [layouts]
+                properties:
+                  layouts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Layout" }
+
+  # ----------------------------------------------------------------- rooms --
+  /api/v1/rooms:
+    get:
+      tags: [rooms]
+      summary: Open multiplayer rooms (lobby)
+      description: Sessionless; per-IP rate limited. Joining a room happens over the WebSocket protocol.
+      responses:
+        "200":
+          description: Open rooms with a free seat, busiest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rooms]
+                properties:
+                  rooms:
+                    type: array
+                    items: { $ref: "#/components/schemas/RoomView" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  # ----------------------------------------------------------------- admin --
+  /api/v1/admin/bans:
+    get:
+      tags: [admin]
+      summary: List bans
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: active, in: query, schema: { type: string, enum: ["1", "0"], default: "1" }, description: "0 includes revoked and lapsed bans." }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        "200":
+          description: Bans newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [bans]
+                properties:
+                  bans:
+                    type: array
+                    items: { $ref: "#/components/schemas/BanView" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+    post:
+      tags: [admin]
+      summary: Issue or amend a ban
+      description: |
+        Idempotent amend semantics: banning an already-banned account updates
+        the existing ban and the response carries `amended: true` plus
+        `previous` — never a second ban. Requires the Origin header.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user, reason]
+              properties:
+                user: { type: string, description: "uuid, email, or display name." }
+                reason: { type: string, description: Internal moderation note; never shown to the player. }
+                until: { type: string, description: 'Duration ("72h") or a future RFC3339 instant; absent = permanent.' }
+      responses:
+        "200":
+          description: What changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, ban, amended]
+                properties:
+                  user: { $ref: "#/components/schemas/ModerationUser" }
+                  ban: { $ref: "#/components/schemas/BanView" }
+                  amended: { type: boolean }
+                  previous: { $ref: "#/components/schemas/BanView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+        "409": { $ref: "#/components/responses/AmbiguousUser" }
+  /api/v1/admin/users/{identifier}/bans:
+    get:
+      tags: [admin]
+      summary: Resolve an account and read its ban history
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: identifier, in: path, required: true, schema: { type: string }, description: "uuid, email, or display name." }
+      responses:
+        "200":
+          description: The account, whether it is restricted now, and every ban it ever had.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, restricted, bans]
+                properties:
+                  user: { $ref: "#/components/schemas/ModerationUser" }
+                  restricted: { type: boolean }
+                  bans:
+                    type: array
+                    items: { $ref: "#/components/schemas/BanView" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+        "409": { $ref: "#/components/responses/AmbiguousUser" }
+  /api/v1/admin/users/{userID}/ban:
+    delete:
+      tags: [admin]
+      summary: Revoke the active ban
+      description: 'The target is a uuid only. Idempotent — revoking a ban that is not there answers `{"revoked": false}`.'
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: userID, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: boolean }
+                  ban: { $ref: "#/components/schemas/BanView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+
+  # ---------------------------------------------------------------- system --
+  /healthz:
+    get:
+      tags: [system]
+      summary: Liveness (checks nothing)
+      responses:
+        "200":
+          description: Alive; carries build info and the review-policy posture.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, build, reviewPolicy]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  build:
+                    type: object
+                    properties:
+                      version: { type: string }
+                      commit: { type: string }
+                      buildDate: { type: string }
+                      goVersion: { type: string }
+                  reviewPolicy:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      version: { type: string }
+                      warning: { type: string, description: Present only when the policy is disabled. }
+  /readyz:
+    get:
+      tags: [system]
+      summary: Readiness (pings the database)
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, enum: [ready] } }
+        "503":
+          description: Database unreachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [unavailable] }
+                  error: { type: string }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: tm_session
+      description: Opaque session cookie set by login / the OAuth callback.
+
+  parameters:
+    OAuthProvider:
+      name: provider
+      in: path
+      required: true
+      schema: { type: string, enum: [github, google] }
+    Limit100:
+      name: limit
+      in: query
+      schema: { type: integer, default: 20, maximum: 100 }
+      description: Out-of-range values clamp silently (boards default to 50).
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque continuation token from a previous page's `nextCursor`.
+    FromDate:
+      name: from
+      in: query
+      schema: { type: string }
+      description: RFC3339 or YYYY-MM-DD (UTC).
+    ToDate:
+      name: to
+      in: query
+      schema: { type: string }
+      description: RFC3339 or YYYY-MM-DD (a date-only value is inclusive).
+    ProfileName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string }
+      description: Display name, matched case-insensitively.
+
+  responses:
+    ApiError:
+      description: Error envelope.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    StatusMessage:
+      description: Generic acknowledgement (deliberately the same whether or not the account exists).
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, enum: [ok] }
+              message: { type: string }
+    BadRequest:
+      description: "`bad_request` (or a more specific 400 code named in the route description)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    Unauthorized:
+      description: "`unauthorized` — no valid session."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    ForbiddenOrigin:
+      description: "`forbidden_origin` — the Origin header does not match the frontend."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    NotFound:
+      description: "`not_found` — deliberately indistinguishable across the reasons a resource may be hidden."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    RateLimited:
+      description: "`rate_limited`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    ProfileClosed:
+      description: "`profile_closed` — this profile is private."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiErrorBody" }
+    AdminNotFound:
+      description: |
+        Plain-text 404, byte-identical to an unknown route. Returned to any
+        caller without the required permission (anonymous or not), and for an
+        identifier that resolves to no account.
+      content:
+        text/plain:
+          schema: { type: string, example: 404 page not found }
+    AmbiguousUser:
+      description: The identifier matches more than one account; nothing was done.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, candidates]
+            properties:
+              error: { type: string, enum: [ambiguous_user] }
+              candidates:
+                type: array
+                items: { $ref: "#/components/schemas/ModerationUser" }
+
+  schemas:
+    ApiErrorBody:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string, description: Stable machine code. }
+        message: { type: string, description: Human text; not stable. }
+
+    UserView:
+      type: object
+      required: [id, displayName, createdAt, restricted, profilePublic, keyboardPublic]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        createdAt: { type: string, format: date-time }
+        restricted:
+          type: boolean
+          description: True while the account is under an active ban. Always `false` on login/flow responses; `/me` is the authoritative read.
+        profilePublic: { type: boolean }
+        keyboardPublic: { type: boolean }
+        permissions:
+          type: array
+          items: { type: string, enum: ["bans:read", "bans:write"] }
+          description: Omitted entirely for a plain player. Render admin surfaces from this, never from a role.
+
+    IngestRequest:
+      type: object
+      required: [mode, lang, seed, dictHash, setup, log, clientMetrics, clientScore, scoreVersion]
+      properties:
+        mode: { type: string, maxLength: 32 }
+        durationMs: { type: integer, nullable: true, maximum: 3600000, description: Seeded time runs only; exactly one of durationMs/wordCount. }
+        wordCount: { type: integer, nullable: true, maximum: 3000, description: Seeded word runs only. Quote runs carry neither. }
+        lang: { type: string, maxLength: 32 }
+        seed: { type: integer, minimum: 0, maximum: 4294967295 }
+        dictHash: { type: string, maxLength: 64 }
+        setup: { type: object, description: 'The {config, generation, declaration} snapshot, stored verbatim. A quote run names its quote via generation.textSource {kind, quoteId, quoteHash} and never includes the text.' }
+        log: { type: object, description: 'The EventLog document, inline JSON (not base64, not gzip).' }
+        clientMetrics: { type: object }
+        clientScore: { type: object }
+        scoreVersion: { type: integer, enum: [1, 2] }
+        restartsSinceLastSubmit: { type: integer, minimum: 0, maximum: 10000 }
+
+    RunSummary:
+      type: object
+      required: [id, mode, lang, seed, dictHash, setup, clientMetrics, clientScore, scoreVersion, status, logBytes, restartsSinceLastSubmit, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        mode: { type: string }
+        durationMs: { type: integer, nullable: true }
+        wordCount: { type: integer, nullable: true }
+        lang: { type: string }
+        seed: { type: integer }
+        dictHash: { type: string }
+        setup: { type: object }
+        clientMetrics: { type: object }
+        clientScore: { type: object }
+        scoreVersion: { type: integer }
+        status: { type: string, enum: [pending, accepted, flagged, rejected] }
+        serverMetrics: { type: object, description: Absent until judged. }
+        serverScore: { type: object, description: Absent until judged. }
+        validation: { type: object, description: "The verdict document {verdict, reason?, flags[], policy?, divergence?}; absent until judged." }
+        validatedAt: { type: string, format: date-time }
+        logBytes: { type: integer }
+        restartsSinceLastSubmit: { type: integer }
+        createdAt: { type: string, format: date-time }
+        grade: { type: string, description: Derived from the SERVER accuracy; absent until judged. }
+        consistency: { type: number }
+        chars: { type: object, description: "The chars slice of serverMetrics." }
+        quoteId: { type: string, format: uuid }
+        adoptedFromRunId: { type: string, format: uuid, description: 'Present when the text was adopted from another run (saved, ranked nowhere).' }
+        mods: { type: object }
+
+    ReplayView:
+      type: object
+      required: [runId, displayName, mode, lang, seed, dictHash, setup, serverMetrics, serverScore, grade, achievedAt]
+      properties:
+        runId: { type: string, format: uuid }
+        displayName: { type: string }
+        mode: { type: string }
+        durationMs: { type: integer, nullable: true }
+        wordCount: { type: integer, nullable: true }
+        lang: { type: string }
+        seed: { type: integer }
+        dictHash: { type: string }
+        setup: { type: object }
+        serverMetrics: { type: object }
+        serverScore: { type: object }
+        grade: { type: string }
+        achievedAt: { type: string, format: date-time }
+
+    BucketView:
+      type: object
+      required: [bucket, entries]
+      properties:
+        bucket: { type: string, example: "time:60000:en:seeded" }
+        quoteId: { type: string, format: uuid, description: Quote boards only. }
+        mode: { type: string, description: Language boards only. }
+        durationMs: { type: integer, nullable: true }
+        wordCount: { type: integer, nullable: true }
+        lang: { type: string }
+        textSource: { type: string, example: seeded }
+        entries: { type: integer }
+
+    BoardEntry:
+      type: object
+      required: [rank, userId, displayName, score, wpm, raw, acc, grade, mods, runId, achievedAt]
+      properties:
+        rank: { type: integer }
+        userId: { type: string, format: uuid }
+        displayName: { type: string }
+        score: { type: integer }
+        wpm: { type: number }
+        raw: { type: number }
+        acc: { type: number, description: 'Fraction in [0, 1].' }
+        grade: { type: string }
+        mods: { type: object }
+        source: { type: string, description: Quote attribution; quote boards only. }
+        runId: { type: string, format: uuid }
+        achievedAt: { type: string, format: date-time }
+
+    BoardPage:
+      type: object
+      required: [entries, bucket]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/BoardEntry" }
+        bucket: { type: string }
+        prevCursor: { type: string, description: "Only on ?before=/?around=me responses with rows above." }
+        nextCursor: { type: string }
+
+    MetricStats:
+      type: object
+      required: [highest, average, averageLast10]
+      properties:
+        highest: { type: number }
+        average: { type: number }
+        averageLast10: { type: number }
+
+    ProfileSummary:
+      type: object
+      required: [displayName, joined, testsStarted, testsCompleted, restartsPerCompleted, timeTypingMs, estimatedWordsTyped, wpm, raw, acc, consistency, streak, languages]
+      properties:
+        displayName: { type: string }
+        joined: { type: string, format: date-time }
+        testsStarted: { type: integer }
+        testsCompleted: { type: integer }
+        restartsPerCompleted: { type: number }
+        timeTypingMs: { type: integer }
+        estimatedWordsTyped: { type: integer }
+        wpm: { $ref: "#/components/schemas/MetricStats" }
+        raw: { $ref: "#/components/schemas/MetricStats" }
+        acc: { $ref: "#/components/schemas/MetricStats" }
+        consistency: { $ref: "#/components/schemas/MetricStats" }
+        streak:
+          type: object
+          properties:
+            current: { type: integer }
+            best: { type: integer }
+        languages:
+          type: array
+          items:
+            type: object
+            properties:
+              lang: { type: string }
+              tests: { type: integer }
+
+    ActivityDay:
+      type: object
+      required: [date, tests, timeMs]
+      properties:
+        date: { type: string, example: "2026-08-01" }
+        tests: { type: integer }
+        timeMs: { type: integer }
+
+    HistogramBucket:
+      type: object
+      required: [wpm, tests]
+      properties:
+        wpm: { type: integer, description: Lower bound of the 10-wpm band. }
+        tests: { type: integer }
+
+    TimeseriesResponse:
+      type: object
+      required: [days, wpmPerHour]
+      properties:
+        days:
+          type: array
+          items:
+            type: object
+            required: [date, timeTypingMs, avgWpm, avgAcc]
+            properties:
+              date: { type: string, example: "2026-08-01" }
+              timeTypingMs: { type: integer }
+              avgWpm: { type: number }
+              avgAcc: { type: number }
+        wpmPerHour: { type: number, description: OLS slope over the day points; 0 when there is no trend yet. }
+
+    PBView:
+      type: object
+      required: [bucket, runId, score, wpm, raw, acc, grade, mods, achievedAt]
+      properties:
+        bucket: { type: string }
+        mode: { type: string, description: Language boards only. }
+        durationMs: { type: integer, nullable: true }
+        wordCount: { type: integer, nullable: true }
+        lang: { type: string }
+        textSource: { type: string }
+        quoteId: { type: string, format: uuid, description: Quote boards only. }
+        source: { type: string, description: Quote attribution. }
+        runId: { type: string, format: uuid }
+        score: { type: integer }
+        wpm: { type: number }
+        raw: { type: number }
+        acc: { type: number }
+        grade: { type: string }
+        mods: { type: object }
+        achievedAt: { type: string, format: date-time }
+
+    KeyboardResponse:
+      type: object
+      required: [layout, keys]
+      properties:
+        layout: { type: string, enum: [qwerty, jcuken] }
+        keys:
+          type: array
+          items:
+            type: object
+            required: [keyId, count, errorRate, avgIntervalMs, intervals]
+            properties:
+              keyId: { type: string, description: KeyboardEvent.code vocabulary; "other" buckets unmapped characters. }
+              count: { type: integer }
+              errorRate: { type: number, description: 'Fraction in [0, 1].' }
+              avgIntervalMs: { type: number }
+              intervals: { type: integer }
+
+    PublicRunView:
+      type: object
+      required: [id, mode, lang, serverMetrics, serverScore, createdAt, status]
+      properties:
+        id: { type: string, format: uuid }
+        mode: { type: string }
+        durationMs: { type: integer, nullable: true }
+        wordCount: { type: integer, nullable: true }
+        lang: { type: string }
+        serverMetrics: { type: object }
+        serverScore: { type: object }
+        createdAt: { type: string, format: date-time }
+        status: { type: string, enum: [accepted], description: Constant by construction — only accepted runs are served. }
+        grade: { type: string }
+        consistency: { type: number }
+        chars: { type: object }
+        quoteId: { type: string, format: uuid }
+        adoptedFromRunId: { type: string, format: uuid }
+        mods: { type: object }
+
+    QuoteMeta:
+      type: object
+      required: [id, lang, upstreamId, source, length, lenGroup, textHash]
+      properties:
+        id: { type: string, format: uuid }
+        lang: { type: string }
+        upstreamId: { type: integer }
+        source: { type: string }
+        length: { type: integer }
+        lenGroup: { type: string, enum: [short, medium, long, thicc] }
+        textHash: { type: string }
+
+    Quote:
+      allOf:
+        - $ref: "#/components/schemas/QuoteMeta"
+        - type: object
+          required: [text, superseded]
+          properties:
+            text: { type: string }
+            superseded: { type: boolean, description: 'A retired revision; still replayable, never drawn by /random.' }
+
+    DictionaryEntry:
+      type: object
+      required: [lang, name, dictHash, wordCount, bytes]
+      properties:
+        lang: { type: string }
+        name: { type: string }
+        dictHash: { type: string }
+        wordCount: { type: integer }
+        bytes: { type: integer }
+
+    Layout:
+      type: object
+      required: [name, label, keys]
+      properties:
+        name: { type: string, enum: [qwerty, jcuken] }
+        label: { type: string }
+        keys:
+          type: array
+          items:
+            type: object
+            required: [id, row, col, finger, hand, chars]
+            properties:
+              id: { type: string }
+              row: { type: integer }
+              col: { type: integer }
+              finger: { type: string }
+              hand: { type: string }
+              chars:
+                type: array
+                items: { type: string }
+              width: { type: integer }
+
+    RoomView:
+      type: object
+      required: [code, name, playerCount, maxPlayers, inMatch, settings]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        playerCount: { type: integer }
+        maxPlayers: { type: integer }
+        inMatch: { type: boolean }
+        settings:
+          type: object
+          required: [mode, lang]
+          properties:
+            mode: { type: string }
+            durationMs: { type: integer, nullable: true }
+            wordCount: { type: integer, nullable: true }
+            lang: { type: string }
+
+    ModerationUser:
+      type: object
+      required: [id, displayName]
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+
+    BanView:
+      type: object
+      required: [id, userId, reason, issuedBy, issuedAt, active]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        displayName: { type: string, description: Populated by the list reads only. }
+        reason: { type: string, description: 'Internal note — visible on this surface, never to the player.' }
+        issuedBy: { type: string }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: Absent = permanent. }
+        revokedAt: { type: string, format: date-time }
+        active: { type: boolean }
