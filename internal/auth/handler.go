@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // AuthRoutes returns the router for the auth endpoints, intended to be mounted
@@ -140,10 +142,7 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // writeJSON encodes v as the response body with the given status.
 func (s *Service) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		// The header is already sent; nothing to do but note it.
+	if err := httpx.WriteJSON(w, status, v); err != nil {
 		s.log.Error("encode response", "err", err)
 	}
 }

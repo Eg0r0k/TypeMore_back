@@ -8,12 +8,23 @@ package httpx
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+// WriteJSON writes v as the JSON response body with the given status. The
+// encode error is returned for the caller to log under its own domain name —
+// by the time encoding can fail the status line is already on the wire, so
+// logging is all that is left to do with it.
+func WriteJSON(w http.ResponseWriter, status int, v any) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	return json.NewEncoder(w).Encode(v)
+}
 
 // ParseLimit clamps a ?limit= query value to [1, maxAllowed], returning def on
 // absent or unparseable input.

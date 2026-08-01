@@ -2,12 +2,13 @@ package profile
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // UserIDFunc extracts the authenticated user's id from the request context —
@@ -59,9 +60,7 @@ func NewService(store Store, userID UserIDFunc, bucket BucketParser, layoutFor L
 // --- shared HTTP helpers (mirroring the sibling domains', kept private) -----
 
 func (s *Service) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := httpx.WriteJSON(w, status, v); err != nil {
 		s.log.Error("encode response", "err", err)
 	}
 }

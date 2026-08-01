@@ -2,12 +2,13 @@ package runs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // RateLimiter decides whether an action keyed by a string may proceed. It is the
@@ -80,9 +81,7 @@ func (s *Service) currentUser(w http.ResponseWriter, r *http.Request) (uuid.UUID
 
 // writeJSON encodes v as the response body with the given status.
 func (s *Service) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := httpx.WriteJSON(w, status, v); err != nil {
 		s.log.Error("encode response", "err", err)
 	}
 }

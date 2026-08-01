@@ -1,10 +1,11 @@
 package quote
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/typemore/typemore-server/internal/platform/httpx"
 )
 
 // Service serves the public quote registry.
@@ -25,9 +26,7 @@ func NewService(store Store, log *slog.Logger) *Service {
 // --- shared HTTP helpers (mirroring the sibling domains', kept private) ---
 
 func (s *Service) writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := httpx.WriteJSON(w, status, v); err != nil {
 		s.log.Error("encode response", "err", err)
 	}
 }
