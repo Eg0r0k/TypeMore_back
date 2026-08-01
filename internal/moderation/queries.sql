@@ -43,25 +43,31 @@ ORDER BY b.issued_at DESC
 LIMIT 1;
 
 -- name: InsertBan :one
-INSERT INTO bans (user_id, reason, issued_by, expires_at)
-VALUES (@user_id, @reason, @issued_by, @expires_at)
+-- issued_by is the human-readable note; issued_by_user is the actor as an
+-- ACCOUNT (00023) — the admin surface records both, and the uuid is the one
+-- an audit can join on.
+INSERT INTO bans (user_id, reason, issued_by, issued_by_user, expires_at)
+VALUES (@user_id, @reason, @issued_by, @issued_by_user, @expires_at)
 RETURNING id, user_id, reason, issued_by, issued_at, expires_at, revoked_at;
 
 -- name: UpdateBan :one
 -- Re-banning an already-banned user amends the ban in place rather than
 -- stacking a second one: two simultaneous bans on one account would make
--- "when does this lift" a question with two answers.
+-- "when does this lift" a question with two answers. The amendment takes the
+-- amending actor: the row records who last shaped the restriction in force.
 UPDATE bans
-SET reason     = @reason,
-    issued_by  = @issued_by,
-    expires_at = @expires_at,
-    issued_at  = now()
+SET reason         = @reason,
+    issued_by      = @issued_by,
+    issued_by_user = @issued_by_user,
+    expires_at     = @expires_at,
+    issued_at      = now()
 WHERE id = @id
 RETURNING id, user_id, reason, issued_by, issued_at, expires_at, revoked_at;
 
 -- name: RevokeBan :one
 UPDATE bans
-SET revoked_at = now()
+SET revoked_at      = now(),
+    revoked_by_user = @revoked_by_user
 WHERE id = @id AND revoked_at IS NULL
 RETURNING id, user_id, reason, issued_by, issued_at, expires_at, revoked_at;
 

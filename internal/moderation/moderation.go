@@ -155,7 +155,27 @@ func (s *Store) byDisplayName(ctx context.Context, name string) ([]User, error) 
 	return out, nil
 }
 
-// BanResult reports what Ban actually did, so the CLI can print the change
+// Actor is who performs a moderation act: the account id for the audit
+// column (00023) and the display name for the human-readable issued_by note.
+// Filled from the authenticated admin by the HTTP surface; moderation itself
+// never resolves a principal — the reader is supplied from outside, like
+// every other cross-domain fact. A zero ID records NULL in the audit column:
+// an act with a note but no account behind it (tests, one-off tooling).
+type Actor struct {
+	ID   uuid.UUID
+	Name string
+}
+
+// auditID is the FK-safe form of the actor for the issued_by_user /
+// revoked_by_user columns.
+func (a Actor) auditID() *uuid.UUID {
+	if a.ID == uuid.Nil {
+		return nil
+	}
+	return &a.ID
+}
+
+// BanResult reports what Ban actually did, so the caller can render the change
 // rather than a success message that is true either way.
 type BanResult struct {
 	Ban     Ban
@@ -172,12 +192,13 @@ type BanResult struct {
 // second ban. Two simultaneous bans on one account would make "when does this
 // lift" a question with two answers, and a moderator correcting an expiry
 // should not have to unban first.
-func (s *Store) Ban(ctx context.Context, userID uuid.UUID, reason, issuedBy string, expiresAt *time.Time) (BanResult, error) {
+func (s *Store) Ban(ctx context.Context, userID uuid.UUID, reason string, by Actor, expiresAt *time.Time) (BanResult, error) {
 	existing, err := s.q.ActiveBanFor(ctx, userID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		row, err := s.q.InsertBan(ctx, moderationdb.InsertBanParams{
-			UserID: userID, Reason: reason, IssuedBy: &issuedBy, ExpiresAt: expiresAt,
+			UserID: userID, Reason: reason, IssuedBy: &by.Name, IssuedByUser: by.auditID(),
+			ExpiresAt: expiresAt,
 		})
 		if err != nil {
 			return BanResult{}, err
@@ -190,7 +211,8 @@ func (s *Store) Ban(ctx context.Context, userID uuid.UUID, reason, issuedBy stri
 	before := banOf(existing.ID, existing.UserID, existing.Reason, existing.IssuedBy,
 		existing.IssuedAt, existing.ExpiresAt, existing.RevokedAt)
 	row, err := s.q.UpdateBan(ctx, moderationdb.UpdateBanParams{
-		ID: existing.ID, Reason: reason, IssuedBy: &issuedBy, ExpiresAt: expiresAt,
+		ID: existing.ID, Reason: reason, IssuedBy: &by.Name, IssuedByUser: by.auditID(),
+		ExpiresAt: expiresAt,
 	})
 	if err != nil {
 		return BanResult{}, err
@@ -207,7 +229,7 @@ var ErrNotBanned = errors.New("moderation: user is not banned")
 
 // Unban revokes the active ban. Revocation is a fact with a time, not a
 // deletion: the row stays so "what happened to this account" has an answer.
-func (s *Store) Unban(ctx context.Context, userID uuid.UUID) (Ban, error) {
+func (s *Store) Unban(ctx context.Context, userID uuid.UUID, by Actor) (Ban, error) {
 	existing, err := s.q.ActiveBanFor(ctx, userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Ban{}, ErrNotBanned
@@ -215,7 +237,9 @@ func (s *Store) Unban(ctx context.Context, userID uuid.UUID) (Ban, error) {
 	if err != nil {
 		return Ban{}, err
 	}
-	row, err := s.q.RevokeBan(ctx, existing.ID)
+	row, err := s.q.RevokeBan(ctx, moderationdb.RevokeBanParams{
+		ID: existing.ID, RevokedByUser: by.auditID(),
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Ban{}, ErrNotBanned
 	}

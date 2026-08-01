@@ -55,10 +55,10 @@ func TestActiveBanPredicate(t *testing.T) {
 			// so it is planted directly: the point is the READ predicate, and a
 			// ban that lapsed while nobody was looking is the realistic way to
 			// reach this state.
-			_, err := h.store.Ban(ctx, user, "note", "tester", tc.expiresAt)
+			_, err := h.store.Ban(ctx, user, "note", actorNamed("tester"), tc.expiresAt)
 			require.NoError(t, err)
 			if tc.revoke {
-				_, err := h.store.Unban(ctx, user)
+				_, err := h.store.Unban(ctx, user, actorNamed("tester"))
 				require.NoError(t, err)
 			}
 
@@ -78,7 +78,7 @@ func TestATemporaryBanLiftsItself(t *testing.T) {
 	user := h.user(t, "temp")
 
 	soon := time.Now().Add(1200 * time.Millisecond)
-	_, err := h.store.Ban(ctx, user, "cooling off", "tester", &soon)
+	_, err := h.store.Ban(ctx, user, "cooling off", actorNamed("tester"), &soon)
 	require.NoError(t, err)
 
 	restricted, err := h.store.IsRestricted(ctx, user)
@@ -107,12 +107,12 @@ func TestBanIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	user := h.user(t, "repeat")
 
-	first, err := h.store.Ban(ctx, user, "first note", "alice", nil)
+	first, err := h.store.Ban(ctx, user, "first note", actorNamed("alice"), nil)
 	require.NoError(t, err)
 	require.False(t, first.Amended)
 
 	until := time.Now().Add(24 * time.Hour)
-	second, err := h.store.Ban(ctx, user, "second note", "bob", &until)
+	second, err := h.store.Ban(ctx, user, "second note", actorNamed("bob"), &until)
 	require.NoError(t, err)
 	require.True(t, second.Amended, "a re-ban must amend, not insert")
 	require.NotNil(t, second.Previous)
@@ -135,14 +135,14 @@ func TestUnbanRevokesAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	user := h.user(t, "revoked")
 
-	_, err := h.store.Ban(ctx, user, "note", "tester", nil)
+	_, err := h.store.Ban(ctx, user, "note", actorNamed("tester"), nil)
 	require.NoError(t, err)
 
-	ban, err := h.store.Unban(ctx, user)
+	ban, err := h.store.Unban(ctx, user, actorNamed("tester"))
 	require.NoError(t, err)
 	require.NotNil(t, ban.RevokedAt)
 
-	_, err = h.store.Unban(ctx, user)
+	_, err = h.store.Unban(ctx, user, actorNamed("tester"))
 	assert.ErrorIs(t, err, moderation.ErrNotBanned)
 
 	history, err := h.store.History(ctx, user)
@@ -158,12 +158,12 @@ func TestReBanningAfterRevocationIsANewRecord(t *testing.T) {
 	ctx := context.Background()
 	user := h.user(t, "again")
 
-	first, err := h.store.Ban(ctx, user, "first", "tester", nil)
+	first, err := h.store.Ban(ctx, user, "first", actorNamed("tester"), nil)
 	require.NoError(t, err)
-	_, err = h.store.Unban(ctx, user)
+	_, err = h.store.Unban(ctx, user, actorNamed("tester"))
 	require.NoError(t, err)
 
-	second, err := h.store.Ban(ctx, user, "second", "tester", nil)
+	second, err := h.store.Ban(ctx, user, "second", actorNamed("tester"), nil)
 	require.NoError(t, err)
 	assert.False(t, second.Amended, "a revoked ban must not be amended back to life")
 	assert.NotEqual(t, first.Ban.ID, second.Ban.ID)
@@ -220,14 +220,14 @@ func TestListActiveFiltersThroughThePredicate(t *testing.T) {
 	revoked := h.user(t, "revoked")
 	lapsed := h.user(t, "lapsed")
 
-	_, err := h.store.Ban(ctx, active, "still on", "tester", nil)
+	_, err := h.store.Ban(ctx, active, "still on", actorNamed("tester"), nil)
 	require.NoError(t, err)
-	_, err = h.store.Ban(ctx, revoked, "will be lifted", "tester", nil)
+	_, err = h.store.Ban(ctx, revoked, "will be lifted", actorNamed("tester"), nil)
 	require.NoError(t, err)
-	_, err = h.store.Unban(ctx, revoked)
+	_, err = h.store.Unban(ctx, revoked, actorNamed("tester"))
 	require.NoError(t, err)
 	past := time.Now().Add(-time.Hour)
-	_, err = h.store.Ban(ctx, lapsed, "already over", "tester", &past)
+	_, err = h.store.Ban(ctx, lapsed, "already over", actorNamed("tester"), &past)
 	require.NoError(t, err)
 
 	onlyActive, err := h.store.List(ctx, true, 50)
@@ -245,6 +245,13 @@ func TestListActiveFiltersThroughThePredicate(t *testing.T) {
 type harness struct {
 	pool  *pgxpool.Pool
 	store *moderation.Store
+}
+
+// actorNamed is a moderation act's author with a note but no account — the
+// audit column records NULL, which is exactly what these store-level tests
+// want to exercise separately from the HTTP surface's real actors.
+func actorNamed(name string) moderation.Actor {
+	return moderation.Actor{Name: name}
 }
 
 // newHarness gives each test its own empty users/bans tables in the shared

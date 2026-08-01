@@ -37,6 +37,12 @@ type User struct {
 	// ProfilePublic and off by default — per-key timing is effectively
 	// biometric (docs/PROFILE.md, "Privacy").
 	KeyboardPublic bool
+	// Role is the stored authorization fact ('player' | 'admin', 00023).
+	// Nothing outside this package should branch on it: enforcement speaks
+	// PERMISSIONS (permissions.go), and the role is only the key the
+	// role→permissions map expands. Resolved fresh on every authenticated
+	// request by RequireAuth, so demotion takes effect mid-session.
+	Role string
 }
 
 // SettingsParams is the input to UpdateUserSettings: the full pair, resolved
@@ -150,6 +156,10 @@ type Store interface {
 	// UpdateUserSettings replaces the account's privacy switches and returns
 	// the updated row.
 	UpdateUserSettings(ctx context.Context, userID uuid.UUID, p SettingsParams) (User, error)
+	// PromoteAdmins promotes every account owning a VERIFIED identity on one
+	// of the emails to the admin role (the startup bootstrap; promotion only,
+	// never demotion). Returns how many accounts actually changed.
+	PromoteAdmins(ctx context.Context, emails []string) (int64, error)
 
 	// Credential / UpdateCredential read and replace password material.
 	Credential(ctx context.Context, userID uuid.UUID) (Credential, error)

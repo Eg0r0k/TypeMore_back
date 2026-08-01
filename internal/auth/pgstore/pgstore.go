@@ -64,6 +64,7 @@ func toUser(u authdb.User) auth.User {
 	return auth.User{
 		ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt,
 		ProfilePublic: u.ProfilePublic, KeyboardPublic: u.KeyboardPublic,
+		Role: u.Role,
 	}
 }
 
@@ -240,6 +241,14 @@ func (s *Store) UpdateUserSettings(ctx context.Context, userID uuid.UUID, p auth
 		return auth.User{}, mapErr(err)
 	}
 	return toUser(u), nil
+}
+
+func (s *Store) PromoteAdmins(ctx context.Context, emails []string) (int64, error) {
+	n, err := s.q.PromoteAdmins(ctx, emails)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
 }
 
 func (s *Store) Credential(ctx context.Context, userID uuid.UUID) (auth.Credential, error) {

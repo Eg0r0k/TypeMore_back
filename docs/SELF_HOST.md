@@ -60,9 +60,10 @@ replayed in full, on the server, through the same core the browser ran:
   `TestHardVerdictsDoNotDependOnTheJudge`, which runs the whole tamper matrix
   against judges ranging from "review nothing, ever" to "review every flagged
   run" and gets identical verdicts.
-- **Bans and moderation.** `banctl`, the restriction gate on submission, the
-  filtered leaderboard view. All open, and deliberately so: an instance has to be
-  able to remove someone.
+- **Bans and moderation.** The admin surface (`/api/v1/admin`, enabled by
+  setting `TYPEMORE_ADMINS`; docs/MODERATION.md), the restriction gate on
+  submission, the filtered leaderboard view. All open, and deliberately so: an
+  instance has to be able to remove someone.
 - **Leaderboards, profiles, the keyboard heatmap, quotes, the replay worker and
   its queue.** Untouched.
 

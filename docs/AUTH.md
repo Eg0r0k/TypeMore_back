@@ -44,7 +44,9 @@ endpoint takes the field.
 All success responses are `200 OK` with `Content-Type: application/json`
 (OAuth `start`/`callback` are `302` redirects with no body). The user-object
 endpoints share one shape — the `userView` `{id, displayName, createdAt,
-restricted, profilePublic, keyboardPublic}`, lower-camelCase, `createdAt` an
+restricted, profilePublic, keyboardPublic, permissions?}`, lower-camelCase —
+`permissions` is the caller's expanded capability set (docs/MODERATION.md,
+"The admin surface") and is omitted entirely for a plain player — `createdAt` an
 RFC 3339 string (the two privacy switches: `docs/PROFILE.md`, "Public
 profiles"):
 

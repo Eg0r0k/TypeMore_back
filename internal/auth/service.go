@@ -295,12 +295,19 @@ type userView struct {
 	// here.
 	ProfilePublic  bool `json:"profilePublic"`
 	KeyboardPublic bool `json:"keyboardPublic"`
+	// Permissions is the caller's expanded permission set (permissions.go) —
+	// what tells the client which surfaces to render. Deliberately the
+	// PERMISSIONS and not the role: the client renders capabilities, and the
+	// role is a storage detail the map behind this list is free to refactor.
+	// Omitted entirely for a plain player, so the common payload is unchanged.
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 func toUserView(u User) userView {
 	return userView{
 		ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt,
 		ProfilePublic: u.ProfilePublic, KeyboardPublic: u.KeyboardPublic,
+		Permissions: u.Permissions(),
 	}
 }
 
@@ -317,4 +324,16 @@ type Restrictions interface {
 func (s *Service) WithRestrictions(r Restrictions) *Service {
 	s.restrictions = r
 	return s
+}
+
+// BootstrapAdmins promotes the configured admin emails (TYPEMORE_ADMINS) and
+// returns how many accounts changed. Called once by the composition root at
+// startup — promotion only, verified identities only (PromoteAdmins in
+// queries.sql carries the full rationale). An empty list is a no-op, and it is
+// also the composition root's signal not to mount the admin subtree at all.
+func (s *Service) BootstrapAdmins(ctx context.Context, emails []string) (int64, error) {
+	if len(emails) == 0 {
+		return 0, nil
+	}
+	return s.store.PromoteAdmins(ctx, emails)
 }

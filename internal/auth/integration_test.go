@@ -87,6 +87,8 @@ type harness struct {
 	client *http.Client
 	mailer *recorderMailer
 	pool   *pgxpool.Pool
+	store  *pgstore.Store
+	svc    *auth.Service
 }
 
 type serverOpts struct {
@@ -138,6 +140,15 @@ func newHarness(t *testing.T, mutators ...func(*serverOpts)) *harness {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", svc.AuthRoutes())
 		r.With(svc.RequireAuth).Get("/me", svc.HandleMe)
+		// A probe behind the permission gate, wired exactly as main.go mounts
+		// the admin subtree (OptionalAuth, then RequirePermission): the
+		// permissions tests assert the 404-invisibility contract against it.
+		r.With(svc.OptionalAuth).
+			Handle("/permissions-probe",
+				svc.RequirePermission(auth.PermBansRead)(
+					http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusOK)
+					})))
 	})
 	server := httptest.NewServer(r)
 	t.Cleanup(server.Close)
@@ -155,6 +166,8 @@ func newHarness(t *testing.T, mutators ...func(*serverOpts)) *harness {
 		client: client,
 		mailer: mailer,
 		pool:   pool,
+		store:  store,
+		svc:    svc,
 	}
 }
 

@@ -50,16 +50,17 @@ func (q *Queries) ActiveBanFor(ctx context.Context, userID uuid.UUID) (ActiveBan
 }
 
 const insertBan = `-- name: InsertBan :one
-INSERT INTO bans (user_id, reason, issued_by, expires_at)
-VALUES ($1, $2, $3, $4)
+INSERT INTO bans (user_id, reason, issued_by, issued_by_user, expires_at)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING id, user_id, reason, issued_by, issued_at, expires_at, revoked_at
 `
 
 type InsertBanParams struct {
-	UserID    uuid.UUID
-	Reason    string
-	IssuedBy  *string
-	ExpiresAt *time.Time
+	UserID       uuid.UUID
+	Reason       string
+	IssuedBy     *string
+	IssuedByUser *uuid.UUID
+	ExpiresAt    *time.Time
 }
 
 type InsertBanRow struct {
@@ -72,11 +73,15 @@ type InsertBanRow struct {
 	RevokedAt *time.Time
 }
 
+// issued_by is the human-readable note; issued_by_user is the actor as an
+// ACCOUNT (00023) — the admin surface records both, and the uuid is the one
+// an audit can join on.
 func (q *Queries) InsertBan(ctx context.Context, arg InsertBanParams) (InsertBanRow, error) {
 	row := q.db.QueryRow(ctx, insertBan,
 		arg.UserID,
 		arg.Reason,
 		arg.IssuedBy,
+		arg.IssuedByUser,
 		arg.ExpiresAt,
 	)
 	var i InsertBanRow
@@ -323,10 +328,16 @@ func (q *Queries) ResolveUserByID(ctx context.Context, id uuid.UUID) (ResolveUse
 
 const revokeBan = `-- name: RevokeBan :one
 UPDATE bans
-SET revoked_at = now()
-WHERE id = $1 AND revoked_at IS NULL
+SET revoked_at      = now(),
+    revoked_by_user = $1
+WHERE id = $2 AND revoked_at IS NULL
 RETURNING id, user_id, reason, issued_by, issued_at, expires_at, revoked_at
 `
+
+type RevokeBanParams struct {
+	RevokedByUser *uuid.UUID
+	ID            uuid.UUID
+}
 
 type RevokeBanRow struct {
 	ID        uuid.UUID
@@ -338,8 +349,8 @@ type RevokeBanRow struct {
 	RevokedAt *time.Time
 }
 
-func (q *Queries) RevokeBan(ctx context.Context, id uuid.UUID) (RevokeBanRow, error) {
-	row := q.db.QueryRow(ctx, revokeBan, id)
+func (q *Queries) RevokeBan(ctx context.Context, arg RevokeBanParams) (RevokeBanRow, error) {
+	row := q.db.QueryRow(ctx, revokeBan, arg.RevokedByUser, arg.ID)
 	var i RevokeBanRow
 	err := row.Scan(
 		&i.ID,
@@ -355,19 +366,21 @@ func (q *Queries) RevokeBan(ctx context.Context, id uuid.UUID) (RevokeBanRow, er
 
 const updateBan = `-- name: UpdateBan :one
 UPDATE bans
-SET reason     = $1,
-    issued_by  = $2,
-    expires_at = $3,
-    issued_at  = now()
-WHERE id = $4
+SET reason         = $1,
+    issued_by      = $2,
+    issued_by_user = $3,
+    expires_at     = $4,
+    issued_at      = now()
+WHERE id = $5
 RETURNING id, user_id, reason, issued_by, issued_at, expires_at, revoked_at
 `
 
 type UpdateBanParams struct {
-	Reason    string
-	IssuedBy  *string
-	ExpiresAt *time.Time
-	ID        uuid.UUID
+	Reason       string
+	IssuedBy     *string
+	IssuedByUser *uuid.UUID
+	ExpiresAt    *time.Time
+	ID           uuid.UUID
 }
 
 type UpdateBanRow struct {
@@ -382,11 +395,13 @@ type UpdateBanRow struct {
 
 // Re-banning an already-banned user amends the ban in place rather than
 // stacking a second one: two simultaneous bans on one account would make
-// "when does this lift" a question with two answers.
+// "when does this lift" a question with two answers. The amendment takes the
+// amending actor: the row records who last shaped the restriction in force.
 func (q *Queries) UpdateBan(ctx context.Context, arg UpdateBanParams) (UpdateBanRow, error) {
 	row := q.db.QueryRow(ctx, updateBan,
 		arg.Reason,
 		arg.IssuedBy,
+		arg.IssuedByUser,
 		arg.ExpiresAt,
 		arg.ID,
 	)

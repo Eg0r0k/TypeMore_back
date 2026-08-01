@@ -14,13 +14,31 @@ SELECT * FROM users WHERE id = $1;
 -- The two privacy switches, replaced as a pair. The handler resolves a partial
 -- PATCH against the current row before calling this, so the statement itself
 -- stays a plain write with no COALESCE cleverness to test.
+--
+-- updated_at is maintained HERE, by the writer, not by a trigger (00022): any
+-- future statement that mutates users must set it the same way.
 UPDATE users
-SET profile_public = $2, keyboard_public = $3
+SET profile_public = $2, keyboard_public = $3, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1;
+
+-- name: PromoteAdmins :execrows
+-- The admin bootstrap (00023, docs/MODERATION.md): accounts owning a VERIFIED
+-- identity on one of the configured emails are promoted at startup. Verified
+-- only — an address someone merely typed must not confer a role. Promotion
+-- only, never demotion: the env list is how the first admin appears, not a
+-- sync source. Idempotent by the role guard, and the guard is also what keeps
+-- updated_at honest — an already-admin row is not touched.
+UPDATE users
+SET role = 'admin', updated_at = now()
+WHERE role <> 'admin'
+  AND id IN (SELECT user_id
+             FROM auth_identities
+             WHERE email_verified
+               AND email = ANY (@emails::citext[]));
 
 -- name: CreateIdentity :one
 INSERT INTO auth_identities (user_id, provider, provider_subject, email, email_verified)
