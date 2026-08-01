@@ -51,6 +51,9 @@ func (s *Store) SaveMatch(ctx context.Context, m ws.MatchRecord) error {
 				}
 				uid = &parsed
 			}
+			// Deliberately a plain INSERT, no ON CONFLICT: (match_id, player_id)
+			// is UNIQUE (00021), and a duplicate seat means the persist ran
+			// twice — a relay bug that must fail loudly, not be absorbed.
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO match_runs
 					(match_id, player_id, nick, user_id, freemods, log, batch_count, final_status)

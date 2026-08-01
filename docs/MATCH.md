@@ -176,6 +176,9 @@ At match end the server writes the match in one transaction:
   `user_id` (the account, NULL for a guest), that player's `freemods`, the
   **gzip'd capture** (`log`: the ordered `{batchSeq, recvServerMs, events}`
   stream), `batch_count`, and `final_status` (`finished` | `dnf` | `left`).
+  `(match_id, player_id)` is UNIQUE (00021): one seat, one capture — a
+  duplicate write is a relay bug and fails loudly, the persist path has no
+  ON CONFLICT on purpose. `matches` also carries `CHECK (ended_at >= go_at)`.
 
 This capture is the **authoritative input** for the future replay worker, which
 will recompute metrics and the score from the log (applying the freemod
