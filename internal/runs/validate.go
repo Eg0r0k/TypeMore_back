@@ -123,14 +123,14 @@ const (
 	// 5 000 words" is a client asking for a run this product does not offer.
 	// A UI can act on the second (it names the limit that was crossed) and can
 	// only apologise for the first.
-	codeWordCountTooLarge = "word_count_too_large"
-	codeDurationTooLong   = "duration_too_long"
-	codeSeedOutOfRange          = "seed_out_of_range"
-	codeInvalidTextSource       = "invalid_text_source"
-	codeQuoteTextSubmitted      = "quote_text_submitted"
-	codeLogTooLarge             = "log_too_large"
-	codeInvalidRestarts         = "invalid_restarts"
-	codeInvalidAdoptedFrom      = "invalid_adopted_from"
+	codeWordCountTooLarge  = "word_count_too_large"
+	codeDurationTooLong    = "duration_too_long"
+	codeSeedOutOfRange     = "seed_out_of_range"
+	codeInvalidTextSource  = "invalid_text_source"
+	codeQuoteTextSubmitted = "quote_text_submitted"
+	codeLogTooLarge        = "log_too_large"
+	codeInvalidRestarts    = "invalid_restarts"
+	codeInvalidAdoptedFrom = "invalid_adopted_from"
 )
 
 // ingestRequest is the POST /runs body. The opaque snapshots and the log are
