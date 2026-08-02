@@ -1872,7 +1872,7 @@ var TypeMoreCore = (() => {
     return timelineFrom(ctx, analyzeLog(ctx, events), endMs);
   }
   function timelineFrom(ctx, analysis, endMs) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g;
     const startedAt = analysis.finalState.startedAt;
     if (startedAt === null) return [];
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
@@ -1882,21 +1882,37 @@ var TypeMoreCore = (() => {
     const input = analysis.finalState.input;
     const creditTimes = [];
     const creditChars = [];
+    const paidPerWord = new Float64Array(ctx.words.length);
+    for (let k = 0; k < analysis.keyTimes.length; k++) {
+      if (!analysis.keyCorrect[k]) continue;
+      const word = analysis.keyWordIndex[k];
+      if (word < 0 || word >= ctx.words.length) continue;
+      creditTimes.push(analysis.keyTimes[k]);
+      creditChars.push(1);
+      paidPerWord[word]++;
+    }
     for (let i = 0; i < analysis.commitTimes.length; i++) {
       const target = (_b = ctx.words[i]) != null ? _b : "";
-      if (((_c = input[i]) != null ? _c : "") !== target) continue;
-      let credit = target.length;
-      if (!endsLine(target) && !(finishedByCount && i === analysis.commitTimes.length - 1)) credit++;
-      creditTimes.push(analysis.commitTimes[i]);
-      creditChars.push(credit);
+      let worth = 0;
+      if (((_c = input[i]) != null ? _c : "") === target) {
+        worth = target.length;
+        if (!endsLine(target) && !(finishedByCount && i === analysis.commitTimes.length - 1)) worth++;
+      }
+      const settlement = worth - ((_d = paidPerWord[i]) != null ? _d : 0);
+      if (settlement !== 0) {
+        creditTimes.push(analysis.commitTimes[i]);
+        creditChars.push(settlement);
+      }
     }
     const activeIndex = analysis.finalState.wordIndex;
     if (activeIndex < ctx.words.length) {
-      const target = (_d = ctx.words[activeIndex]) != null ? _d : "";
-      const buffer = (_e = input[activeIndex]) != null ? _e : "";
-      if (buffer.length > 0 && target.startsWith(buffer)) {
+      const target = (_e = ctx.words[activeIndex]) != null ? _e : "";
+      const buffer = (_f = input[activeIndex]) != null ? _f : "";
+      const worth = buffer.length > 0 && target.startsWith(buffer) ? buffer.length : 0;
+      const settlement = worth - ((_g = paidPerWord[activeIndex]) != null ? _g : 0);
+      if (settlement !== 0) {
         creditTimes.push(end);
-        creditChars.push(buffer.length);
+        creditChars.push(settlement);
       }
     }
     const { keyTimes, keyCorrect } = analysis;
@@ -2608,4 +2624,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"8bdeedc3c3e9263ac9c6ee43bf416ea6420afcb7","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"0fa8e29f8cf5cd821d777b44cd8d9da9c6c05322","gitDirty":false}
