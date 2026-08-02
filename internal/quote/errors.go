@@ -33,4 +33,9 @@ var (
 		"invalid cursor")
 	apiErrInternal = newAPIError(http.StatusInternalServerError, "internal",
 		"an unexpected error occurred")
+	// A withdrawal with no reason is refused rather than stored empty: the note
+	// is the only thing that makes the decision reviewable later, which is the
+	// same rule the ban surface enforces on its own `reason`.
+	apiErrBadWithdrawal = newAPIError(http.StatusBadRequest, "bad_request",
+		"reason is required and must be at most 500 characters")
 )

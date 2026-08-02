@@ -197,6 +197,24 @@ A superseded row keeps its text forever. It is excluded from `/quotes` and
 `/quotes/random` — nobody starts a new run on it — and stays permanently
 resolvable through `/quotes/{id}`. There is no delete path, and there must not be.
 
+### `superseded` is versioning; `withdrawn_at` is moderation
+
+Since `00025` a quote can also leave circulation because a **moderator** took it
+out — an offensive text, a report queue with something to do about it
+([`REPORTS.md`](REPORTS.md)). That is a **separate column**, and the separation
+is not tidiness:
+
+`superseded` belongs to the importer, which both sets **and clears** it —
+`RepublishQuoteRevision` un-retires a revision whose bytes upstream reverted to.
+A withdrawal spelled that way would therefore be undone by the next
+`make import-quotes`, silently, long after anyone remembered making it.
+`withdrawn_at` is untouched by every import path, and
+`TestWithdrawalSurvivesAReimport` is the pin.
+
+Both are "no longer offered" and both keep `/quotes/{id}` answering, for the
+same frozen-bytes reason. `GET /quotes/{id}` reports each state on its own
+field, so a client can say which one it is looking at.
+
 ## Length groups are **per corpus**
 
 Every corpus carries its own `groups` array, and they are **not** all the same.

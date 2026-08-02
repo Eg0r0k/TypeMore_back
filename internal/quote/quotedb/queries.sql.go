@@ -54,18 +54,37 @@ func (q *Queries) FindQuoteRevision(ctx context.Context, arg FindQuoteRevisionPa
 
 const getQuote = `-- name: GetQuote :one
 SELECT id, lang, upstream_id, text, source, length, len_group, text_hash,
-       superseded, created_at
+       superseded, (withdrawn_at IS NOT NULL)::boolean AS withdrawn, created_at
 FROM quotes
 WHERE id = $1
 `
 
-// One quote by id, text included, SUPERSEDED REVISIONS INCLUDED. This is the
-// only read that crosses that line, and it has to: a run recorded against a
-// retired quote must resolve its exact bytes forever or it stops being
-// replayable — the same guarantee a frozen dict_hash gives seeded runs.
-func (q *Queries) GetQuote(ctx context.Context, id uuid.UUID) (Quote, error) {
+type GetQuoteRow struct {
+	ID         uuid.UUID
+	Lang       string
+	UpstreamID int32
+	Text       string
+	Source     string
+	Length     int32
+	LenGroup   int16
+	TextHash   string
+	Superseded bool
+	Withdrawn  bool
+	CreatedAt  time.Time
+}
+
+// One quote by id, text included, SUPERSEDED AND WITHDRAWN REVISIONS INCLUDED.
+// This is the only read that crosses that line, and it has to: a run recorded
+// against a retired or withdrawn quote must resolve its exact bytes forever or
+// it stops being replayable — the same guarantee a frozen dict_hash gives
+// seeded runs. Withdrawal is a discovery rule, never a resolution rule (00025).
+//
+// Both states ride along on the row so a client can say "this quote is no
+// longer offered" instead of silently linking to something the browse endpoint
+// will never return again.
+func (q *Queries) GetQuote(ctx context.Context, id uuid.UUID) (GetQuoteRow, error) {
 	row := q.db.QueryRow(ctx, getQuote, id)
-	var i Quote
+	var i GetQuoteRow
 	err := row.Scan(
 		&i.ID,
 		&i.Lang,
@@ -76,6 +95,52 @@ func (q *Queries) GetQuote(ctx context.Context, id uuid.UUID) (Quote, error) {
 		&i.LenGroup,
 		&i.TextHash,
 		&i.Superseded,
+		&i.Withdrawn,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getQuoteWithdrawal = `-- name: GetQuoteWithdrawal :one
+SELECT id, lang, upstream_id, text, source, length, len_group, superseded,
+       withdrawn_at, withdrawn_by, withdrawn_reason, created_at
+FROM quotes
+WHERE id = $1
+`
+
+type GetQuoteWithdrawalRow struct {
+	ID              uuid.UUID
+	Lang            string
+	UpstreamID      int32
+	Text            string
+	Source          string
+	Length          int32
+	LenGroup        int16
+	Superseded      bool
+	WithdrawnAt     *time.Time
+	WithdrawnBy     *uuid.UUID
+	WithdrawnReason *string
+	CreatedAt       time.Time
+}
+
+// The moderation view of one quote: identity plus the withdrawal record. Text
+// included — a moderator deciding whether to withdraw a quote has to read it,
+// and this route is behind a permission gate rather than on the public surface.
+func (q *Queries) GetQuoteWithdrawal(ctx context.Context, id uuid.UUID) (GetQuoteWithdrawalRow, error) {
+	row := q.db.QueryRow(ctx, getQuoteWithdrawal, id)
+	var i GetQuoteWithdrawalRow
+	err := row.Scan(
+		&i.ID,
+		&i.Lang,
+		&i.UpstreamID,
+		&i.Text,
+		&i.Source,
+		&i.Length,
+		&i.LenGroup,
+		&i.Superseded,
+		&i.WithdrawnAt,
+		&i.WithdrawnBy,
+		&i.WithdrawnReason,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -120,6 +185,7 @@ const listQuotes = `-- name: ListQuotes :many
 SELECT id, lang, upstream_id, source, length, len_group, text_hash, created_at
 FROM quotes
 WHERE NOT superseded
+  AND withdrawn_at IS NULL
   AND ($1::text IS NULL OR lang = $1::text)
   AND ($2::smallint IS NULL OR len_group = $2::smallint)
   AND (NOT $3::boolean
@@ -172,6 +238,11 @@ type ListQuotesRow struct {
 // it degrades to a filter over the partial index, which on a 2 286-row corpus
 // is an index-only scan measured in microseconds. Six near-identical queries
 // would buy nothing but six converters to keep in step.
+//
+// `withdrawn_at IS NULL` joins `NOT superseded` as the OTHER half of "published"
+// (00025). Both are in quotes_browse_idx's partial predicate, so neither costs a
+// filter; they are separate columns because they have separate owners — the
+// importer moves one, a moderator moves the other.
 func (q *Queries) ListQuotes(ctx context.Context, arg ListQuotesParams) ([]ListQuotesRow, error) {
 	rows, err := q.db.Query(ctx, listQuotes,
 		arg.Lang,
@@ -209,11 +280,43 @@ func (q *Queries) ListQuotes(ctx context.Context, arg ListQuotesParams) ([]ListQ
 	return items, nil
 }
 
+const listWithdrawnQuoteIDs = `-- name: ListWithdrawnQuoteIDs :many
+SELECT id FROM quotes WHERE withdrawn_at IS NOT NULL
+`
+
+// Every withdrawn quote, id only. The leaderboard's board index reads this to
+// drop those boards from its listing; it is a separate query rather than a join
+// because rebuilding a bucket key in SQL would make a second producer of a
+// format that has exactly one (internal/leaderboard/bucket.go).
+//
+// Served index-only from quotes_withdrawn_idx over a set that is normally
+// empty, which is what makes it affordable on a public read path.
+func (q *Queries) ListWithdrawnQuoteIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listWithdrawnQuoteIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const pickRandomQuote = `-- name: PickRandomQuote :one
 WITH candidates AS NOT MATERIALIZED (
     SELECT id
     FROM quotes
     WHERE NOT superseded
+      AND withdrawn_at IS NULL
       AND ($1::text IS NULL OR lang = $1::text)
       AND ($2::smallint IS NULL OR len_group = $2::smallint)
 ),
@@ -231,6 +334,19 @@ FROM quotes q
 type PickRandomQuoteParams struct {
 	Lang     *string
 	LenGroup *int16
+}
+
+type PickRandomQuoteRow struct {
+	ID         uuid.UUID
+	Lang       string
+	UpstreamID int32
+	Text       string
+	Source     string
+	Length     int32
+	LenGroup   int16
+	TextHash   string
+	Superseded bool
+	CreatedAt  time.Time
 }
 
 // One published quote, drawn uniformly from the rows the filter admits.
@@ -252,9 +368,9 @@ type PickRandomQuoteParams struct {
 // pass. That is the price of an EXACTLY uniform draw, and it is the right trade
 // here — see docs/QUOTES.md for the index-probe alternative and why a
 // gap-weighted draw was not worth an extra index.
-func (q *Queries) PickRandomQuote(ctx context.Context, arg PickRandomQuoteParams) (Quote, error) {
+func (q *Queries) PickRandomQuote(ctx context.Context, arg PickRandomQuoteParams) (PickRandomQuoteRow, error) {
 	row := q.db.QueryRow(ctx, pickRandomQuote, arg.Lang, arg.LenGroup)
-	var i Quote
+	var i PickRandomQuoteRow
 	err := row.Scan(
 		&i.ID,
 		&i.Lang,
@@ -288,6 +404,23 @@ func (q *Queries) RepublishQuoteRevision(ctx context.Context, id uuid.UUID) (int
 	return result.RowsAffected(), nil
 }
 
+const restoreQuote = `-- name: RestoreQuote :execrows
+UPDATE quotes
+SET withdrawn_at = NULL, withdrawn_by = NULL, withdrawn_reason = NULL
+WHERE id = $1 AND withdrawn_at IS NOT NULL
+`
+
+// Put a withdrawn quote back into circulation. The rowcount is 0 when there was
+// nothing to restore, which is how the handler answers idempotently rather than
+// inventing a 404 for a quote that exists and was simply never withdrawn.
+func (q *Queries) RestoreQuote(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreQuote, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const supersedeOtherRevisions = `-- name: SupersedeOtherRevisions :execrows
 UPDATE quotes
 SET superseded = true
@@ -310,4 +443,51 @@ func (q *Queries) SupersedeOtherRevisions(ctx context.Context, arg SupersedeOthe
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const withdrawQuote = `-- name: WithdrawQuote :one
+
+UPDATE quotes
+SET withdrawn_at     = coalesce(withdrawn_at, now()),
+    withdrawn_by     = CASE WHEN withdrawn_at IS NULL THEN $1::uuid ELSE withdrawn_by END,
+    withdrawn_reason = CASE WHEN withdrawn_at IS NULL THEN $2::text ELSE withdrawn_reason END
+WHERE id = $3
+RETURNING id, withdrawn_at, withdrawn_by, withdrawn_reason,
+          -- Whether THIS call is the one that withdrew it. The comparison is
+          -- against the transaction clock, so it is true only for the row this
+          -- statement just changed.
+          (withdrawn_at = now()) AS newly_withdrawn
+`
+
+type WithdrawQuoteParams struct {
+	Actor  uuid.UUID
+	Reason string
+	ID     uuid.UUID
+}
+
+type WithdrawQuoteRow struct {
+	ID              uuid.UUID
+	WithdrawnAt     *time.Time
+	WithdrawnBy     *uuid.UUID
+	WithdrawnReason *string
+	NewlyWithdrawn  bool
+}
+
+// --- moderation (the admin surface, docs/REPORTS.md) ---
+// Take a quote out of circulation. Idempotent in the useful direction: a quote
+// already withdrawn keeps its ORIGINAL withdrawal — the first moderator's
+// timestamp, actor and reason are the record, and a second call must not
+// rewrite who decided what and when. The returned row is what the handler
+// diffs to answer "did this call change anything".
+func (q *Queries) WithdrawQuote(ctx context.Context, arg WithdrawQuoteParams) (WithdrawQuoteRow, error) {
+	row := q.db.QueryRow(ctx, withdrawQuote, arg.Actor, arg.Reason, arg.ID)
+	var i WithdrawQuoteRow
+	err := row.Scan(
+		&i.ID,
+		&i.WithdrawnAt,
+		&i.WithdrawnBy,
+		&i.WithdrawnReason,
+		&i.NewlyWithdrawn,
+	)
+	return i, err
 }

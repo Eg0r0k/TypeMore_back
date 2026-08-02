@@ -102,7 +102,10 @@ func TestMeCarriesPermissionsOnlyForAdmins(t *testing.T) {
 
 	var perms []string
 	require.NoError(t, json.Unmarshal(me()["permissions"], &perms))
-	assert.ElementsMatch(t,
-		[]string{string(auth.PermBansRead), string(auth.PermBansWrite)}, perms,
+	assert.ElementsMatch(t, []string{
+		string(auth.PermBansRead), string(auth.PermBansWrite),
+		string(auth.PermReportsRead), string(auth.PermReportsWrite),
+		string(auth.PermQuotesWrite),
+	}, perms,
 		"an admin's /me lists the expanded permission set, which is what the client renders surfaces from")
 }

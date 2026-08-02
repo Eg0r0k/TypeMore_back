@@ -774,3 +774,78 @@ func (q *Queries) GetPublicProfileUser(ctx context.Context, displayName string) 
 	)
 	return i, err
 }
+
+const searchUsersByName = `-- name: SearchUsersByName :many
+SELECT u.display_name, u.created_at, u.profile_public
+FROM users u
+WHERE lower(u.display_name::text) LIKE '%' || $1::text || '%'
+  AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = u.id)
+ORDER BY (lower(u.display_name::text) = $2::text) DESC,
+         (lower(u.display_name::text) LIKE $1::text || '%') DESC,
+         char_length(u.display_name::text),
+         u.display_name
+LIMIT $3
+`
+
+type SearchUsersByNameParams struct {
+	Pattern string
+	Needle  string
+	Lim     int32
+}
+
+type SearchUsersByNameRow struct {
+	DisplayName   string
+	CreatedAt     time.Time
+	ProfilePublic bool
+}
+
+// Player search (docs/PROFILE.md, "Search"). Two parameters carry one user
+// input, on purpose:
+//
+//   - @pattern is the input lowercased AND escaped for LIKE. '_' is both a
+//     legal display_name character (the 00001 CHECK allows [a-zA-Z0-9_.-])
+//     and a LIKE wildcard, so an unescaped search for "foo_bar" would also
+//     match "fooXbar" — a wrong result, not merely a loose one.
+//   - @needle is the same input lowercased but NOT escaped. It feeds only the
+//     exact-match ranking term, which compares strings rather than patterns
+//     and would be broken by the escaping the pattern needs.
+//
+// Ranking is spelled out rather than delegated to pg_trgm's similarity():
+// exact match, then prefix, then shortest name, then alphabetical. similarity()
+// would order results by a number the searcher cannot predict, and it is noisy
+// over 3-20 character handles; this ordering is one a user can reconstruct by
+// looking at it. The alphabetical tail is what makes two identical requests
+// return the same page — length alone leaves ties, and a search box that
+// reshuffles under the cursor reads as broken.
+//
+// Banned accounts are absent: active_bans is the same predicate every
+// leaderboard and the public run history read through (docs/MODERATION.md).
+// Search is a discovery surface, so it hides exactly what the boards hide,
+// while /users/{name} keeps answering 200 for a banned name — the header route
+// has never been the thing that hides a ban.
+//
+// CLOSED profiles ARE returned. A closed profile is still ranked on the boards
+// under its own name and its header still answers 200, so making it unfindable
+// by that name would contradict "closed is a state, not a 404" (00018) without
+// concealing anything the boards do not already publish. The row carries
+// profile_public so the client can render the closed state instead of
+// promising a page that will 403.
+func (q *Queries) SearchUsersByName(ctx context.Context, arg SearchUsersByNameParams) ([]SearchUsersByNameRow, error) {
+	rows, err := q.db.Query(ctx, searchUsersByName, arg.Pattern, arg.Needle, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchUsersByNameRow{}
+	for rows.Next() {
+		var i SearchUsersByNameRow
+		if err := rows.Scan(&i.DisplayName, &i.CreatedAt, &i.ProfilePublic); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -108,7 +108,10 @@ func newRegistry(t *testing.T) *registry {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, `TRUNCATE quotes`)
+	// CASCADE, and users alongside: since 00026 a report may reference a quote,
+	// so quotes can no longer be truncated alone, and the withdrawal tests
+	// attribute their decisions to a real account.
+	_, err = pool.Exec(ctx, `TRUNCATE quotes, reports, runs, users CASCADE`)
 	require.NoError(t, err)
 
 	store := quotepg.New(pool)

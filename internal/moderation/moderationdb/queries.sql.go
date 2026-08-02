@@ -49,6 +49,135 @@ func (q *Queries) ActiveBanFor(ctx context.Context, userID uuid.UUID) (ActiveBan
 	return i, err
 }
 
+const countOpenReportsBy = `-- name: CountOpenReportsBy :one
+SELECT count(*)::bigint FROM reports WHERE reporter_id = $1 AND status = 'open'
+`
+
+// How many open reports this player currently has outstanding. A cheap ceiling
+// on breadth that the per-IP token bucket cannot express: the limiter caps the
+// RATE of filing, this caps how much of the queue one person can occupy at once.
+func (q *Queries) CountOpenReportsBy(ctx context.Context, reporterID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenReportsBy, reporterID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const createReport = `-- name: CreateReport :one
+
+INSERT INTO reports (subject_type, subject_user_id, subject_quote_id, subject_run_id,
+                     reporter_id, reason, comment)
+VALUES ($1, $2, $3,
+        $4, $5, $6, $7)
+ON CONFLICT DO NOTHING
+RETURNING id, subject_type, reporter_id, reason, comment, status, created_at
+`
+
+type CreateReportParams struct {
+	SubjectType    string
+	SubjectUserID  *uuid.UUID
+	SubjectQuoteID *uuid.UUID
+	SubjectRunID   *uuid.UUID
+	ReporterID     uuid.UUID
+	Reason         string
+	Comment        *string
+}
+
+type CreateReportRow struct {
+	ID          uuid.UUID
+	SubjectType string
+	ReporterID  uuid.UUID
+	Reason      string
+	Comment     *string
+	Status      string
+	CreatedAt   time.Time
+}
+
+// --- reports (docs/REPORTS.md) ---
+// File one report. ON CONFLICT DO NOTHING against the three partial unique
+// indexes makes a repeat submission a no-op rather than a duplicate row; the
+// caller reads the existing report separately and answers 200 either way, so a
+// double-tapped button is not an error the player has to understand.
+//
+// The subject arrives as three nullable parameters of which the caller sets
+// exactly one. That shape is checked by the database (reports_subject_exactly
+// _one), so a service bug here is a failed INSERT rather than a malformed row.
+func (q *Queries) CreateReport(ctx context.Context, arg CreateReportParams) (CreateReportRow, error) {
+	row := q.db.QueryRow(ctx, createReport,
+		arg.SubjectType,
+		arg.SubjectUserID,
+		arg.SubjectQuoteID,
+		arg.SubjectRunID,
+		arg.ReporterID,
+		arg.Reason,
+		arg.Comment,
+	)
+	var i CreateReportRow
+	err := row.Scan(
+		&i.ID,
+		&i.SubjectType,
+		&i.ReporterID,
+		&i.Reason,
+		&i.Comment,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const findOpenReport = `-- name: FindOpenReport :one
+SELECT id, subject_type, reporter_id, reason, comment, status, created_at
+FROM reports
+WHERE reporter_id = $1
+  AND status = 'open'
+  AND subject_type = $2
+  AND subject_user_id IS NOT DISTINCT FROM $3::uuid
+  AND subject_quote_id IS NOT DISTINCT FROM $4::uuid
+  AND subject_run_id IS NOT DISTINCT FROM $5::uuid
+`
+
+type FindOpenReportParams struct {
+	ReporterID     uuid.UUID
+	SubjectType    string
+	SubjectUserID  *uuid.UUID
+	SubjectQuoteID *uuid.UUID
+	SubjectRunID   *uuid.UUID
+}
+
+type FindOpenReportRow struct {
+	ID          uuid.UUID
+	SubjectType string
+	ReporterID  uuid.UUID
+	Reason      string
+	Comment     *string
+	Status      string
+	CreatedAt   time.Time
+}
+
+// The caller's existing OPEN report on one subject — what a repeat submission
+// answers with. The three IS NOT DISTINCT FROM comparisons let one query serve
+// every subject type: the two NULL parameters match the two NULL columns.
+func (q *Queries) FindOpenReport(ctx context.Context, arg FindOpenReportParams) (FindOpenReportRow, error) {
+	row := q.db.QueryRow(ctx, findOpenReport,
+		arg.ReporterID,
+		arg.SubjectType,
+		arg.SubjectUserID,
+		arg.SubjectQuoteID,
+		arg.SubjectRunID,
+	)
+	var i FindOpenReportRow
+	err := row.Scan(
+		&i.ID,
+		&i.SubjectType,
+		&i.ReporterID,
+		&i.Reason,
+		&i.Comment,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertBan = `-- name: InsertBan :one
 INSERT INTO bans (user_id, reason, issued_by, issued_by_user, expires_at)
 VALUES ($1, $2, $3, $4, $5)
@@ -226,6 +355,224 @@ func (q *Queries) ListBansForUser(ctx context.Context, userID uuid.UUID) ([]List
 		return nil, err
 	}
 	return items, nil
+}
+
+const listReportQueue = `-- name: ListReportQueue :many
+SELECT r.subject_type,
+       r.subject_user_id,
+       r.subject_quote_id,
+       r.subject_run_id,
+       count(*)::bigint                            AS open_reports,
+       min(r.created_at)::timestamptz              AS first_reported,
+       max(r.created_at)::timestamptz              AS last_reported,
+       array_agg(DISTINCT r.reason ORDER BY r.reason)::text[] AS reasons,
+       -- The subject's own identity, resolved here so the queue is ONE round
+       -- trip. Exactly one of these is non-null on any row, matching the
+       -- subject columns above.
+       u.display_name                              AS user_name,
+       q.text                                      AS quote_text,
+       q.lang                                      AS quote_lang,
+       (q.withdrawn_at IS NOT NULL)::boolean       AS quote_withdrawn,
+       run_owner.display_name                      AS run_owner_name,
+       run.status                                  AS run_status
+FROM reports r
+         LEFT JOIN users u ON u.id = r.subject_user_id
+         LEFT JOIN quotes q ON q.id = r.subject_quote_id
+         LEFT JOIN runs run ON run.id = r.subject_run_id
+         LEFT JOIN users run_owner ON run_owner.id = run.user_id
+WHERE r.status = 'open'
+  AND ($1::text IS NULL OR r.subject_type = $1::text)
+GROUP BY r.subject_type, r.subject_user_id, r.subject_quote_id, r.subject_run_id,
+         u.display_name, q.text, q.lang, q.withdrawn_at,
+         run_owner.display_name, run.status
+ORDER BY count(*) DESC, min(r.created_at)
+LIMIT $2
+`
+
+type ListReportQueueParams struct {
+	SubjectType *string
+	RowLimit    int32
+}
+
+type ListReportQueueRow struct {
+	SubjectType    string
+	SubjectUserID  *uuid.UUID
+	SubjectQuoteID *uuid.UUID
+	SubjectRunID   *uuid.UUID
+	OpenReports    int64
+	FirstReported  time.Time
+	LastReported   time.Time
+	Reasons        []string
+	UserName       *string
+	QuoteText      *string
+	QuoteLang      *string
+	QuoteWithdrawn bool
+	RunOwnerName   *string
+	RunStatus      *string
+}
+
+// The moderator's queue: one row per SUBJECT, not per report. Forty complaints
+// about one quote are one thing to decide, and a queue that lists them forty
+// times is a queue nobody can work.
+//
+// Ordered by pressure (how many people complained) and then by age, so the
+// loudest thing is first and nothing starves behind it. The reason list comes
+// back aggregated because "12 reports, all 'offensive'" and "12 reports, all
+// different" are different situations and the queue should show which it is.
+func (q *Queries) ListReportQueue(ctx context.Context, arg ListReportQueueParams) ([]ListReportQueueRow, error) {
+	rows, err := q.db.Query(ctx, listReportQueue, arg.SubjectType, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReportQueueRow{}
+	for rows.Next() {
+		var i ListReportQueueRow
+		if err := rows.Scan(
+			&i.SubjectType,
+			&i.SubjectUserID,
+			&i.SubjectQuoteID,
+			&i.SubjectRunID,
+			&i.OpenReports,
+			&i.FirstReported,
+			&i.LastReported,
+			&i.Reasons,
+			&i.UserName,
+			&i.QuoteText,
+			&i.QuoteLang,
+			&i.QuoteWithdrawn,
+			&i.RunOwnerName,
+			&i.RunStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReportsForSubject = `-- name: ListReportsForSubject :many
+SELECT r.id, r.reason, r.comment, r.status, r.created_at,
+       r.resolved_at, r.resolution_note,
+       reporter.display_name AS reporter_name,
+       resolver.display_name AS resolver_name
+FROM reports r
+         JOIN users reporter ON reporter.id = r.reporter_id
+         LEFT JOIN users resolver ON resolver.id = r.resolved_by
+WHERE r.subject_type = $1
+  AND r.subject_user_id IS NOT DISTINCT FROM $2::uuid
+  AND r.subject_quote_id IS NOT DISTINCT FROM $3::uuid
+  AND r.subject_run_id IS NOT DISTINCT FROM $4::uuid
+ORDER BY r.created_at DESC
+LIMIT $5
+`
+
+type ListReportsForSubjectParams struct {
+	SubjectType    string
+	SubjectUserID  *uuid.UUID
+	SubjectQuoteID *uuid.UUID
+	SubjectRunID   *uuid.UUID
+	RowLimit       int32
+}
+
+type ListReportsForSubjectRow struct {
+	ID             uuid.UUID
+	Reason         string
+	Comment        *string
+	Status         string
+	CreatedAt      time.Time
+	ResolvedAt     *time.Time
+	ResolutionNote *string
+	ReporterName   string
+	ResolverName   *string
+}
+
+// Every report on one subject, open and closed, newest first — the detail view
+// behind a queue row. Reporter names are resolved here: a moderator judging
+// whether twelve reports are a real signal or one brigade needs to see who
+// filed them.
+func (q *Queries) ListReportsForSubject(ctx context.Context, arg ListReportsForSubjectParams) ([]ListReportsForSubjectRow, error) {
+	rows, err := q.db.Query(ctx, listReportsForSubject,
+		arg.SubjectType,
+		arg.SubjectUserID,
+		arg.SubjectQuoteID,
+		arg.SubjectRunID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReportsForSubjectRow{}
+	for rows.Next() {
+		var i ListReportsForSubjectRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Reason,
+			&i.Comment,
+			&i.Status,
+			&i.CreatedAt,
+			&i.ResolvedAt,
+			&i.ResolutionNote,
+			&i.ReporterName,
+			&i.ResolverName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const resolveSubjectReports = `-- name: ResolveSubjectReports :execrows
+UPDATE reports
+SET status          = $1,
+    resolved_at     = now(),
+    resolved_by     = $2::uuid,
+    resolution_note = $3
+WHERE status = 'open'
+  AND subject_type = $4
+  AND subject_user_id IS NOT DISTINCT FROM $5::uuid
+  AND subject_quote_id IS NOT DISTINCT FROM $6::uuid
+  AND subject_run_id IS NOT DISTINCT FROM $7::uuid
+`
+
+type ResolveSubjectReportsParams struct {
+	Status         string
+	Resolver       uuid.UUID
+	Note           *string
+	SubjectType    string
+	SubjectUserID  *uuid.UUID
+	SubjectQuoteID *uuid.UUID
+	SubjectRunID   *uuid.UUID
+}
+
+// Close EVERY open report on one subject in a single statement. The moderator
+// decided about the subject, not about each complaint, so the whole group moves
+// at once and cannot be left half-resolved by a crash between two updates.
+//
+// The rowcount is the answer to "was there anything to resolve", which is what
+// makes a second identical call idempotent rather than a 404.
+func (q *Queries) ResolveSubjectReports(ctx context.Context, arg ResolveSubjectReportsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveSubjectReports,
+		arg.Status,
+		arg.Resolver,
+		arg.Note,
+		arg.SubjectType,
+		arg.SubjectUserID,
+		arg.SubjectQuoteID,
+		arg.SubjectRunID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resolveUserByDisplayName = `-- name: ResolveUserByDisplayName :many

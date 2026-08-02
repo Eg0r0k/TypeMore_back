@@ -113,6 +113,19 @@ type PublicUser struct {
 	KeyboardPublic bool
 }
 
+// SearchResult is one hit of the player search: the same three fields the
+// header answers with, and nothing else. Search is a way to FIND a profile,
+// never a second way to read one — every aggregate stays behind the per-profile
+// gates, so a closed profile appearing in these results discloses exactly what
+// a leaderboard already does, that the name exists. ProfilePublic rides along
+// so a client can render the closed state rather than linking to a page it is
+// about to be 403'd from.
+type SearchResult struct {
+	DisplayName   string
+	Joined        time.Time
+	ProfilePublic bool
+}
+
 // PublicRun is one row of a profile's public run history — an explicit
 // allowlist, narrower than the owner's own runs feed: the server's verdict
 // numbers and the derived display cells, and nothing the run's owner reported
@@ -165,6 +178,13 @@ type Store interface {
 	// PublicUser resolves a display name (case-insensitively — the column is
 	// citext) to the public surface's identity row, or ErrNotFound.
 	PublicUser(ctx context.Context, displayName string) (PublicUser, error)
+	// SearchUsers finds accounts whose display name CONTAINS name, case
+	// -insensitively, best match first (exact, then prefix, then shortest, then
+	// alphabetical — the query owns that order). Banned accounts are never
+	// returned; closed ones are. The caller has already bounded name's length;
+	// escaping it against LIKE's wildcards is the store's job, because it is a
+	// property of how the store asks, not of what the caller meant.
+	SearchUsers(ctx context.Context, name string, limit int32) ([]SearchResult, error)
 	// PublicRuns lists a profile's publicly visible runs newest-first —
 	// accepted only, none while the owner is banned (the query owns that
 	// predicate). after=nil means the first page.

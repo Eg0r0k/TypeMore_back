@@ -73,7 +73,12 @@ type Meta struct {
 	LenGroup   LenGroup
 	TextHash   string
 	Superseded bool
-	CreatedAt  time.Time
+	// Withdrawn is the MODERATION half of "no longer offered" (00025), the twin
+	// of Superseded's versioning half. Only ByID can ever report it true: the
+	// browse and draw queries exclude withdrawn rows, so on anything they
+	// return it is false by construction.
+	Withdrawn bool
+	CreatedAt time.Time
 }
 
 // Quote is a full quote, text included. Only the two single-quote endpoints
@@ -116,9 +121,51 @@ type Store interface {
 	// Random returns one published quote, text included, drawn uniformly from
 	// the rows the filter admits. ErrNotFound when the filter admits none.
 	Random(ctx context.Context, f Filter) (Quote, error)
-	// ByID returns one quote, text included, INCLUDING superseded revisions: a
-	// run recorded against a retired quote must stay watchable forever.
+	// ByID returns one quote, text included, INCLUDING superseded and withdrawn
+	// revisions: a run recorded against a retired quote must stay watchable
+	// forever.
 	ByID(ctx context.Context, id uuid.UUID) (Quote, error)
+	// WithdrawnIDs lists the quotes currently withdrawn. The board index reads
+	// it to drop those boards from its listing; it is on the READ interface
+	// because that is what it is — the set is normally empty and the query is
+	// index-only.
+	WithdrawnIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
+}
+
+// Withdrawal is the moderation record on one quote: when it was taken out of
+// circulation, by whom, and why. The zero value means "in circulation".
+type Withdrawal struct {
+	At time.Time
+	// By is nil when the moderator's account has since been deleted — the
+	// column is ON DELETE SET NULL, like a ban's actor, so the decision
+	// survives the person who made it.
+	By     *uuid.UUID
+	Reason string
+}
+
+// ModerationStore is the WRITE side the admin surface reaches — deliberately a
+// separate interface from Store, and deliberately narrow.
+//
+// Store's contract says the corpus is written only by the importer, and that is
+// still true of everything that makes a quote what it is: nothing here inserts
+// a revision, and nothing here can touch `text`, `lang` or `text_hash`. A
+// withdrawal only flips whether the quote is OFFERED. That is what makes it
+// safe to expose over HTTP at all, where publishing never could be: no stored
+// run's bytes can change underneath it.
+type ModerationStore interface {
+	// Withdraw takes a quote out of circulation, returning the resulting record
+	// and whether THIS call was the one that withdrew it (false when it was
+	// already withdrawn — the first decision is kept, actor and reason
+	// included). ErrNotFound for an unknown id.
+	Withdraw(ctx context.Context, id, actor uuid.UUID, reason string) (Withdrawal, bool, error)
+	// Restore puts a withdrawn quote back, reporting whether anything changed.
+	// A quote that was never withdrawn is (false, nil), not an error: the
+	// caller asked for a state that already holds.
+	Restore(ctx context.Context, id uuid.UUID) (bool, error)
+	// Moderated returns one quote with its withdrawal record, text included —
+	// a moderator deciding whether to withdraw has to read it, and this route
+	// is behind a permission gate.
+	Moderated(ctx context.Context, id uuid.UUID) (Quote, Withdrawal, error)
 }
 
 // --- the replay side of the domain ---

@@ -75,15 +75,31 @@ type bucketsResponse struct {
 // Empty boards are absent rather than enumerated: a board with nothing in it is
 // not news, and for quotes it is also the only thing keeping this response
 // finite — there are 9 881 of them (docs/LEADERBOARDS.md, "The board index").
+// A withdrawn quote's board is absent from this list and from this list ONLY
+// (docs/REPORTS.md): the board still answers on its own URL, its entries keep
+// their ranks, and the runs behind them stay replayable. What a withdrawal
+// takes away is the quote being OFFERED — in browsing, in random selection, and
+// here — never a result somebody already earned.
 func (s *Service) handleBuckets(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.Buckets(r.Context())
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
-	views := make([]bucketView, len(counts))
+	withdrawn, err := s.withdrawn(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	views := make([]bucketView, 0, len(counts))
 	for i := range counts {
-		views[i] = toBucketView(counts[i].Bucket, counts[i].Entries)
+		b := counts[i].Bucket
+		if b.IsQuote() {
+			if _, gone := withdrawn[b.QuoteID]; gone {
+				continue
+			}
+		}
+		views = append(views, toBucketView(b, counts[i].Entries))
 	}
 	s.writeJSON(w, http.StatusOK, bucketsResponse{Buckets: views})
 }

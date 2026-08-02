@@ -263,6 +263,29 @@ type Config struct {
 	LeaderboardReplayRateEvery time.Duration `env:"LEADERBOARD_REPLAY_RATE_EVERY" envDefault:"2s"`
 	LeaderboardReplayRateBurst int           `env:"LEADERBOARD_REPLAY_RATE_BURST" envDefault:"30"`
 
+	// ProfileSearchRateEvery / ProfileSearchRateBurst are the per-IP token
+	// bucket on the public GET /api/v1/users?q= player search. The numbers are
+	// sized for a search box that queries as the user types: a 300 ms debounce
+	// makes ~3 req/s while a name is being typed, so the burst absorbs typing a
+	// name out in full (and a few corrections), while the 500 ms refill sets the
+	// sustained rate at 2/s — below typing speed on purpose, so a search that
+	// never stops eventually costs the caller something. The query is bounded by
+	// LIMIT but reads an index over every user, unlike the rest of the profile
+	// surface, which is why it is the one route here that is limited at all.
+	ProfileSearchRateEvery time.Duration `env:"PROFILE_SEARCH_RATE_EVERY" envDefault:"500ms"`
+	ProfileSearchRateBurst int           `env:"PROFILE_SEARCH_RATE_BURST" envDefault:"30"`
+
+	// ReportRateEvery / ReportRateBurst are the per-USER token bucket on
+	// POST /api/v1/reports (docs/REPORTS.md). Keyed by account rather than by
+	// IP because the route needs a session anyway, and an account is the thing
+	// a report is attributed to. Filing is a deliberate, rare act — a burst of
+	// 5 covers reporting a handful of things in one sitting, and the one-minute
+	// refill makes a sustained campaign cost real time. The harder cap is not
+	// here but in the domain: a reporter may hold only so many reports OPEN at
+	// once, which no refill rate can wash away.
+	ReportRateEvery time.Duration `env:"REPORT_RATE_EVERY" envDefault:"1m"`
+	ReportRateBurst int           `env:"REPORT_RATE_BURST" envDefault:"5"`
+
 	// --- Lobby discovery (docs/PROTOCOL.md §5) ---
 
 	// LobbyRateEvery / LobbyRateBurst are the per-IP token bucket on the public

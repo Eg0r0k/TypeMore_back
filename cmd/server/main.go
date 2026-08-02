@@ -150,16 +150,33 @@ func run() error {
 			return u.ID, ok
 		}, logger).WithRestrictions(moderationStore)
 
+	// Quotes: the fixed-text corpus (SCORING_CONCEPT §6, docs/QUOTES.md). Read
+	// only on the public path, and unauthenticated like the boards and the
+	// dictionaries — a guest picking a text to type has no account yet. The
+	// corpus itself is published out of band by `make import-quotes`; the one
+	// write reachable over HTTP is a moderator's withdrawal, which cannot touch
+	// a quote's bytes (docs/REPORTS.md). Built HERE, above the boards, because
+	// the board index needs it — see the next paragraph.
+	quoteStore := quotepg.New(pool)
+
 	// Leaderboards: a public read model projected from accepted runs
 	// (docs/LEADERBOARDS.md). The same store is both the read side the HTTP
 	// service uses and the projector the replay worker calls inside its own
 	// transaction — the composition root is the only place that knows both.
+	//
+	// The withdrawn-quotes reader is the composition root doing what it exists
+	// for: the board index must not list a withdrawn quote's board, and that
+	// fact lives in the quote corpus. Passing a function keeps the two domains
+	// from importing each other, and keeps the bucket-key format to its single
+	// producer — the alternative was rebuilding `quote:<id>` inside the
+	// leaderboard's SQL, where nothing would keep it in step.
 	boardStore := leaderboardpg.New(pool, cfg.LeaderboardRequireVerifiedEmail)
 	boardSvc := leaderboard.NewService(boardStore,
 		func(ctx context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(ctx)
 			return u.ID, ok
-		}, logger)
+		},
+		quoteStore.WithdrawnIDs, logger)
 
 	// Keyboard layouts: the shared data asset (internal/keyboard/layouts) —
 	// the char → physical-key mapping the keyboard projection folds through,
@@ -173,12 +190,19 @@ func run() error {
 
 	// Profile: the caller's own statistics (docs/PROFILE.md), on-demand SQL
 	// over runs plus a read of the PB slots the leaderboard projection already
-	// maintains. Session-scoped — v1 has no public-profile surface at all. The
+	// maintains. One service serves two surfaces mounted separately below — the
+	// session-scoped /profile subtree and the public /users one — because they
+	// read the same model through different gates, not different models. The
 	// bucket parser is the leaderboard domain's own (the key format has one
 	// producer and one parser), adapted here so the profile package does not
 	// import its sibling.
+	//
+	// The search limiter is a SEPARATE bucket from auth's, deliberately: those
+	// tokens ration argon2id and outbound email, and a search flood must not be
+	// able to spend them.
 	profileStore := profilepg.New(pool)
 	profileSvc := profile.NewService(profileStore,
+		auth.NewInMemoryRateLimiter(cfg.ProfileSearchRateEvery, cfg.ProfileSearchRateBurst),
 		func(ctx context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(ctx)
 			return u.ID, ok
@@ -204,12 +228,27 @@ func run() error {
 			return info, true
 		}, layouts.LayoutFor, logger)
 
-	// Quotes: the fixed-text corpus (SCORING_CONCEPT §6, docs/QUOTES.md). Read
-	// only, and unauthenticated like the boards and the dictionaries — a guest
-	// picking a text to type has no account yet. The corpus itself is published
-	// out of band by `make import-quotes`; nothing on this path can write.
-	quoteStore := quotepg.New(pool)
 	quoteSvc := quote.NewService(quoteStore, logger)
+
+	// Reports (docs/REPORTS.md): the SIGNAL half of moderation, next to bans,
+	// which are the action half. One service serves two surfaces — a player
+	// files, a moderator triages — and they are mounted separately below,
+	// behind different gates.
+	//
+	// The player-facing route is mounted whether or not any admin is
+	// configured. A deployment with nobody to work the queue still wants the
+	// reports recorded: promoting an admin later must not mean the complaints
+	// of the first month were dropped on the floor.
+	reportSvc := moderation.NewReportService(moderationStore,
+		func(req *http.Request) (uuid.UUID, bool) {
+			u, ok := auth.UserFrom(req.Context())
+			return u.ID, ok
+		},
+		func(req *http.Request) (moderation.Actor, bool) {
+			u, ok := auth.UserFrom(req.Context())
+			return moderation.Actor{ID: u.ID, Name: u.DisplayName}, ok
+		},
+		auth.NewInMemoryRateLimiter(cfg.ReportRateEvery, cfg.ReportRateBurst), logger)
 
 	// Dictionaries: the server is the single source of the word lists the client
 	// generates text from. The registry is seeded once here — every fingerprint
@@ -411,6 +450,10 @@ func run() error {
 		// this subtree varies by who is asking, so it is mounted bare rather
 		// than behind OptionalAuth like the boards.
 		r.Mount("/quotes", quoteSvc.Routes())
+		// Filing a report needs a session and the Origin check — both applied
+		// inside the domain's own Routes, since every route on this subtree
+		// needs them and none is public.
+		r.Mount("/reports", reportSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
 		// The admin surface (docs/MODERATION.md): per-route PERMISSION gates
 		// whose refusal is a 404, so the subtree is invisible to anyone it
 		// does not belong to. OptionalAuth rather than RequireAuth on purpose
@@ -427,12 +470,37 @@ func run() error {
 					u, ok := auth.UserFrom(req.Context())
 					return moderation.Actor{ID: u.ID, Name: u.DisplayName}, ok
 				}, logger)
-			requireWrite := func(next http.Handler) http.Handler {
-				return authSvc.RequirePermission(auth.PermBansWrite)(authSvc.RequireOrigin(next))
+			// writeGate pairs a permission with the Origin check, in that
+			// order: the permission first, so a caller without it learns
+			// nothing whatever they send.
+			writeGate := func(p auth.Permission) func(http.Handler) http.Handler {
+				return func(next http.Handler) http.Handler {
+					return authSvc.RequirePermission(p)(authSvc.RequireOrigin(next))
+				}
 			}
-			r.With(authSvc.OptionalAuth).
-				Mount("/admin", moderationSvc.AdminRoutes(
-					authSvc.RequirePermission(auth.PermBansRead), requireWrite))
+			quoteAdminSvc := quote.NewAdminService(quoteStore,
+				func(req *http.Request) (uuid.UUID, bool) {
+					u, ok := auth.UserFrom(req.Context())
+					return u.ID, ok
+				}, logger)
+
+			// The three admin subtrees share one prefix. The ban surface is
+			// mounted LAST, on "/", because it owns paths at the root of
+			// /admin (/bans, /users/{id}/bans) while the other two live under
+			// their own segments: chi resolves a static segment ahead of the
+			// catch-all a root mount installs, so /admin/reports reaches the
+			// report surface and /admin/bans falls through to the ban one.
+			r.With(authSvc.OptionalAuth).Route("/admin", func(ar chi.Router) {
+				ar.Mount("/reports", reportSvc.AdminRoutes(
+					authSvc.RequirePermission(auth.PermReportsRead),
+					writeGate(auth.PermReportsWrite)))
+				ar.Mount("/quotes", quoteAdminSvc.Routes(
+					authSvc.RequirePermission(auth.PermReportsRead),
+					writeGate(auth.PermQuotesWrite)))
+				ar.Mount("/", moderationSvc.AdminRoutes(
+					authSvc.RequirePermission(auth.PermBansRead),
+					writeGate(auth.PermBansWrite)))
+			})
 		}
 		// Room discovery, served by the WS handler's registry but mounted HERE,
 		// as a public HTTP read — deliberately outside the protocol

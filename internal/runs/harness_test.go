@@ -35,6 +35,8 @@ import (
 	"github.com/typemore/typemore-server/internal/platform/migrate"
 	"github.com/typemore/typemore-server/internal/profile"
 	profilepg "github.com/typemore/typemore-server/internal/profile/pgstore"
+	"github.com/typemore/typemore-server/internal/quote"
+	quotepg "github.com/typemore/typemore-server/internal/quote/pgstore"
 	"github.com/typemore/typemore-server/internal/runs"
 	runspg "github.com/typemore/typemore-server/internal/runs/pgstore"
 )
@@ -170,10 +172,28 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	// inside its verdict transaction. Without it this suite would be testing a
 	// pipeline the deployment does not run.
 	boardStore := leaderboardpg.New(pool, opts.requireVerifiedEmail)
+	quoteStore := quotepg.New(pool)
+
+	// The moderation surfaces: reports (both halves) and the quote withdrawal
+	// the report queue points at. The rate limiter is disabled (burst 0) — this
+	// suite exercises the flow, and the limiter has its own tests.
+	principal := func(req *http.Request) (uuid.UUID, bool) {
+		u, ok := auth.UserFrom(req.Context())
+		return u.ID, ok
+	}
+	actor := func(req *http.Request) (moderation.Actor, bool) {
+		u, ok := auth.UserFrom(req.Context())
+		return moderation.Actor{ID: u.ID, Name: u.DisplayName}, ok
+	}
+	reportSvc := moderation.NewReportService(moderationStore, principal, actor,
+		auth.NewInMemoryRateLimiter(time.Second, 0), logger)
+	moderationSvc := moderation.NewService(moderationStore, actor, logger)
+	quoteAdminSvc := quote.NewAdminService(quoteStore, principal, logger)
+
 	boardSvc := leaderboard.NewService(boardStore, func(c context.Context) (uuid.UUID, bool) {
 		u, ok := auth.UserFrom(c)
 		return u.ID, ok
-	}, logger)
+	}, quoteStore.WithdrawnIDs, logger)
 
 	// Profile wired exactly as cmd/server does it, bucket parser adapter and
 	// layout namer included, so this suite exercises the same decoration
@@ -181,6 +201,10 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	layouts, err := keyboard.Load()
 	require.NoError(t, err)
 	profileSvc := profile.NewService(profilepg.New(pool),
+		// Burst 0 disables the limiter: these tests exercise the search's
+		// answers, and a bucket draining mid-suite would make them flaky
+		// without testing anything the limiter's own test does not.
+		auth.NewInMemoryRateLimiter(time.Second, 0),
 		func(c context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(c)
 			return u.ID, ok
@@ -224,6 +248,28 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 			r.Mount("/leaderboards", boardSvc.Routes())
 			r.Mount("/users", profileSvc.PublicRoutes())
 		})
+		// Reports and the admin subtree, wired exactly as cmd/server does it —
+		// real permission gates, and the ban surface mounted LAST on "/" under
+		// the sibling mounts. The mount ORDER is part of what this suite
+		// checks: get it wrong and /admin/reports is swallowed by the ban
+		// router's catch-all.
+		r.Mount("/reports", reportSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
+		writeGate := func(p auth.Permission) func(http.Handler) http.Handler {
+			return func(next http.Handler) http.Handler {
+				return authSvc.RequirePermission(p)(authSvc.RequireOrigin(next))
+			}
+		}
+		r.With(authSvc.OptionalAuth).Route("/admin", func(ar chi.Router) {
+			ar.Mount("/reports", reportSvc.AdminRoutes(
+				authSvc.RequirePermission(auth.PermReportsRead),
+				writeGate(auth.PermReportsWrite)))
+			ar.Mount("/quotes", quoteAdminSvc.Routes(
+				authSvc.RequirePermission(auth.PermReportsRead),
+				writeGate(auth.PermQuotesWrite)))
+			ar.Mount("/", moderationSvc.AdminRoutes(
+				authSvc.RequirePermission(auth.PermBansRead),
+				writeGate(auth.PermBansWrite)))
+		})
 	})
 	server := httptest.NewServer(r)
 	t.Cleanup(server.Close)
@@ -250,6 +296,18 @@ func (h *harness) post(path string, body any) *http.Response {
 	req, err := http.NewRequest(http.MethodPost, h.server.URL+path, reader)
 	require.NoError(h.t, err)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", frontendOrigin)
+	resp, err := h.client.Do(req)
+	require.NoError(h.t, err)
+	return resp
+}
+
+// del sends a DELETE with the CSRF Origin header — the shape the admin
+// surface's revoke-style routes take.
+func (h *harness) del(path string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, h.server.URL+path, http.NoBody)
+	require.NoError(h.t, err)
 	req.Header.Set("Origin", frontendOrigin)
 	resp, err := h.client.Do(req)
 	require.NoError(h.t, err)

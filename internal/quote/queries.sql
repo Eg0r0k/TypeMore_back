@@ -23,9 +23,15 @@
 -- it degrades to a filter over the partial index, which on a 2 286-row corpus
 -- is an index-only scan measured in microseconds. Six near-identical queries
 -- would buy nothing but six converters to keep in step.
+--
+-- `withdrawn_at IS NULL` joins `NOT superseded` as the OTHER half of "published"
+-- (00025). Both are in quotes_browse_idx's partial predicate, so neither costs a
+-- filter; they are separate columns because they have separate owners — the
+-- importer moves one, a moderator moves the other.
 SELECT id, lang, upstream_id, source, length, len_group, text_hash, created_at
 FROM quotes
 WHERE NOT superseded
+  AND withdrawn_at IS NULL
   AND (sqlc.narg(lang)::text IS NULL OR lang = sqlc.narg(lang)::text)
   AND (sqlc.narg(len_group)::smallint IS NULL OR len_group = sqlc.narg(len_group)::smallint)
   AND (NOT @after_cursor::boolean
@@ -57,6 +63,7 @@ WITH candidates AS NOT MATERIALIZED (
     SELECT id
     FROM quotes
     WHERE NOT superseded
+      AND withdrawn_at IS NULL
       AND (sqlc.narg(lang)::text IS NULL OR lang = sqlc.narg(lang)::text)
       AND (sqlc.narg(len_group)::smallint IS NULL OR len_group = sqlc.narg(len_group)::smallint)
 ),
@@ -71,12 +78,17 @@ FROM quotes q
          JOIN pick ON pick.id = q.id;
 
 -- name: GetQuote :one
--- One quote by id, text included, SUPERSEDED REVISIONS INCLUDED. This is the
--- only read that crosses that line, and it has to: a run recorded against a
--- retired quote must resolve its exact bytes forever or it stops being
--- replayable — the same guarantee a frozen dict_hash gives seeded runs.
+-- One quote by id, text included, SUPERSEDED AND WITHDRAWN REVISIONS INCLUDED.
+-- This is the only read that crosses that line, and it has to: a run recorded
+-- against a retired or withdrawn quote must resolve its exact bytes forever or
+-- it stops being replayable — the same guarantee a frozen dict_hash gives
+-- seeded runs. Withdrawal is a discovery rule, never a resolution rule (00025).
+--
+-- Both states ride along on the row so a client can say "this quote is no
+-- longer offered" instead of silently linking to something the browse endpoint
+-- will never return again.
 SELECT id, lang, upstream_id, text, source, length, len_group, text_hash,
-       superseded, created_at
+       superseded, (withdrawn_at IS NOT NULL)::boolean AS withdrawn, created_at
 FROM quotes
 WHERE id = @id;
 
@@ -118,3 +130,49 @@ WHERE id = @id AND superseded;
 
 -- name: CountQuotes :one
 SELECT count(*) FROM quotes;
+
+-- --- moderation (the admin surface, docs/REPORTS.md) ---
+
+-- name: WithdrawQuote :one
+-- Take a quote out of circulation. Idempotent in the useful direction: a quote
+-- already withdrawn keeps its ORIGINAL withdrawal — the first moderator's
+-- timestamp, actor and reason are the record, and a second call must not
+-- rewrite who decided what and when. The returned row is what the handler
+-- diffs to answer "did this call change anything".
+UPDATE quotes
+SET withdrawn_at     = coalesce(withdrawn_at, now()),
+    withdrawn_by     = CASE WHEN withdrawn_at IS NULL THEN @actor::uuid ELSE withdrawn_by END,
+    withdrawn_reason = CASE WHEN withdrawn_at IS NULL THEN @reason::text ELSE withdrawn_reason END
+WHERE id = @id
+RETURNING id, withdrawn_at, withdrawn_by, withdrawn_reason,
+          -- Whether THIS call is the one that withdrew it. The comparison is
+          -- against the transaction clock, so it is true only for the row this
+          -- statement just changed.
+          (withdrawn_at = now()) AS newly_withdrawn;
+
+-- name: RestoreQuote :execrows
+-- Put a withdrawn quote back into circulation. The rowcount is 0 when there was
+-- nothing to restore, which is how the handler answers idempotently rather than
+-- inventing a 404 for a quote that exists and was simply never withdrawn.
+UPDATE quotes
+SET withdrawn_at = NULL, withdrawn_by = NULL, withdrawn_reason = NULL
+WHERE id = @id AND withdrawn_at IS NOT NULL;
+
+-- name: GetQuoteWithdrawal :one
+-- The moderation view of one quote: identity plus the withdrawal record. Text
+-- included — a moderator deciding whether to withdraw a quote has to read it,
+-- and this route is behind a permission gate rather than on the public surface.
+SELECT id, lang, upstream_id, text, source, length, len_group, superseded,
+       withdrawn_at, withdrawn_by, withdrawn_reason, created_at
+FROM quotes
+WHERE id = @id;
+
+-- name: ListWithdrawnQuoteIDs :many
+-- Every withdrawn quote, id only. The leaderboard's board index reads this to
+-- drop those boards from its listing; it is a separate query rather than a join
+-- because rebuilding a bucket key in SQL would make a second producer of a
+-- format that has exactly one (internal/leaderboard/bucket.go).
+--
+-- Served index-only from quotes_withdrawn_idx over a set that is normally
+-- empty, which is what makes it affordable on a public read path.
+SELECT id FROM quotes WHERE withdrawn_at IS NOT NULL;

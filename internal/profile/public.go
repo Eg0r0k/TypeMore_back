@@ -3,9 +3,12 @@ package profile
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -37,11 +40,36 @@ const (
 	publicRunsMaxLimit     = 100
 )
 
+// Bounds for the player search.
+//
+// searchMinQueryLen is load-bearing twice over. It keeps an anonymous endpoint
+// from asking for "every account", and — the reason it is 3 and not 2 — a
+// trigram index cannot serve a pattern shorter than three characters, so a
+// shorter q would silently become a sequential scan over users. It forbids no
+// real search: a display_name shorter than 3 characters cannot exist (the
+// 00001 CHECK), so no shorter string was ever going to be a whole name either.
+//
+// searchMaxQueryLen is the same CHECK's upper bound: a longer q cannot be
+// contained in any name, so answering it with 400 is more honest than running
+// a scan guaranteed to return nothing.
+const (
+	searchMinQueryLen  = 3
+	searchMaxQueryLen  = 20
+	searchDefaultLimit = 20
+	searchMaxLimit     = 50
+)
+
 // PublicRoutes mounts the public profile surface, intended for /api/v1/users
 // behind OptionalAuth: a session is never required, but when one is present it
 // is what lets the owner through their own closed profile.
 func (s *Service) PublicRoutes() http.Handler {
 	r := chi.NewRouter()
+	// Search sits on the SUBTREE ROOT — /users?q=… — rather than at
+	// /users/search. chi resolves a static segment ahead of a parameter, so a
+	// /search route would permanently shadow the profile of anyone named
+	// "search", and that is a legal display_name under the 00001 CHECK. A
+	// query parameter cannot collide with a name at all.
+	r.With(s.rateLimitSearch).Get("/", s.handleSearch)
 	r.Get("/{name}", s.handlePublicHeader)
 	r.Get("/{name}/summary", s.publicData(s.serveSummary))
 	r.Get("/{name}/activity", s.publicData(s.serveActivity))
@@ -51,6 +79,68 @@ func (s *Service) PublicRoutes() http.Handler {
 	r.Get("/{name}/runs", s.handlePublicRuns)
 	r.Get("/{name}/portrait", s.handlePublicPortrait)
 	return r
+}
+
+// rateLimitSearch is the per-IP bucket on the search route. Keyed by IP rather
+// than by session because the route is anonymous by design: requiring a login
+// to look up a player would be a heavier answer to abuse than the abuse.
+func (s *Service) rateLimitSearch(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.searchLimiter.Allow(httpx.ClientIP(r)) {
+			s.writeError(w, r, apiErrRateLimited)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// searchHit is one search result: the header's identity fields, verbatim, so a
+// client renders a hit and a profile header through the same shape.
+type searchHit struct {
+	Name   string    `json:"name"`
+	Joined time.Time `json:"joined"`
+	Public bool      `json:"public"`
+}
+
+// searchResponse wraps the hits in an object rather than answering with a bare
+// JSON array: every other list on this API is an object with a named field, and
+// the wrapper is what lets a "did your query get truncated" signal be added
+// later without breaking a client that already parses this.
+type searchResponse struct {
+	Users []searchHit `json:"users"`
+}
+
+// handleSearch serves GET /users?q=&limit= — find a player by (part of) their
+// name. There is no cursor on purpose: a search box is refined, not paged, and
+// a keyset over this ranking would need a total order the ranking does not
+// have. A client that wants more asks a more specific question.
+func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	// Runes, not bytes: q is arbitrary client input even though a name is not,
+	// so a multi-byte string must be rejected for its length rather than for
+	// its encoding.
+	if n := utf8.RuneCountInString(q); n < searchMinQueryLen || n > searchMaxQueryLen {
+		s.writeError(w, r, apiErrBadRequest(fmt.Sprintf(
+			"q must be between %d and %d characters", searchMinQueryLen, searchMaxQueryLen)))
+		return
+	}
+
+	limit := httpx.ParseLimit(r.URL.Query().Get("limit"), searchDefaultLimit, searchMaxLimit)
+	rows, err := s.store.SearchUsers(r.Context(), q, int32(limit))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	// No hits is an empty list and a 200, never a 404: the question "who is
+	// called something like this" was answered, and the answer was "nobody".
+	hits := make([]searchHit, len(rows))
+	for i := range rows {
+		hits[i] = searchHit{
+			Name: rows[i].DisplayName, Joined: rows[i].Joined, Public: rows[i].ProfilePublic,
+		}
+	}
+	s.writeJSON(w, http.StatusOK, searchResponse{Users: hits})
 }
 
 // resolvePublicUser turns the {name} path parameter into the account row, or

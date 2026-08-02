@@ -43,18 +43,36 @@ type BucketParser func(key string) (BucketInfo, bool)
 // composition root injects it so this domain stays layout-agnostic.
 type LayoutNamer func(lang string) string
 
+// RateLimiter decides whether an action keyed by a string may proceed. It is
+// the same shape the auth and runs domains declare, so the composition root can
+// hand this one an instance of the same token bucket without this package
+// importing a sibling.
+type RateLimiter interface {
+	Allow(key string) bool
+}
+
 // Service serves the session-scoped profile read model.
 type Service struct {
-	store     Store
-	userID    UserIDFunc
-	bucket    BucketParser
-	layoutFor LayoutNamer
-	log       *slog.Logger
+	store  Store
+	userID UserIDFunc
+	// searchLimiter rations the ONE public route whose cost does not scale with
+	// a single account: /users?q= reads an index built over every user, while
+	// every other route on this surface is bounded by one player's history. It
+	// gets its own bucket rather than sharing auth's, because sharing would let
+	// a search flood spend the budget that exists to protect argon2id and
+	// outbound email.
+	searchLimiter RateLimiter
+	bucket        BucketParser
+	layoutFor     LayoutNamer
+	log           *slog.Logger
 }
 
 // NewService wires the profile service.
-func NewService(store Store, userID UserIDFunc, bucket BucketParser, layoutFor LayoutNamer, log *slog.Logger) *Service {
-	return &Service{store: store, userID: userID, bucket: bucket, layoutFor: layoutFor, log: log}
+func NewService(store Store, searchLimiter RateLimiter, userID UserIDFunc, bucket BucketParser, layoutFor LayoutNamer, log *slog.Logger) *Service {
+	return &Service{
+		store: store, searchLimiter: searchLimiter, userID: userID,
+		bucket: bucket, layoutFor: layoutFor, log: log,
+	}
 }
 
 // --- shared HTTP helpers (mirroring the sibling domains', kept private) -----

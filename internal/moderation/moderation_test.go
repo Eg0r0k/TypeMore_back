@@ -264,7 +264,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, `TRUNCATE bans, auth_identities, users CASCADE`)
+	_, err = pool.Exec(ctx, `TRUNCATE reports, quotes, runs, bans, auth_identities, users CASCADE`)
 	require.NoError(t, err)
 
 	return &harness{pool: pool, store: moderation.New(pool)}

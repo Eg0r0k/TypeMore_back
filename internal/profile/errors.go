@@ -39,4 +39,9 @@ var (
 	// on the one section rather than misreporting the whole profile.
 	apiErrPortraitClosed = newAPIError(http.StatusForbidden, "portrait_closed",
 		"the keyboard portrait is private")
+	// apiErrRateLimited: the search bucket is empty. Same code and shape the
+	// auth and runs domains use for the same condition — a client backing off
+	// should not have to learn a second vocabulary per surface.
+	apiErrRateLimited = newAPIError(http.StatusTooManyRequests, "rate_limited",
+		"too many requests, slow down")
 )

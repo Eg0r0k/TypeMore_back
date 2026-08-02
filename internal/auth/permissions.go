@@ -15,6 +15,18 @@ const (
 	PermBansRead Permission = "bans:read"
 	// PermBansWrite covers issuing, amending and revoking bans.
 	PermBansWrite Permission = "bans:write"
+	// PermReportsRead covers the report queue and one subject's report history
+	// (docs/REPORTS.md).
+	PermReportsRead Permission = "reports:read"
+	// PermReportsWrite covers resolving a subject's open reports. It is
+	// deliberately NOT the permission that bans or withdraws: resolving records
+	// a verdict, and the act it refers to is gated by its own permission, so a
+	// role could one day triage the queue without being able to punish.
+	PermReportsWrite Permission = "reports:write"
+	// PermQuotesWrite covers withdrawing a quote from circulation and putting
+	// it back. It does NOT cover publishing or editing one — no permission
+	// does, because the importer is the only writer of a quote's bytes.
+	PermQuotesWrite Permission = "quotes:write"
 )
 
 // rolePermissions is the whole authorization model, in one place, versioned
@@ -22,7 +34,11 @@ const (
 // (00023's header records the trade). 'player' is absent: no permissions is
 // the zero value, not an entry.
 var rolePermissions = map[string][]Permission{
-	"admin": {PermBansRead, PermBansWrite},
+	"admin": {
+		PermBansRead, PermBansWrite,
+		PermReportsRead, PermReportsWrite,
+		PermQuotesWrite,
+	},
 }
 
 // Can reports whether the user's role grants p.

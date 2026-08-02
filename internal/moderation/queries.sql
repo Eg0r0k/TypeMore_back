@@ -102,3 +102,116 @@ ORDER BY b.issued_at DESC;
 -- now. No reason, no expiry — the player-facing banner is deliberately opaque
 -- and there is nothing here for a handler to leak.
 SELECT EXISTS (SELECT 1 FROM active_bans a WHERE a.user_id = @user_id);
+
+-- --- reports (docs/REPORTS.md) ---
+
+-- name: CreateReport :one
+-- File one report. ON CONFLICT DO NOTHING against the three partial unique
+-- indexes makes a repeat submission a no-op rather than a duplicate row; the
+-- caller reads the existing report separately and answers 200 either way, so a
+-- double-tapped button is not an error the player has to understand.
+--
+-- The subject arrives as three nullable parameters of which the caller sets
+-- exactly one. That shape is checked by the database (reports_subject_exactly
+-- _one), so a service bug here is a failed INSERT rather than a malformed row.
+INSERT INTO reports (subject_type, subject_user_id, subject_quote_id, subject_run_id,
+                     reporter_id, reason, comment)
+VALUES (@subject_type, sqlc.narg(subject_user_id), sqlc.narg(subject_quote_id),
+        sqlc.narg(subject_run_id), @reporter_id, @reason, sqlc.narg(comment))
+ON CONFLICT DO NOTHING
+RETURNING id, subject_type, reporter_id, reason, comment, status, created_at;
+
+-- name: FindOpenReport :one
+-- The caller's existing OPEN report on one subject — what a repeat submission
+-- answers with. The three IS NOT DISTINCT FROM comparisons let one query serve
+-- every subject type: the two NULL parameters match the two NULL columns.
+SELECT id, subject_type, reporter_id, reason, comment, status, created_at
+FROM reports
+WHERE reporter_id = @reporter_id
+  AND status = 'open'
+  AND subject_type = @subject_type
+  AND subject_user_id IS NOT DISTINCT FROM sqlc.narg(subject_user_id)::uuid
+  AND subject_quote_id IS NOT DISTINCT FROM sqlc.narg(subject_quote_id)::uuid
+  AND subject_run_id IS NOT DISTINCT FROM sqlc.narg(subject_run_id)::uuid;
+
+-- name: ListReportQueue :many
+-- The moderator's queue: one row per SUBJECT, not per report. Forty complaints
+-- about one quote are one thing to decide, and a queue that lists them forty
+-- times is a queue nobody can work.
+--
+-- Ordered by pressure (how many people complained) and then by age, so the
+-- loudest thing is first and nothing starves behind it. The reason list comes
+-- back aggregated because "12 reports, all 'offensive'" and "12 reports, all
+-- different" are different situations and the queue should show which it is.
+SELECT r.subject_type,
+       r.subject_user_id,
+       r.subject_quote_id,
+       r.subject_run_id,
+       count(*)::bigint                            AS open_reports,
+       min(r.created_at)::timestamptz              AS first_reported,
+       max(r.created_at)::timestamptz              AS last_reported,
+       array_agg(DISTINCT r.reason ORDER BY r.reason)::text[] AS reasons,
+       -- The subject's own identity, resolved here so the queue is ONE round
+       -- trip. Exactly one of these is non-null on any row, matching the
+       -- subject columns above.
+       u.display_name                              AS user_name,
+       q.text                                      AS quote_text,
+       q.lang                                      AS quote_lang,
+       (q.withdrawn_at IS NOT NULL)::boolean       AS quote_withdrawn,
+       run_owner.display_name                      AS run_owner_name,
+       run.status                                  AS run_status
+FROM reports r
+         LEFT JOIN users u ON u.id = r.subject_user_id
+         LEFT JOIN quotes q ON q.id = r.subject_quote_id
+         LEFT JOIN runs run ON run.id = r.subject_run_id
+         LEFT JOIN users run_owner ON run_owner.id = run.user_id
+WHERE r.status = 'open'
+  AND (sqlc.narg(subject_type)::text IS NULL OR r.subject_type = sqlc.narg(subject_type)::text)
+GROUP BY r.subject_type, r.subject_user_id, r.subject_quote_id, r.subject_run_id,
+         u.display_name, q.text, q.lang, q.withdrawn_at,
+         run_owner.display_name, run.status
+ORDER BY count(*) DESC, min(r.created_at)
+LIMIT @row_limit;
+
+-- name: ListReportsForSubject :many
+-- Every report on one subject, open and closed, newest first — the detail view
+-- behind a queue row. Reporter names are resolved here: a moderator judging
+-- whether twelve reports are a real signal or one brigade needs to see who
+-- filed them.
+SELECT r.id, r.reason, r.comment, r.status, r.created_at,
+       r.resolved_at, r.resolution_note,
+       reporter.display_name AS reporter_name,
+       resolver.display_name AS resolver_name
+FROM reports r
+         JOIN users reporter ON reporter.id = r.reporter_id
+         LEFT JOIN users resolver ON resolver.id = r.resolved_by
+WHERE r.subject_type = @subject_type
+  AND r.subject_user_id IS NOT DISTINCT FROM sqlc.narg(subject_user_id)::uuid
+  AND r.subject_quote_id IS NOT DISTINCT FROM sqlc.narg(subject_quote_id)::uuid
+  AND r.subject_run_id IS NOT DISTINCT FROM sqlc.narg(subject_run_id)::uuid
+ORDER BY r.created_at DESC
+LIMIT @row_limit;
+
+-- name: ResolveSubjectReports :execrows
+-- Close EVERY open report on one subject in a single statement. The moderator
+-- decided about the subject, not about each complaint, so the whole group moves
+-- at once and cannot be left half-resolved by a crash between two updates.
+--
+-- The rowcount is the answer to "was there anything to resolve", which is what
+-- makes a second identical call idempotent rather than a 404.
+UPDATE reports
+SET status          = @status,
+    resolved_at     = now(),
+    resolved_by     = @resolver::uuid,
+    resolution_note = sqlc.narg(note)
+WHERE status = 'open'
+  AND subject_type = @subject_type
+  AND subject_user_id IS NOT DISTINCT FROM sqlc.narg(subject_user_id)::uuid
+  AND subject_quote_id IS NOT DISTINCT FROM sqlc.narg(subject_quote_id)::uuid
+  AND subject_run_id IS NOT DISTINCT FROM sqlc.narg(subject_run_id)::uuid;
+
+-- name: CountOpenReportsBy :one
+-- How many open reports this player currently has outstanding. A cheap ceiling
+-- on breadth that the per-IP token bucket cannot express: the limiter caps the
+-- RATE of filing, this caps how much of the queue one person can occupy at once.
+SELECT count(*)::bigint FROM reports WHERE reporter_id = @reporter_id AND status = 'open';

@@ -123,7 +123,12 @@ func newBoard(t *testing.T, mutators ...func(*boardOpts)) *board {
 			return uuid.Nil, false
 		}
 		return b.asUser, true
-	}, logger)
+	},
+		// This suite has no quote corpus of its own, so nothing is ever
+		// withdrawn here; the withdrawn-board rule is exercised end to end in
+		// internal/runs, where a real quote exists to withdraw.
+		func(context.Context) (map[uuid.UUID]struct{}, error) { return nil, nil },
+		logger)
 
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) {

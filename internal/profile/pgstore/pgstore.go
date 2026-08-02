@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -195,6 +196,45 @@ func (s *Store) PublicUser(ctx context.Context, displayName string) (profile.Pub
 		ProfilePublic:  row.ProfilePublic,
 		KeyboardPublic: row.KeyboardPublic,
 	}, nil
+}
+
+// likeEscaper escapes the three characters LIKE reads as syntax. Only '_' can
+// currently occur in a display_name (the 00001 CHECK allows [a-zA-Z0-9_.-]),
+// and it is the one that matters: unescaped, a search for "foo_bar" also
+// matches "fooXbar", which is a wrong answer rather than a broad one. '%' and
+// '\' are escaped anyway so this stays correct if the name charset is ever
+// widened — the failure it prevents is silent, so it should not depend on a
+// constraint in another file staying as it is.
+//
+// Backslash is LIKE's default escape character, so the query needs no ESCAPE
+// clause to agree with this.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// SearchUsers runs the player search. Lowercasing happens HERE as well as in
+// SQL, and the two must agree: they do, because a display_name is ASCII by
+// construction (the 00001 CHECK), which is the one region where Go's Unicode
+// ToLower and Postgres's locale-dependent lower() cannot disagree. A query
+// string containing anything else simply matches no row, which is the honest
+// answer — no name could have contained it.
+func (s *Store) SearchUsers(ctx context.Context, name string, limit int32) ([]profile.SearchResult, error) {
+	needle := strings.ToLower(name)
+	rows, err := s.q.SearchUsersByName(ctx, profiledb.SearchUsersByNameParams{
+		Pattern: likeEscaper.Replace(needle),
+		Needle:  needle,
+		Lim:     limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]profile.SearchResult, len(rows))
+	for i := range rows {
+		out[i] = profile.SearchResult{
+			DisplayName:   rows[i].DisplayName,
+			Joined:        rows[i].CreatedAt,
+			ProfilePublic: rows[i].ProfilePublic,
+		}
+	}
+	return out, nil
 }
 
 // PublicRuns lists the publicly visible run history page — the queries own

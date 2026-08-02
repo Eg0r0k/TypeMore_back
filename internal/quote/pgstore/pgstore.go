@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -83,10 +84,10 @@ func (s *Store) Random(ctx context.Context, f quote.Filter) (quote.Quote, error)
 	if err != nil {
 		return quote.Quote{}, fmt.Errorf("quote/pgstore: random: %w", err)
 	}
-	return rowToQuote(row), nil
+	return randomRowToQuote(row), nil
 }
 
-// ByID returns one quote, superseded revisions included.
+// ByID returns one quote, superseded and withdrawn revisions included.
 func (s *Store) ByID(ctx context.Context, id uuid.UUID) (quote.Quote, error) {
 	row, err := s.q.GetQuote(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -95,10 +96,37 @@ func (s *Store) ByID(ctx context.Context, id uuid.UUID) (quote.Quote, error) {
 	if err != nil {
 		return quote.Quote{}, fmt.Errorf("quote/pgstore: get: %w", err)
 	}
-	return rowToQuote(row), nil
+	return quote.Quote{
+		Meta: quote.Meta{
+			ID: row.ID, Lang: row.Lang, UpstreamID: row.UpstreamID, Source: row.Source,
+			Length: row.Length, LenGroup: quote.LenGroup(row.LenGroup),
+			TextHash: row.TextHash, Superseded: row.Superseded,
+			Withdrawn: row.Withdrawn, CreatedAt: row.CreatedAt,
+		},
+		Text: row.Text,
+	}, nil
 }
 
-func rowToQuote(r quotedb.Quote) quote.Quote {
+// WithdrawnIDs lists the quotes a moderator has taken out of circulation. A set
+// rather than a slice because its one caller asks membership questions of it,
+// once per bucket in the board index.
+func (s *Store) WithdrawnIDs(ctx context.Context) (map[uuid.UUID]struct{}, error) {
+	ids, err := s.q.ListWithdrawnQuoteIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("quote/pgstore: withdrawn ids: %w", err)
+	}
+	out := make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	return out, nil
+}
+
+// randomRowToQuote maps a drawn row. Withdrawn is left false rather than read:
+// the draw's own predicate excludes withdrawn rows, so there is no true to
+// carry — and a field set from a column the query does not select would be a
+// lie waiting for someone to widen the query.
+func randomRowToQuote(r quotedb.PickRandomQuoteRow) quote.Quote {
 	return quote.Quote{
 		Meta: quote.Meta{
 			ID: r.ID, Lang: r.Lang, UpstreamID: r.UpstreamID, Source: r.Source,
@@ -233,4 +261,74 @@ func supersedeOthers(ctx context.Context, q *quotedb.Queries, lang string, upstr
 		return 0, fmt.Errorf("quote/pgstore: supersede %s#%d: %w", lang, upstreamID, err)
 	}
 	return n, nil
+}
+
+// --- write side: moderation ---
+//
+// The admin surface's half of this store. It is on the same *Store as the
+// reads (one pool, one adapter) but behind its own interface at the consumer
+// end (quote.ModerationStore), so the public service cannot reach it by
+// holding the value it already has.
+
+// Withdraw takes a quote out of circulation, keeping any EARLIER withdrawal
+// intact: the first moderator's decision is the record, and the boolean tells
+// the handler whether this call is what changed the world.
+func (s *Store) Withdraw(ctx context.Context, id, actor uuid.UUID, reason string) (quote.Withdrawal, bool, error) {
+	row, err := s.q.WithdrawQuote(ctx, quotedb.WithdrawQuoteParams{
+		ID: id, Actor: actor, Reason: reason,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return quote.Withdrawal{}, false, quote.ErrNotFound
+	}
+	if err != nil {
+		return quote.Withdrawal{}, false, fmt.Errorf("quote/pgstore: withdraw: %w", err)
+	}
+	return toWithdrawal(row.WithdrawnAt, row.WithdrawnBy, row.WithdrawnReason), row.NewlyWithdrawn, nil
+}
+
+// Restore puts a withdrawn quote back into circulation, reporting whether it
+// changed anything. A quote that was never withdrawn is not an error: the
+// caller asked for a state that already holds, which is the same idempotency
+// the unban route answers with.
+func (s *Store) Restore(ctx context.Context, id uuid.UUID) (bool, error) {
+	n, err := s.q.RestoreQuote(ctx, id)
+	if err != nil {
+		return false, fmt.Errorf("quote/pgstore: restore: %w", err)
+	}
+	return n > 0, nil
+}
+
+// Moderated returns one quote with its withdrawal record.
+func (s *Store) Moderated(ctx context.Context, id uuid.UUID) (quote.Quote, quote.Withdrawal, error) {
+	row, err := s.q.GetQuoteWithdrawal(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return quote.Quote{}, quote.Withdrawal{}, quote.ErrNotFound
+	}
+	if err != nil {
+		return quote.Quote{}, quote.Withdrawal{}, fmt.Errorf("quote/pgstore: moderated: %w", err)
+	}
+	q := quote.Quote{
+		Meta: quote.Meta{
+			ID: row.ID, Lang: row.Lang, UpstreamID: row.UpstreamID, Source: row.Source,
+			Length: row.Length, LenGroup: quote.LenGroup(row.LenGroup),
+			Superseded: row.Superseded, Withdrawn: row.WithdrawnAt != nil,
+			CreatedAt: row.CreatedAt,
+		},
+		Text: row.Text,
+	}
+	return q, toWithdrawal(row.WithdrawnAt, row.WithdrawnBy, row.WithdrawnReason), nil
+}
+
+// toWithdrawal folds the three nullable columns into the record. They move
+// together by CHECK (00025) apart from the actor, which is ON DELETE SET NULL
+// and so may be absent from a withdrawal that definitely happened.
+func toWithdrawal(at *time.Time, by *uuid.UUID, reason *string) quote.Withdrawal {
+	if at == nil {
+		return quote.Withdrawal{}
+	}
+	w := quote.Withdrawal{At: *at, By: by}
+	if reason != nil {
+		w.Reason = *reason
+	}
+	return w
 }

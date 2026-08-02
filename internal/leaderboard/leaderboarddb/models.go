@@ -143,16 +143,35 @@ type MatchRun struct {
 }
 
 type Quote struct {
-	ID         uuid.UUID
-	Lang       string
-	UpstreamID int32
-	Text       string
-	Source     string
-	Length     int32
-	LenGroup   int16
-	TextHash   string
-	Superseded bool
-	CreatedAt  time.Time
+	ID              uuid.UUID
+	Lang            string
+	UpstreamID      int32
+	Text            string
+	Source          string
+	Length          int32
+	LenGroup        int16
+	TextHash        string
+	Superseded      bool
+	CreatedAt       time.Time
+	WithdrawnAt     *time.Time
+	WithdrawnBy     *uuid.UUID
+	WithdrawnReason *string
+}
+
+type Report struct {
+	ID             uuid.UUID
+	SubjectType    string
+	SubjectUserID  *uuid.UUID
+	SubjectQuoteID *uuid.UUID
+	SubjectRunID   *uuid.UUID
+	ReporterID     uuid.UUID
+	Reason         string
+	Comment        *string
+	Status         string
+	CreatedAt      time.Time
+	ResolvedAt     *time.Time
+	ResolvedBy     *uuid.UUID
+	ResolutionNote *string
 }
 
 type Run struct {

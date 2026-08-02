@@ -193,6 +193,12 @@ Recorded so the absences are decisions rather than gaps:
   ban rather than a missing one.
 - **No IP or device bans.** Account scope only.
 
+Two of these have since been answered elsewhere rather than here: player
+**reports** are the signal that reaches a moderator ([`REPORTS.md`](REPORTS.md)),
+and a bad **quote** now has an action to point at — withdrawal — which is a
+separate surface with its own permission, because a ban and a quote are not the
+same kind of thing.
+
 ## Tests
 
 | What | Where |

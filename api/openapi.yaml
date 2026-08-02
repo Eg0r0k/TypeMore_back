@@ -44,8 +44,10 @@ tags:
   - name: profile
     description: The caller's own statistics (session-scoped)
   - name: public-profiles
-    description: /users/{name} — other players' public pages
+    description: /users — player search; /users/{name} — other players' public pages
   - name: quotes
+  - name: reports
+    description: Filing a report on a player, a quote or a run (docs/REPORTS.md)
   - name: assets
     description: Dictionaries and keyboard layouts (public, cacheable)
   - name: rooms
@@ -56,7 +58,8 @@ tags:
       `TYPEMORE_ADMINS`; to any caller without the required permission every
       route here answers a plain-text 404 indistinguishable from an unknown
       path. Permissions arrive on `GET /me` as `permissions`
-      (`bans:read`, `bans:write`).
+      (`bans:read`, `bans:write`, `reports:read`, `reports:write`,
+      `quotes:write`).
   - name: system
 
 paths:
@@ -636,6 +639,52 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ------------------------------------------------------- public profiles --
+  /api/v1/users:
+    get:
+      tags: [public-profiles]
+      summary: Search players by name
+      description: >
+        Finds accounts whose display name CONTAINS `q`, case-insensitively.
+        Results are ranked exact match first, then prefix matches, then by name
+        length, then alphabetically — a total order, so the same query always
+        returns the same page. There is no cursor: a search is refined, not
+        paged. Banned accounts are absent (the same rule the leaderboards
+        apply); closed profiles are present, flagged `public: false`. No hits is
+        an empty list and a 200.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: >
+            The name fragment to look for. The 3-character minimum is required:
+            a shorter fragment cannot be served from the trigram index, and a
+            display name shorter than 3 characters cannot exist anyway.
+          schema: { type: string, minLength: 3, maxLength: 20 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Matching players, best match first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, joined, public]
+                      properties:
+                        name: { type: string }
+                        joined: { type: string, format: date-time }
+                        public:
+                          type: boolean
+                          description: Whether this profile's data routes will answer a stranger.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/users/{name}:
     get:
       tags: [public-profiles]
@@ -1007,6 +1056,199 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/AdminNotFound" }
 
+  # -------------------------------------------------------------- reports --
+  /api/v1/reports:
+    post:
+      tags: [reports]
+      summary: File a report
+      description: >
+        Reports a player, a quote or a run (docs/REPORTS.md). Answers 201 for a
+        new report and 200 with the existing one when the caller already has an
+        open report on that subject - a double tap is not an error. The reason
+        vocabulary is per subject type. A banned account is refused.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, reason]
+              properties:
+                subject: { $ref: "#/components/schemas/ReportSubject" }
+                reason:
+                  type: string
+                  description: >
+                    user -> offensive_name | impersonation | cheating | other;
+                    quote -> typo | wrong_language | offensive | other;
+                    run -> cheating | impossible_score | other.
+                comment: { type: string, maxLength: 1000 }
+      responses:
+        "201":
+          description: Filed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportView" }
+        "200":
+          description: The caller already had this report open; it is returned unchanged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: The account is restricted (banned).
+        "404":
+          description: The subject does not exist.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/admin/reports:
+    get:
+      tags: [admin]
+      summary: The report queue, grouped by subject
+      description: >
+        One row per SUBJECT, not per report, ordered by how many people
+        complained and then by age. Each item carries the distinct reasons and a
+        snapshot of the subject as it stands now.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: type, in: query, schema: { type: string, enum: [user, quote, run] } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: Open reports, grouped.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ReportQueueItem" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+  /api/v1/admin/reports/{subjectType}/{subjectID}:
+    get:
+      tags: [admin]
+      summary: Every report on one subject
+      description: Open and closed, newest first, with reporter and resolver names.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/SubjectType" }
+        - { $ref: "#/components/parameters/SubjectID" }
+      responses:
+        "200":
+          description: The subject's reports.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject, reports]
+                properties:
+                  subject: { $ref: "#/components/schemas/ReportSubject" }
+                  reports:
+                    type: array
+                    items: { $ref: "#/components/schemas/SubjectReportView" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+  /api/v1/admin/reports/{subjectType}/{subjectID}/resolve:
+    post:
+      tags: [admin]
+      summary: Close every open report on a subject
+      description: >
+        Records a verdict and NOTHING else - banning the player or withdrawing
+        the quote is a separate call to the surface that owns that action. The
+        whole group closes in one statement; resolved=0 means somebody else got
+        there first, which is a success, not an error.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/SubjectType" }
+        - { $ref: "#/components/parameters/SubjectID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verdict]
+              properties:
+                verdict: { type: string, enum: [actioned, dismissed] }
+                note: { type: string, maxLength: 1000 }
+      responses:
+        "200":
+          description: Outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject, status, resolved]
+                properties:
+                  subject: { $ref: "#/components/schemas/ReportSubject" }
+                  status: { type: string, enum: [actioned, dismissed] }
+                  resolved: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+
+  /api/v1/admin/quotes/{id}:
+    get:
+      tags: [admin]
+      summary: One quote with its withdrawal record
+      description: Text included - a moderator has to read what they are judging.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The moderation view of a quote.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModeratedQuote" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+  /api/v1/admin/quotes/{id}/withdrawal:
+    post:
+      tags: [admin]
+      summary: Withdraw a quote from circulation
+      description: >
+        Removes the quote from browsing, from the random draw and from the board
+        index. It stays resolvable by id forever and its board still answers on
+        its own URL - every run played on it must keep replaying. Withdrawing
+        twice keeps the FIRST decision; changed says whether this call moved
+        anything.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: The withdrawal record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WithdrawalOutcome" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+    delete:
+      tags: [admin]
+      summary: Put a withdrawn quote back
+      description: Idempotent - a quote that was never withdrawn answers changed=false.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The withdrawal record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WithdrawalOutcome" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+
   # ---------------------------------------------------------------- system --
   /healthz:
     get:
@@ -1066,6 +1308,18 @@ components:
       description: Opaque session cookie set by login / the OAuth callback.
 
   parameters:
+    SubjectType:
+      name: subjectType
+      in: path
+      required: true
+      description: What the report is about.
+      schema: { type: string, enum: [user, quote, run] }
+    SubjectID:
+      name: subjectID
+      in: path
+      required: true
+      description: The id of the row that subjectType names.
+      schema: { type: string, format: uuid }
     OAuthProvider:
       name: provider
       in: path
@@ -1165,6 +1419,93 @@ components:
                 items: { $ref: "#/components/schemas/ModerationUser" }
 
   schemas:
+    ReportSubject:
+      type: object
+      required: [type, id]
+      description: What a report is about. The pair is what names a subject.
+      properties:
+        type: { type: string, enum: [user, quote, run] }
+        id: { type: string, format: uuid }
+    ReportView:
+      type: object
+      required: [id, subject, reason, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        subject: { $ref: "#/components/schemas/ReportSubject" }
+        reason: { type: string }
+        comment: { type: string }
+        status: { type: string, enum: [open, actioned, dismissed] }
+        createdAt: { type: string, format: date-time }
+    ReportSubjectSnapshot:
+      type: object
+      description: >
+        The subject as it stands now, resolved with the queue so triage costs
+        one round trip. Only the fields belonging to the item's own type are
+        present.
+      properties:
+        userName: { type: string }
+        quoteText: { type: string }
+        quoteLang: { type: string }
+        quoteWithdrawn: { type: boolean }
+        runOwnerName: { type: string }
+        runStatus: { type: string }
+    ReportQueueItem:
+      type: object
+      required: [subject, openReports, firstReported, lastReported, reasons, snapshot]
+      properties:
+        subject: { $ref: "#/components/schemas/ReportSubject" }
+        openReports: { type: integer, format: int64 }
+        firstReported: { type: string, format: date-time }
+        lastReported: { type: string, format: date-time }
+        reasons:
+          type: array
+          description: The distinct reasons given, sorted.
+          items: { type: string }
+        snapshot: { $ref: "#/components/schemas/ReportSubjectSnapshot" }
+    SubjectReportView:
+      type: object
+      required: [id, reason, status, createdAt, reporterName]
+      properties:
+        id: { type: string, format: uuid }
+        reason: { type: string }
+        comment: { type: string }
+        status: { type: string, enum: [open, actioned, dismissed] }
+        createdAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
+        resolutionNote: { type: string }
+        reporterName: { type: string }
+        resolverName: { type: string }
+    QuoteWithdrawal:
+      type: object
+      required: [withdrawn]
+      properties:
+        withdrawn: { type: boolean }
+        at: { type: string, format: date-time }
+        by: { type: string, format: uuid }
+        reason: { type: string }
+    WithdrawalOutcome:
+      type: object
+      required: [id, changed, withdrawal]
+      properties:
+        id: { type: string, format: uuid }
+        changed:
+          type: boolean
+          description: Whether THIS call moved anything.
+        withdrawal: { $ref: "#/components/schemas/QuoteWithdrawal" }
+    ModeratedQuote:
+      type: object
+      required: [id, lang, upstreamId, text, source, length, lenGroup, superseded, createdAt, withdrawal]
+      properties:
+        id: { type: string, format: uuid }
+        lang: { type: string }
+        upstreamId: { type: integer }
+        text: { type: string }
+        source: { type: string }
+        length: { type: integer }
+        lenGroup: { type: string, enum: [short, medium, long, thicc] }
+        superseded: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        withdrawal: { $ref: "#/components/schemas/QuoteWithdrawal" }
     ApiErrorBody:
       type: object
       required: [error, message]

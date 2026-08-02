@@ -241,6 +241,7 @@ and the public paths also answer the owner (the preview case).
 
 | Route | Closed profile, stranger/anon | Open profile, stranger/anon |
 |---|---|---|
+| `GET /users?q=` | listed, `public:false` | listed, `public:true` |
 | `GET /users/{name}` | **200** `{name, joined, public:false}` | 200 `{name, joined, public:true}` |
 | `…/summary` `…/activity` `…/histogram` `…/timeseries` `…/pbs` `…/runs` | **403 `profile_closed`** | 200 |
 | `…/portrait` | 403 `profile_closed` | 200 iff `keyboard_public`, else **403 `portrait_closed`** |
@@ -269,6 +270,57 @@ a summary is must not fork), with three deliberate differences:
   the boards already refuse to leak through.
 - **`…/portrait`** is served only when (`keyboard_public` OR owner) and the
   profile is open — see Privacy below for why the switch exists at all.
+
+## Search
+
+`GET /api/v1/users?q=<fragment>&limit=20` — find a player by part of their
+name. Answers `{"users":[{name, joined, public}]}`; no hits is an empty list
+and a `200`, never a `404`. The hit shape is the header's, deliberately:
+search finds a profile, it is never a second way to *read* one, so nothing
+that a gate protects appears in it.
+
+**Substring, not prefix.** A handle carries its identity in the middle as
+often as at the front — `ttv_egor`, `egor_yt`, digits substituted mid-word — so
+a prefix search fails to find a player the searcher knows exists, which is the
+worst thing a search box can do. That requires a trigram index (`pg_trgm`,
+migration `00024`): no btree can answer `LIKE '%x%'` under any opclass, so
+the `citext UNIQUE` index that resolves `/users/{name}` cannot serve this and
+the two access paths stay separate.
+
+**Ranking is deterministic, not `similarity()`.** Exact match, then prefix
+matches, then shorter names, then alphabetical. pg_trgm's similarity score is
+noisy over 3–20 character handles and orders results by a number the searcher
+cannot predict; this order is one they can reconstruct by looking at it, and
+its alphabetical tail is what makes two identical requests return the same
+page. There is no cursor — a search is refined, not paged.
+
+**`q` must be 3–20 characters**, else `400`. Both bounds are the
+`display_name` CHECK's (`00001`), so neither forbids a real search, and the
+lower one is also load-bearing for cost: a trigram index cannot serve a
+pattern shorter than 3 characters. Measured on 200k accounts, `%ab%` is a
+parallel sequential scan at ~132 ms while `%abc%` is a bitmap index scan at
+~0.9 ms — the minimum is what keeps an anonymous endpoint off the first plan.
+
+**The query string is escaped before it reaches `LIKE`.** `_` is both a legal
+`display_name` character and LIKE's single-character wildcard, so an unescaped
+search for `foo_bar` would also match `fooxbar` — a wrong answer, not a broad
+one, and one that appears only once somebody registers an underscore.
+`TestSearchEscapesLikeWildcards` is the pin.
+
+**Visibility follows the boards, not the header.** Banned accounts are absent
+from results (the `active_bans` predicate every leaderboard and the public run
+history read through); `GET /users/{name}` keeps answering `200` for a banned
+name, because the header has never been what hides a ban. Closed profiles *are*
+returned, flagged `public:false`: a closed profile is still ranked on the
+boards under that name, so hiding it here would conceal nothing while breaking
+"closed is a state, not a 404". The flag is what lets a client render the
+closed state instead of linking to a page about to `403`.
+
+It is the one route on this surface with a rate limit
+(`TYPEMORE_PROFILE_SEARCH_RATE_*`, per IP, default 30 burst / 500 ms refill —
+sized for a search box that queries as you type). Every other public profile
+route is bounded by one player's history; this one reads an index over all
+accounts, and it is anonymous.
 
 **The boundary with the boards — the line that must not move.** Profile
 privacy does not touch the leaderboards. A closed profile stays ranked under
