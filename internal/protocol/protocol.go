@@ -88,7 +88,19 @@ const (
 	CodeNotReady = "not_ready"
 	// CodeRateLimited throttles chat_send when the sender's token bucket is empty.
 	CodeRateLimited = "rate_limited"
-	CodeInternal    = "internal"
+	// CodeSeatTakenOver is sent to the OLDER connection of an account whose seat a
+	// NEWER connection has just claimed (docs/PROTOCOL.md §5, "One seat per
+	// account"). It is the only error the server sends unprompted — the frame the
+	// recipient did not ask for — and it is immediately followed by a close with
+	// code 4001, so a client that sees it must NOT reconnect: the account is
+	// already in the room on another connection.
+	CodeSeatTakenOver = "seat_taken_over"
+	// CodeInMatchElsewhere refuses a create_room / join_room from an account that
+	// is a racing participant of a match in a DIFFERENT room. Outside a match the
+	// account simply moves; mid-match the move would forfeit a running race, so
+	// the newer connection is refused instead and the older one keeps its seat.
+	CodeInMatchElsewhere = "in_match_elsewhere"
+	CodeInternal         = "internal"
 )
 
 // Peer status values carried in a PeerStatus frame's status field.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -25,12 +26,16 @@ import (
 //   - room is likewise touched only by this session's read-loop goroutine; the
 //     Room is the authoritative owner of seat membership, so a stale pointer
 //     (e.g. after a kick removed the seat) is harmless — room methods re-check.
+//   - the ONE exception is displacement (see displace): another connection's
+//     goroutine ends this one when it takes over its account's seat. Everything
+//     it touches is the socket's own close (idempotent) and displacedAs, which is
+//     under displaceMu.
 type session struct {
 	conn     *websocket.Conn
 	log      *slog.Logger
 	idGen    func() string
 	reg      *Registry
-	outbound chan []byte
+	outbound chan outFrame
 
 	// Identity is resolved at the WS upgrade: an authenticated connection carries
 	// its account displayName; a guest gets a server-assigned per-room nick when
@@ -46,6 +51,26 @@ type session struct {
 	// reconnect can reclaim the seat.
 	resumeToken string
 	room        *Room
+
+	// displaceMu guards displacedAs, the close reason a displacing connection
+	// leaves behind for this session's own serve goroutine to close with. A
+	// mutex and not an atomic flag because the two goroutines need an ordering
+	// edge for the reason itself, not merely for the fact.
+	displaceMu  sync.Mutex
+	displacedAs *closeReason
+}
+
+// outFrame is one queued outbound message. sent, when non-nil, is closed by the
+// writer the moment the frame has been handed to the socket.
+//
+// Only displacement uses sent, and it is the whole reason the queue carries a
+// struct instead of bare bytes: a close handshake started while the error frame
+// explaining the close is still sitting in this queue would reach the client
+// FIRST, and the tab would be closed without ever being told why. The signal
+// turns "error, then close" from an ordering we hope for into one we wait for.
+type outFrame struct {
+	data []byte
+	sent chan struct{}
 }
 
 // closeReason bundles the WebSocket close code and human-readable reason used
@@ -63,10 +88,17 @@ func nowMs() int64 { return time.Now().UnixMilli() }
 // senders never touch the socket, they only enqueue bytes on s.outbound. The
 // loop ends when the channel is closed (orderly shutdown) or a write fails.
 func (s *session) writeLoop(ctx context.Context) {
-	for b := range s.outbound {
+	for f := range s.outbound {
 		// Write is bounded by ctx: a server shutdown or dead peer aborts it
 		// instead of blocking forever.
-		if err := s.conn.Write(ctx, websocket.MessageText, b); err != nil {
+		err := s.conn.Write(ctx, websocket.MessageText, f.data)
+		if f.sent != nil {
+			// Signalled on failure too: the waiter is waiting for "this frame is
+			// no longer ahead of you", and a frame that will never be written
+			// satisfies that as surely as one that was.
+			close(f.sent)
+		}
+		if err != nil {
 			s.log.Debug("websocket write failed", "err", err)
 			return
 		}
@@ -296,7 +328,7 @@ func (s *session) handleCreateRoom(ctx context.Context) {
 		s.send(ctx, protocol.NewError(protocol.CodeBadMessage, "already in a room"))
 		return
 	}
-	s.room = s.reg.Create(s)
+	s.enterRoom(ctx, func() seatOutcome { return s.reg.create(s) })
 }
 
 // handleJoinRoom joins an existing room by code. On success the room seats this
@@ -310,16 +342,145 @@ func (s *session) handleJoinRoom(ctx context.Context, data []byte) {
 		s.send(ctx, protocol.NewError(protocol.CodeBadMessage, "already in a room"))
 		return
 	}
-	room, code := s.reg.Join(m.Code, s)
-	if code != "" {
-		msg := "room not found"
-		if code == protocol.CodeRoomFull {
-			msg = "room is full"
+	s.enterRoom(ctx, func() seatOutcome { return s.reg.join(m.Code, s) })
+}
+
+// enterRoom runs one create_room/join_room to completion, applying the registry's
+// account-seat decision (docs/PROTOCOL.md §5, "One seat per account").
+//
+// The interesting case is a RECLAIM: the account was already in this room, so
+// this connection re-attaches to the existing seat and inherits its player id,
+// resume token, host role and (mid-match) its whole capture. That is finished
+// off here rather than in the registry because it writes frames, and frames
+// under reg.mu would hold the whole process's room map open for the length of a
+// backlog replay.
+//
+// The retry exists for exactly one window: between the registry releasing its
+// lock and the reattach taking the room lock, the reclaimed seat can be kicked,
+// dnf'd, or lose its grace. It is then gone from the room AND from the account
+// index, so the second attempt sees a seatless account and takes a fresh seat —
+// which is why two iterations are enough and a third is unreachable.
+func (s *session) enterRoom(ctx context.Context, attempt func() seatOutcome) {
+	for range 2 {
+		out := attempt()
+		if out.errCode != "" {
+			s.send(ctx, protocol.NewError(out.errCode, seatErrorMessage(out.errCode)))
+			return
 		}
-		s.send(ctx, protocol.NewError(code, msg))
+		if out.reclaim == nil {
+			s.room = out.room
+			return
+		}
+		if !out.room.reattach(ctx, s, out.reclaim) {
+			continue
+		}
+		// The seat is live again on this connection, so its resume token must
+		// stop being claimable by the old one. The hello path gets this from
+		// claimGrace, which consumes the entry; taking the seat over by ACCOUNT
+		// never touched it, and leaving it behind would strand a grace entry that
+		// no timer will ever come back to remove.
+		s.reg.removeGrace(out.reclaim.resumeToken)
+		s.playerID = out.reclaim.playerID
+		s.resumeToken = out.reclaim.resumeToken
+		s.room = out.room
 		return
 	}
-	s.room = room
+	s.send(ctx, protocol.NewError(protocol.CodeInternal, "could not take a seat; try again"))
+}
+
+// seatErrorMessage is the human-readable half of a create_room/join_room refusal.
+func seatErrorMessage(code string) string {
+	switch code {
+	case protocol.CodeRoomFull:
+		return "room is full"
+	case protocol.CodeInMatchElsewhere:
+		return "this account is playing a match in another room"
+	default:
+		return "room not found"
+	}
+}
+
+// displaceFlushTimeout bounds how long the displacement teardown waits for the
+// error frame to reach the socket before closing anyway. A peer stalled long
+// enough to still be behind after this has stopped reading; it gets the close
+// without the explanation, which is strictly better than a seat held open by a
+// tab that is not listening.
+const displaceFlushTimeout = 2 * time.Second
+
+// displace ends this connection because a NEWER connection of the same account
+// has taken its seat (docs/PROTOCOL.md §5). It is the one path where a session
+// is torn down by somebody else's goroutine.
+//
+// Two constraints shape it, and they pull in opposite directions.
+//
+// The client is owed BOTH an in-band error (uniform with every other refusal,
+// and the only place the machine-readable reason fits) and a close code it can
+// distinguish (4001, "do not reconnect"). That means the error frame has to be
+// on the wire before the close handshake starts — hence the wait on the writer's
+// per-frame signal rather than a plain enqueue-and-close, which would race.
+//
+// But this runs UNDER THE ROOM LOCK (Room.displaceLocked explains why it has
+// to), so it must not block for a microsecond longer than an enqueue: waiting on
+// a stalled peer's socket here would stall the room itself, which is the one
+// thing every trySend in this package is built to avoid. So the synchronous half
+// is a non-blocking enqueue and nothing else, and the half that waits runs on its
+// own goroutine. By the time that goroutine starts the seat has already changed
+// hands, so nothing downstream depends on when it finishes.
+//
+// The read side is deliberately NOT cancelled: cancelling the context of a
+// coder/websocket read tears the connection down at the transport, and the
+// client would get an abnormal close with neither the frame nor the code.
+// Conn.Close is what ends the read here, and it is idempotent with serve's own.
+func (s *session) displace() {
+	s.displaceMu.Lock()
+	first := s.displacedAs == nil
+	if first {
+		s.displacedAs = &closeReason{
+			code:   closeSeatTakenOver,
+			reason: "seat taken over by a newer connection",
+		}
+	}
+	s.displaceMu.Unlock()
+	if !first {
+		return
+	}
+
+	sent := make(chan struct{})
+	b, err := json.Marshal(protocol.NewError(protocol.CodeSeatTakenOver,
+		"this account took the seat on another connection"))
+	if err != nil {
+		s.log.Error("marshal outbound frame", "err", err)
+		close(sent)
+	} else {
+		select {
+		case s.outbound <- outFrame{data: b, sent: sent}:
+		default:
+			close(sent) // queue full: a peer this far behind gets the close alone
+		}
+	}
+
+	go s.closeDisplaced(sent)
+}
+
+// closeDisplaced waits for the displacement error frame to clear the writer and
+// then runs the close handshake. It runs on its own goroutine (see displace).
+func (s *session) closeDisplaced(sent <-chan struct{}) {
+	select {
+	case <-sent:
+	case <-time.After(displaceFlushTimeout):
+	}
+	r := s.displacedReason()
+	if err := s.conn.Close(r.code, r.reason); err != nil {
+		s.log.Debug("close displaced connection", "err", err)
+	}
+}
+
+// displacedReason returns the close reason left by displace, or nil if this
+// connection ended for any other reason.
+func (s *session) displacedReason() *closeReason {
+	s.displaceMu.Lock()
+	defer s.displaceMu.Unlock()
+	return s.displacedAs
 }
 
 // handleLeave removes this session from its room. It clears the room pointer even
@@ -372,7 +533,7 @@ func (s *session) send(ctx context.Context, msg any) {
 		return
 	}
 	select {
-	case s.outbound <- b:
+	case s.outbound <- outFrame{data: b}:
 	case <-ctx.Done():
 	}
 }
@@ -389,7 +550,7 @@ func (s *session) trySend(msg any) {
 		return
 	}
 	select {
-	case s.outbound <- b:
+	case s.outbound <- outFrame{data: b}:
 	default:
 	}
 }

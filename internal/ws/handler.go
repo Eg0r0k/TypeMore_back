@@ -16,8 +16,16 @@
 //
 // Anything that wants to send a frame calls session.send, which marshals and
 // hands the bytes to the writer over a channel. No other goroutine ever touches
-// the socket directly. This makes the data races structurally impossible rather
+// the socket to WRITE. This makes the data races structurally impossible rather
 // than merely avoided by convention.
+//
+// There is exactly one deliberate exception, and it is a CLOSE, not a write:
+// when a newer connection of the same account takes a seat over, it ends the
+// older connection with Conn.Close from its own goroutine (session.displace).
+// Close is documented by coder/websocket as unblocking every goroutine on the
+// connection and as idempotent, so it composes with the teardown below rather
+// than racing it — and it is only reached after the displacement error frame has
+// cleared the writer, so the ordering on the wire is still the writer's.
 package ws
 
 import (
@@ -53,6 +61,14 @@ const (
 	heartbeatInterval = 15 * time.Second
 	heartbeatMissed   = 2
 )
+
+// closeSeatTakenOver is the WebSocket close code for a connection displaced by a
+// newer one of the same account (docs/PROTOCOL.md §5). It sits in the 4000–4999
+// private-use range rather than reusing a standard code because it is the one
+// close a client must NOT retry: everything else — 1001, 1006, a shutdown — is a
+// reconnect, and a displaced tab that reconnects would take the seat straight
+// back off the tab the person is actually using, and then lose it again.
+const closeSeatTakenOver websocket.StatusCode = 4001
 
 // Handler is the http.Handler for the WebSocket endpoint. It is safe for
 // concurrent use: it holds only immutable configuration and spawns fresh
@@ -182,7 +198,7 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, displayName, 
 		log:         h.log,
 		idGen:       h.idGen,
 		reg:         h.reg,
-		outbound:    make(chan []byte, outboundBuffer),
+		outbound:    make(chan outFrame, outboundBuffer),
 		authed:      authed,
 		displayName: displayName,
 		userID:      userID,
@@ -212,6 +228,14 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, displayName, 
 	// Read loop runs here, on the serve goroutine: the sole owner of conn.Read.
 	// It returns the close code/reason to use once teardown completes.
 	reason := s.readLoop(ctx)
+	// A displaced connection reports the displacement rather than the normal
+	// closure its torn-down read produced. Usually the displacing goroutine has
+	// already run the close handshake and the Close below is a no-op; this arm is
+	// for the race where the peer happened to hang up first, and it makes both
+	// orders end on the same close code.
+	if r := s.displacedReason(); r != nil {
+		reason = *r
+	}
 
 	// On teardown, hand the seat to the room: in any phase it enters the
 	// reconnect grace window, and disconnect registers the resume token and arms

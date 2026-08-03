@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/typemore/typemore-server/internal/protocol"
@@ -413,7 +412,17 @@ func (r *Room) endMatchLocked(reason string) {
 	// Reap seats whose connection is gone for good (dnf/left during the match).
 	// A seat still inside its reconnect grace window survives into the lobby and
 	// stays reclaimable until the grace expires.
-	r.seats = slices.DeleteFunc(r.seats, func(s *seat) bool { return s.sess == nil && !s.disconnected })
+	//
+	// The reap walks BACKWARDS through removeSeatLocked rather than filtering the
+	// slice in one pass: removal is also what drops the seat's account-index
+	// entry, and a reap that spliced the slice directly would leave the index
+	// pointing at seats this room no longer has. Reverse order keeps the surviving
+	// indices valid as elements are cut, and the survivors keep their join order.
+	for i := len(r.seats) - 1; i >= 0; i-- {
+		if s := r.seats[i]; s.sess == nil && !s.disconnected {
+			r.removeSeatLocked(i)
+		}
+	}
 	if r.findSeatByIDLocked(r.hostID) == nil {
 		r.reassignHostLocked()
 	}

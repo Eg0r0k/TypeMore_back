@@ -121,6 +121,9 @@ func (r *Room) seat(sess *session, asHost bool) bool {
 	}
 	r.nextSeq++
 	r.seats = append(r.seats, st)
+	// This and removeSeatLocked are the only two places a seat enters or leaves
+	// the world, so they are the only two that touch the account index.
+	r.reg.indexSeat(r, st)
 	if asHost {
 		r.hostID = sess.playerID
 	}
@@ -143,6 +146,17 @@ func (r *Room) leave(sess *session) {
 		r.mu.Unlock()
 		return
 	}
+	r.leaveSeatLocked(seat)
+	r.mu.Unlock()
+
+	r.reg.removeIfEmpty(r.code)
+}
+
+// leaveSeatLocked is the body of a voluntary departure, factored out because the
+// account-move path (releaseSeat) needs exactly the same thing done to a seat
+// the departing SESSION no longer identifies — a graced seat has no session at
+// all. Caller holds r.mu and is responsible for the removeIfEmpty that follows.
+func (r *Room) leaveSeatLocked(seat *seat) {
 	midMatch := r.match != nil && seat.status == seatActive
 	if midMatch {
 		seat.status = protocol.StatusLeft
@@ -166,9 +180,91 @@ func (r *Room) leave(sess *session) {
 	if r.match != nil && r.allTerminalLocked() {
 		r.endMatchLocked(protocol.ReasonAllFinished)
 	}
-	r.mu.Unlock()
+}
 
-	r.reg.removeIfEmpty(r.code)
+// detachSeat parks a live seat so a NEWER connection of the same account can
+// take it over, displacing the connection that held it.
+//
+// The seat is put into exactly the state a real socket drop produces — no
+// session, disconnected, mid-match announced and buffering — because the thing
+// that follows is exactly a reconnect: Room.reattach, the same function the
+// resume token drives. Nothing here arms a grace timer or registers a resume
+// token: this is a HAND-OFF, not an outage, and the new session re-attaches in
+// the next breath. If it somehow does not (the seat is kicked or dnf'd in that
+// window) the reattach fails, the seat is gone from the room and from the
+// account index, and the caller falls back to taking a fresh one.
+//
+// Caller holds reg.mu (this is a registry decision); the room lock is taken here.
+func (r *Room) detachSeat(st *seat) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.seatIndexByIDLocked(st.playerID) < 0 || st.sess == nil {
+		return
+	}
+	old := st.sess
+	st.sess = nil
+	st.disconnected = true
+	if r.match != nil && st.status == seatActive {
+		r.broadcastPeerStatusLocked(st.playerID, protocol.StatusDisconnected)
+	}
+	r.displaceLocked(old)
+}
+
+// displaceLocked ends a connection that has just lost its seat. It is called
+// under r.mu, and the lock is not an accident: it is the SAME ordering every
+// broadcast in this file relies on.
+//
+// A session's outbound queue is closed by its own serve goroutine, but only
+// after disconnect() has nil'd its seat — and disconnect needs r.mu to do that.
+// So anything that enqueues while holding r.mu is ordered before the close, and
+// anything that enqueues without it is racing a closed channel. Displacing off
+// the room lock would be exactly that race, on a connection that is unusually
+// likely to be tearing down already: the tab was abandoned, which is often why
+// a second one is here taking the seat over.
+func (r *Room) displaceLocked(old *session) {
+	if old != nil {
+		old.displace()
+	}
+}
+
+// releaseSeat drops st because its account is taking a seat in a DIFFERENT room,
+// displacing the connection that held it, and reports whether the release was
+// allowed.
+//
+// It is refused — false — for a seat still racing a match. A join that lands on
+// the wrong room code would otherwise forfeit a running race: mid-match a
+// departure is the terminal "left", the capture is persisted as such, and there
+// is no way back into that match. That is far too much to pay for a mis-click,
+// so the newer connection is refused instead (in_match_elsewhere) and the older
+// one keeps playing. Outside a match the seat is worth nothing, and it goes the
+// ordinary leave way — same broadcast, same system chat, same host succession —
+// so the people left behind cannot tell a move from a leave, because it isn't
+// one.
+//
+// Caller holds reg.mu and must follow with removeIfEmptyLocked.
+func (r *Room) releaseSeat(st *seat) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.seatIndexByIDLocked(st.playerID) < 0 {
+		return true // already gone; nothing to release
+	}
+	if r.match != nil && st.status == seatActive {
+		return false
+	}
+	old := st.sess
+	r.leaveSeatLocked(st)
+	r.displaceLocked(old)
+	return true
+}
+
+// full reports whether the room is at capacity. Callers hold reg.mu, which is
+// what makes the answer usable: seats are only ever added under that lock.
+func (r *Room) full() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.seats) >= roomCapacity
 }
 
 // disconnect handles a connection drop (readLoop teardown). The seat survives
@@ -583,8 +679,11 @@ func (r *Room) seatIndexByIDLocked(playerID string) int {
 }
 
 // removeSeatLocked drops the seat at idx, preserving join order for the seats
-// that remain.
+// that remain. It is the SINGLE choke point for seat removal — leave, kick,
+// grace expiry and the match-end reap all funnel through it — which is what lets
+// the account index be maintained in one place instead of five.
 func (r *Room) removeSeatLocked(idx int) {
+	r.reg.unindexSeat(r.seats[idx])
 	r.seats = append(r.seats[:idx], r.seats[idx+1:]...)
 }
 

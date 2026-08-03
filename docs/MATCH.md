@@ -178,7 +178,12 @@ At match end the server writes the match in one transaction:
   stream), `batch_count`, and `final_status` (`finished` | `dnf` | `left`).
   `(match_id, player_id)` is UNIQUE (00021): one seat, one capture — a
   duplicate write is a relay bug and fails loudly, the persist path has no
-  ON CONFLICT on purpose. `matches` also carries `CHECK (ended_at >= go_at)`.
+  ON CONFLICT on purpose. `(match_id, user_id)` is UNIQUE too where `user_id`
+  is not NULL (00027): an ACCOUNT also gets at most one capture per match, which
+  is the schema half of the one-seat-per-account rule the relay enforces in
+  memory (docs/PROTOCOL.md §5) — before it, one person with two tabs open was
+  two players and a match against yourself persisted silently. `matches` also
+  carries `CHECK (ended_at >= go_at)`.
 
 This capture is the **authoritative input** for the future replay worker, which
 will recompute metrics and the score from the log (applying the freemod

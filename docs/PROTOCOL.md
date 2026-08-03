@@ -56,6 +56,21 @@ All wall-clock timestamps on the wire (`t0`, `t1`, `t2`, `goAtServerMs`) are
 4. After `hello_ok` the client may send `ntp_ping` (this phase) and, in later
    phases, the room/match messages.
 
+### Close codes
+
+The server closes with a standard WebSocket code except in one case:
+
+| code   | meaning                                                        | client should reconnect? |
+|--------|----------------------------------------------------------------|--------------------------|
+| `1000` | ordinary closure (client left, server shutdown)                | yes                      |
+| `1008` | `version_mismatch` (sent after the `error` frame)              | no — upgrade first       |
+| `4001` | **displaced**: another connection of the same account took this connection's seat (§5) | **no** |
+
+`4001` is in the private-use range and exists precisely so a displaced tab can
+be told apart from a network drop. A client that reconnects on `4001` will take
+the seat straight back off the tab the person is actually using, which will then
+displace it again — the loop is the whole reason the code is distinct.
+
 ### Heartbeat
 
 The server uses WebSocket **ping/pong** as a liveness probe: it pings after
@@ -106,8 +121,14 @@ A clock-synchronisation ping. `t0` is the client's clock reading at send time.
 
 Opens a new room with the sender as its **host**. The server allocates a code,
 seats the creator, and replies with a `room_state` (the room begins with the
-default settings in §5). Reject reasons: none beyond being already in a room
-(`bad_message`).
+default settings in §5). Errors: `bad_message` (this connection is already in a
+room), or `in_match_elsewhere` when the **account** is racing a match in another
+room (§5, "One seat per account").
+
+An authenticated sender that already holds a seat elsewhere **moves**: the old
+seat leaves that room by the ordinary route (its members see a `room_state`, a
+`leave` system `chat`, and host succession) and the connection that held it is
+displaced (§5).
 
 ```json
 { "type": "create_room" }
@@ -117,8 +138,26 @@ default settings in §5). Reject reasons: none beyond being already in a room
 
 Joins an existing room by its code (see §5 for the code format; matching is
 case-insensitive). On success every seat receives a fresh `room_state` and a
-`join` system `chat`. Errors: `room_not_found`, `room_full`, or `bad_message`
-(already in a room).
+`join` system `chat`. Errors: `room_not_found`, `room_full`, `bad_message`
+(this connection is already in a room), or `in_match_elsewhere` (§5).
+
+For an **authenticated** sender the outcome also depends on where the account
+already sits (§5, "One seat per account"):
+
+- **nowhere** — an ordinary join;
+- **this room** — a **takeover**: the existing seat is handed to this
+  connection. The reply is a second `hello_ok` carrying the **seat's** `playerId`
+  and `resumeToken` (the connection is re-identified onto the seat it inherits),
+  then a fresh `room_state`, then — mid-match — the buffered relay backlog,
+  exactly as a `resumeToken` reconnect (§6). The other seats see nothing: the
+  player id, nick, host role and match capture are unchanged, because it is the
+  same seat;
+- **another room, not racing** — a **move**, as for `create_room` above;
+- **another room, racing a match** — refused with `in_match_elsewhere`. Nothing
+  changes: the older connection keeps its seat and keeps playing.
+
+A refused `join_room` never costs the account the seat it already had — the
+destination is validated (exists, has capacity) **before** anything is released.
 
 ```json
 { "type": "join_room", "code": "K7GQ2M" }
@@ -315,7 +354,13 @@ human-readable explanation (not for programmatic use).
 | `forbidden`        | Host-only action attempted by a non-host (or an already-running match)  | No |
 | `not_ready`        | `start_match` with fewer than 2 seats or an unready non-host seat | No |
 | `rate_limited`     | `chat_send` over the per-sender rate limit                     | No |
+| `seat_taken_over`  | **Unprompted.** Another connection of this account took this connection's seat (§5) | **Yes** (close `4001`, immediately after this frame) |
+| `in_match_elsewhere` | `create_room`/`join_room` while the account is racing a match in a **different** room (§5) | No |
 | `internal`         | Unexpected server error                                        | No |
+
+`seat_taken_over` is the only error the server sends **unprompted** — every
+other one answers a frame the client just sent. It is always followed by a close
+with code `4001`, and the client must not reconnect on it (§2).
 
 ### `ntp_pong`
 
@@ -568,6 +613,53 @@ relay sees by definition.
   account **displayName**.
 - `room_state` exposes `isGuest` per seat so the frontend can style accordingly.
 
+### One seat per account
+
+**An authenticated account holds at most one seat in the whole server.** A seat
+belongs to the ACCOUNT, not to the connection that opened it: a second tab does
+not become a second player.
+
+The rule is resolved on `create_room` / `join_room`, and the resolution is
+**takeover — the newest connection wins**:
+
+| where the account already sits | what happens |
+|---|---|
+| nowhere | ordinary create/join |
+| **the room being joined** | the newer connection **inherits the seat** (`hello_ok` re-identification, then `room_state`, then the mid-match backlog) and the older one is **displaced** |
+| another room, **not** racing | the old seat **leaves** that room normally, then the new seat is taken; the older connection is **displaced** |
+| another room, **racing a match** | refused with `in_match_elsewhere`; nothing changes |
+
+**Displaced** means: the older connection receives a `seat_taken_over` `error`
+frame and is then closed with code **`4001`** (§2). It must not reconnect.
+
+Why takeover and not a flat refusal. A refusal reads as the safe option, but a
+seat survives a drop for the 15 s grace window (§6), and the only key to it is
+the `resumeToken` — which lives in the tab that just died. Refusing would lock a
+person out of their own room, for fifteen seconds, precisely in the cases where
+they most obviously belong in it: a reopened tab, a private window, a cleared
+storage, a second device. Takeover cannot create that state, and it needs no new
+machinery — reclaiming a seat by account is the same operation as reclaiming it
+by token, keyed differently.
+
+Why a **racing** account in another room is refused rather than moved. Leaving
+mid-match is terminal: the seat resolves to `left`, its capture is persisted as
+such (§6) and there is no way back into that match. A mistyped room code should
+not be able to forfeit a race in progress, so this is the one case where the
+older connection wins.
+
+Guests are unaffected: a guest has no account, and two guest tabs are two
+players, as they always were.
+
+**A takeover is not a rejoin.** The seat object survives it, so the `playerId`,
+the nick, the host role, the join order, the ready flag and (mid-match) the
+whole captured event stream and `batchSeq` continue unbroken. The other seats
+receive nothing at all outside a match; mid-match they see the same
+`peer_status` `disconnected` → `reconnected` pair a real drop produces, because
+that is what happened.
+
+Consequently a match persists **at most one run per account** — enforced in the
+schema as well (`match_runs_one_seat_per_user`, migration 00027).
+
 ### Host role
 
 - The **creator** is the first host.
@@ -713,7 +805,10 @@ this phase; the wall-clock check is deferred to the replay worker.
   **always follows with a fresh `room_state`**, and mid-match then **replays the
   backlog in order, exactly once** and broadcasts `reconnected`. An **unknown
   or expired** token is **not an error** — the hello degrades to a fresh
-  connection (see §3). Grace expiry
+  connection (see §3). An **authenticated** seat has a second key: a `join_room`
+  for the same room from any connection of the same account reclaims it without
+  the token at all, by the same mechanism (§5, "One seat per account") — which
+  is what makes a lost `resumeToken` survivable. Grace expiry
   **mid-match** ⇒ the peer is broadcast as `dnf`, its seat freed for host
   succession, and the match continues for the others; grace expiry **outside a
   match** ⇒ the normal leave flow (seat removed, `room_state`, a `leave` system
