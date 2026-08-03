@@ -179,7 +179,7 @@ signal deserve at its worst". Defaults live in `internal/replay/policy/review_an
 |---|---|---|
 | `zero-variance` | 1.00 | Every interval identical to the millisecond. A hand cannot do this. |
 | `uniform-intervals` | 0.90 | ≥90% of intervals within ±2 ms of the mean. Same signal, slightly softer — a metronome-steady typist is rare, not impossible. |
-| `superhuman-burst` | 0.80 | Above the WPM ceiling at flawless accuracy. Severity is a ratio against 2× the ceiling, so a short genuine burst stays well under the threshold. |
+| `superhuman-burst` | 0.80 | Above the WPM ceiling **for the run's own duration** — 250 wpm at 15 s, falling to 200 at 60 s and beyond (`BURST_CEILING` in the core, interpolated between the anchors). Accuracy is NOT part of the test: it scales severity through a curve that bottoms out at 0.25 rather than at zero, so a fast run made sloppy on purpose still counts. Severity is speed against a fixed 500 wpm scale, so a short genuine burst stays well under the threshold. |
 | `paste` | 0.80 | Text that arrived without being typed. Unambiguous, but severity is pastes/events, so one paste in a long log stays small. |
 | `multi-grapheme-insert` | 0.50 | More than one grapheme per event. Usually an IME or a mobile keyboard, occasionally automation. |
 | `min-interval` | 0.30 | Intervals under 15 ms. **The false-positive generator.** One or two in a hundred is rollover; a log where most intervals are impossible also trips `superhuman-burst`, and the two together clear the bar. |
