@@ -46,9 +46,9 @@ actually get.
 | runs whose recomputed wpm disagrees with their stored CLIENT wpm | **39 of 131** — these would have been re-flagged, and are not: `revalidate` no longer compares metrics (see below) |
 | runs currently `flagged: score_mismatch` | **4** — expected to become `accepted`; if any survives, STOP and report |
 | runs currently `flagged: bot_pattern` | 2 — expected to stay flagged |
-| runs expected to GAIN `superhuman-burst` | **4**, all on `mental1sm` |
-| runs expected to change accepted → flagged | **2** (336.2 wpm @ 99.6 % / 60 s, and 212.4 wpm @ 100 % / 30 s) |
-| net status change | 45 flagged → accepted, 2 accepted → flagged |
+| runs expected to GAIN `superhuman-burst` | **2**, both on `mental1sm` (373.4 and 336.2 wpm over a minute). Its 282.0/10 s and 212.4/30 s runs sit BELOW the human record at their distances and are deliberately not caught by speed — see `BURST_CEILING` |
+| runs expected to change accepted → flagged | **1** (336.2 wpm @ 99.6 % / 60 s — the run a single typo used to hide) |
+| net status change | 45 flagged → accepted, 1 accepted → flagged |
 
 The first two rows are why the tokenizer change is safe to ship without a
 decision: **no stored run's target text moves.** If your production database is
@@ -120,7 +120,7 @@ make build-anticheat
 ```
 
 **Success:** `/healthz` reports the new build, and its `bundleSha` is
-`81fd8f383c0c4a27f0ecccfc9cdd7b594693ded32c1b846a8a0f878a20abe39b`.
+`5197f911527af3128293ae31eb3f43e25d8362d8c61e9e792a50a61e9e5f23c8`.
 **Stop if:** the sha is `1aba05e3…` (the pre-release bundle) or `28e41f4e…`
 (the release's own first vendoring, before the in-flight WPM change) — in either
 case the deploy did not take the current artifact.
@@ -174,7 +174,7 @@ should always have caught.
   comparison at all, so a single one means the re-judgement took the ingestion
   path — check that the run went through `RevalidateBatch` and not the pending
   queue;
-- more than a handful of runs move `accepted → flagged` beyond the two forecast.
+- more than a handful of runs move `accepted → flagged` beyond the one forecast.
   The detector is supposed to fire on four runs from one account and on nothing
   else in this population; a wider sweep means the ceiling table is wrong for
   your data, and the fix is `BURST_CEILING` in the core, not this pass.

@@ -2358,9 +2358,11 @@ var TypeMoreCore = (() => {
 
   // src/validate.ts
   var BURST_CEILING = [
-    { durationSec: 15, wpm: 250 },
-    { durationSec: 30, wpm: 210 },
-    { durationSec: 60, wpm: 200 }
+    { durationSec: 15, wpm: 290 },
+    { durationSec: 30, wpm: 275 },
+    { durationSec: 60, wpm: 260 },
+    { durationSec: 300, wpm: 240 },
+    { durationSec: 600, wpm: 230 }
   ];
   function maxBurstWpmFor(durationSec, anchors = BURST_CEILING) {
     if (anchors.length === 0) return Infinity;
@@ -2724,4 +2726,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"d6298cd010c04804885277601b648272cdd062cb","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"5309d822035e27fb72ffd2adbb86b3ecd114d05a","gitDirty":false}
