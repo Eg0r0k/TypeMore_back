@@ -224,9 +224,10 @@ type batchTally struct {
 // RunBatch claims and processes one batch of PENDING runs. Exported so tests
 // can drive exactly one pass without racing a poll loop.
 func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (int, error) {
-	return w.runBatch(ctx, core, log, "replay batch done", func(decide func(context.Context, PendingRun) Decision) (int, error) {
-		return w.queue.ProcessBatch(ctx, w.cfg.BatchSize, decide)
-	})
+	return w.runBatch(ctx, core, log, "replay batch done", w.cfg.Decider,
+		func(decide func(context.Context, PendingRun) Decision) (int, error) {
+			return w.queue.ProcessBatch(ctx, w.cfg.BatchSize, decide)
+		})
 }
 
 // RevalidateBatch re-judges one batch of runs that are no longer current on
@@ -241,9 +242,13 @@ func (w *Worker) RunBatch(ctx context.Context, core *Core, log *slog.Logger) (in
 //
 // Idempotent: a run it touches stops matching both arms of the claim.
 func (w *Worker) RevalidateBatch(ctx context.Context, core *Core, log *slog.Logger) (int, error) {
-	return w.runBatch(ctx, core, log, "revalidate batch done", func(decide func(context.Context, PendingRun) Decision) (int, error) {
-		return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Decider.version, bundleSHA, w.cfg.BatchSize, decide)
-	})
+	// ForRejudgement: these runs were judged once already, so the client's
+	// stored metrics are an archival record rather than a live claim and are not
+	// compared against. Every other row of the decision table is unchanged.
+	return w.runBatch(ctx, core, log, "revalidate batch done", w.cfg.Decider.ForRejudgement(),
+		func(decide func(context.Context, PendingRun) Decision) (int, error) {
+			return w.queue.ProcessStalePolicyBatch(ctx, w.cfg.Decider.version, bundleSHA, w.cfg.BatchSize, decide)
+		})
 }
 
 func (w *Worker) runBatch(
@@ -251,13 +256,14 @@ func (w *Worker) runBatch(
 	core *Core,
 	log *slog.Logger,
 	msg string,
+	decider Decider,
 	process func(func(context.Context, PendingRun) Decision) (int, error),
 ) (int, error) {
 	var tally batchTally
 	started := time.Now()
 
 	claimed, err := process(func(ctx context.Context, run PendingRun) Decision {
-		d := Judge(ctx, core, w.reg, w.quotes, w.cfg.Decider, run, w.cfg.CanaryEpoch)
+		d := Judge(ctx, core, w.reg, w.quotes, decider, run, w.cfg.CanaryEpoch)
 		switch d.Status {
 		case StatusAccepted:
 			tally.accepted++

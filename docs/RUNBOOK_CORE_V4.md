@@ -26,24 +26,13 @@ is harmless — the server recomputes everything anyway.
 
 ## 0. Before you start — the forecast to check against
 
-> **THE TABLE BELOW IS STALE AND MUST BE RE-MEASURED BEFORE STEP 1.**
+> **RE-MEASURED after the in-flight WPM change. The numbers below are current.**
 >
-> It was computed against a bundle that predates the in-flight WPM change (the
-> word being typed is now worth its correct PREFIX rather than all-or-nothing).
-> That moves `metrics.wpm` for every run that ended mid-word with an imperfect
-> buffer — which in timed mode is most of them — so the "runs whose status
-> changes" rows are no longer trustworthy in either direction.
->
-> Re-measure by replaying the population fixture through the NEWLY VENDORED
-> bundle:
+> Reproduce them at any time — this is a checked-in test, not a spreadsheet:
 >
 > ```bash
-> go test ./internal/replay/ -run TestSuperhumanBurst -v
+> go test ./internal/replay/ -run 'TestRevalidateForecast|TestSuperhumanBurst' -v
 > ```
->
-> and by re-running the mismatch count against a copy of production. Do not
-> deploy against the numbers below; they are kept only so the re-measurement has
-> something to diff against.
 
 These were computed from the export of 2026-08-03 (138 runs). Step 5 is expected
 to reproduce them; a large divergence is itself a finding, so write down what you
@@ -54,6 +43,7 @@ actually get.
 | runs stored on one of the 11 `…` dictionaries | **0** |
 | runs stored on one of the 34 `…` quotes | **0** |
 | runs currently `flagged: metric_mismatch` | **41** — expected to become `accepted` |
+| runs whose recomputed wpm disagrees with their stored CLIENT wpm | **39 of 131** — these would have been re-flagged, and are not: `revalidate` no longer compares metrics (see below) |
 | runs currently `flagged: score_mismatch` | **4** — expected to become `accepted`; if any survives, STOP and report |
 | runs currently `flagged: bot_pattern` | 2 — expected to stay flagged |
 | runs expected to GAIN `superhuman-burst` | **4**, all on `mental1sm` |
@@ -84,6 +74,30 @@ that no longer exists, so a revalidate pass will re-judge them against different
 words and some will fall out of `accepted`. Published bytes are frozen and the
 decision about what happens to them is Egor's, not the migration's.
 
+### Why 39 runs are not going to be re-flagged
+
+`metric_mismatch` compares the server's freshly recomputed wpm/raw/acc against
+the numbers **the client sent with the run**, at a tolerance of 1e-9. That is a
+real check exactly once — at ingestion, where the client that produced the
+numbers is the client that just submitted them.
+
+At re-judgement it is not a check at all. The client is gone; what remains is an
+archival record of what some version of it computed, and nothing on the run says
+which version — the payload carries `scoreVersion` and the log version, but no
+core version. So a disagreement reads equally as "this run is wrong" and "the
+formula moved underneath it", and it has been the second every time.
+
+That is where the 41 currently-flagged runs came from, and this release would
+have added 39 more. `revalidate` and `calibrate` now run the decision table with
+the metric comparison skipped (`Decider.ForRejudgement`); the recomputed metrics
+are still written, they are simply not argued with.
+
+**The score comparison is deliberately NOT skipped.** A run's score is
+version-pinned — it carries `score_version` and the worker routes v1 and v2 to
+different scorers — so the client's score stays exactly recomputable forever and
+a disagreement is still evidence, including evidence that someone edited the
+column. Metrics have no such pin. Give them one and this exception can go away.
+
 ## 1. Back up the database
 
 ```bash
@@ -106,9 +120,10 @@ make build-anticheat
 ```
 
 **Success:** `/healthz` reports the new build, and its `bundleSha` is
-`28e41f4ed5324a3c4654d360a614058a1fcc7cb9f1fa985103558a86998fda6c`.
-**Stop if:** the sha is `1aba05e3…` — that is the previous bundle, and the
-deploy did not take.
+`81fd8f383c0c4a27f0ecccfc9cdd7b594693ded32c1b846a8a0f878a20abe39b`.
+**Stop if:** the sha is `1aba05e3…` (the pre-release bundle) or `28e41f4e…`
+(the release's own first vendoring, before the in-flight WPM change) — in either
+case the deploy did not take the current artifact.
 
 Between this step and step 3 the live client is the OLD one. That is the safe
 direction and it is expected to last minutes, not hours.
@@ -155,6 +170,10 @@ should always have caught.
 **Stop and report if:**
 - any `score_mismatch` survives — that is a real scoring divergence, not the
   stale bundle, and it needs its own investigation;
+- ANY run comes back `metric_mismatch`. This pass does not perform that
+  comparison at all, so a single one means the re-judgement took the ingestion
+  path — check that the run went through `RevalidateBatch` and not the pending
+  queue;
 - more than a handful of runs move `accepted → flagged` beyond the two forecast.
   The detector is supposed to fire on four runs from one account and on nothing
   else in this population; a wider sweep means the ceiling table is wrong for

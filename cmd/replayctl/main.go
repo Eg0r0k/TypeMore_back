@@ -189,10 +189,18 @@ func calibrate(ctx context.Context, pool *pgxpool.Pool, decider replay.Decider, 
 	before := map[string]int{}
 	after := map[string]int{}
 
+	// ForRejudgement, because that is what calibrate MODELS: a pass over runs
+	// that were judged once already. Judging them as if they had just arrived
+	// would compare each one against the client numbers frozen with it and
+	// report a wall of `metric_mismatch` that the real `revalidate` will not
+	// produce — a calibration report that does not match the pass it is
+	// calibrating is worse than none.
+	rejudge := decider.ForRejudgement()
+
 	for i := range rows {
 		// The exact path the worker takes — a report from a different code path
 		// would be a fiction.
-		d := replay.Judge(ctx, core, reg, quotes, decider, rows[i].PendingRun, cfg.ReplayCanaryEpoch)
+		d := replay.Judge(ctx, core, reg, quotes, rejudge, rows[i].PendingRun, cfg.ReplayCanaryEpoch)
 
 		var doc auditDoc
 		_ = json.Unmarshal(d.Validation, &doc)

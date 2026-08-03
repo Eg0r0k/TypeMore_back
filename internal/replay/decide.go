@@ -158,6 +158,51 @@ type Decider struct {
 	// in NewDecider. A judge whose version cannot be stored is a startup
 	// failure, not a surprise on some run at three in the morning.
 	version int16
+	// rejudging marks a pass over runs that were ALREADY judged once, which is
+	// the only thing that changes in the table below: the client-vs-server
+	// metric comparison is skipped. See ForRejudgement.
+	rejudging bool
+}
+
+// ForRejudgement returns this decider set up for a pass over runs that have
+// already been judged — `revalidate`, and `calibrate`'s dry run of it.
+//
+// WHAT CHANGES, and why only this. `metric_mismatch` compares the server's
+// freshly recomputed wpm/raw/acc against the numbers THE CLIENT SENT WITH THE
+// RUN. That comparison means something exactly once: at ingestion, where the
+// client that produced the numbers is the client that just submitted them, and a
+// disagreement is evidence about the run.
+//
+// At re-judgement it means almost nothing. The client is not there; what is
+// there is an archival record of what some version of the client computed, on a
+// date, under a formula that may since have changed — and nothing on the run
+// says WHICH version, because the payload carries `scoreVersion` and the log
+// version but no core version. So a mismatch cannot be read as "this run's
+// numbers are wrong"; it reads equally as "the formula moved underneath it",
+// and the second reading has been the true one every time it has come up.
+//
+// It is not theoretical. Changing the net-WPM rule left 41 of 138 stored runs
+// flagged `metric_mismatch` — runs that were, and are, entirely honest. The
+// prefix-credit change in the same release would have done it again to 39,
+// measured by TestRevalidateForecast. A queue filling with flags that mean "a
+// formula changed" is a queue nobody reads.
+//
+// WHY THE SCORE COMPARISON STAYS, which is the part that makes this an
+// asymmetry rather than an exception. A run's score is VERSION-PINNED: it
+// carries `score_version`, and the worker routes v1 to `scoreOfLog` and v2 to
+// `scoreV2OfLog`, so a scoring change ships as a NEW version and every existing
+// run keeps being scored by the formula it was scored by. The score the client
+// sent is therefore still recomputable exactly, forever, and a disagreement is
+// still evidence — including evidence that someone edited the column.
+//
+// Metrics have no such pin. There is no `metrics_version`, and every run is
+// recomputed by whatever formula is current. That difference, and not a
+// judgement about which check matters more, is the whole reason one survives
+// re-judgement and the other does not. Give metrics a version and this method
+// stops being necessary.
+func (p Decider) ForRejudgement() Decider {
+	p.rejudging = true
+	return p
 }
 
 // NewDecider binds a judge to the decision path, rejecting one whose version
@@ -317,17 +362,25 @@ func (p Decider) Decide(run PendingRun, res Result, replayErr error) Decision {
 		return withValidation(base, StatusFlagged, doc, "")
 	}
 
-	if d, err := compareMetrics(run.ClientMetrics, res.Metrics); err != nil {
-		base.Attempts = run.Attempts + 1
-		return withValidation(base, StatusFlagged, validationDoc{
-			Verdict: verdictError,
-			Reason:  ReasonReplayError,
-			Flags:   res.Flags,
-			Policy:  doc.Policy,
-		}, err.Error())
-	} else if d != nil {
-		doc.Reason, doc.Divergence = ReasonMetricMismatch, d
-		return withValidation(base, StatusFlagged, doc, "")
+	// Skipped on a re-judgement: the client's stored numbers are an archival
+	// record whose producing core version is not recorded anywhere, so a
+	// disagreement is as likely to be a formula change as a bad run. The freshly
+	// computed metrics are still written — they are the ones that were always
+	// authoritative. See ForRejudgement for why the score check above survives
+	// this and the metric check does not.
+	if !p.rejudging {
+		if d, err := compareMetrics(run.ClientMetrics, res.Metrics); err != nil {
+			base.Attempts = run.Attempts + 1
+			return withValidation(base, StatusFlagged, validationDoc{
+				Verdict: verdictError,
+				Reason:  ReasonReplayError,
+				Flags:   res.Flags,
+				Policy:  doc.Policy,
+			}, err.Error())
+		} else if d != nil {
+			doc.Reason, doc.Divergence = ReasonMetricMismatch, d
+			return withValidation(base, StatusFlagged, doc, "")
+		}
 	}
 
 	// The judge's routing, recorded with the distinction the reason codes have

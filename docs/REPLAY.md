@@ -101,7 +101,7 @@ against two texts.
 | core threw, or returned something undecodable | `flagged` | `replay_error` | +1 |
 | `validateLog` verdict `invalid` | `rejected` | the core's own reason | unchanged |
 | server score total ≠ client score total | `flagged` | `score_mismatch` | unchanged |
-| a client metric differs by > 1e-9 | `flagged` | `metric_mismatch` | unchanged |
+| a client metric differs by > 1e-9 — **on ingestion only** | `flagged` | `metric_mismatch` | unchanged |
 | a bot-shaped flag combination fired | `flagged` | `bot_pattern` | unchanged |
 | suspicion ≥ review threshold | `flagged` | `suspicion_threshold` | unchanged |
 | none of the above | `accepted` | *(absent)* | unchanged |
@@ -109,6 +109,28 @@ against two texts.
 Precedence is top to bottom. An **invalid log outranks a mismatch**: numbers
 recomputed from a log the reducer refused are meaningless, so they are not
 stored at all (`server_metrics` / `server_score` stay NULL).
+
+**One row of that table applies only the first time a run is judged.** The metric
+comparison is against the numbers THE CLIENT SENT, which is a real check exactly
+once — at ingestion, where the client that produced them is the client that just
+submitted them. On a re-judgement (`revalidate`, and `calibrate`'s dry run of it)
+the client is gone and its numbers are an archival record of a formula that may
+since have moved; nothing on the run says which core version produced them,
+because the payload carries `scoreVersion` and the log version and no core
+version. So a disagreement reads equally as "this run is wrong" and "the formula
+changed underneath it" — and it has been the second every time it has come up.
+Changing the net-WPM rule left 41 of 138 stored runs flagged this way, all of
+them honest.
+
+`Decider.ForRejudgement` skips that one comparison. The recomputed metrics are
+still written; they are simply not argued with.
+
+**The score comparison is not skipped, and the asymmetry is the point.** A run's
+score is version-pinned — it carries `score_version`, and v1 and v2 route to
+different scorers — so the client's score stays exactly recomputable forever and
+a disagreement remains evidence, including evidence that a column was edited.
+Metrics have no such pin: every run is recomputed by whatever formula is current.
+Give metrics a version and this exception can be deleted.
 
 `bundle_sha` and `policy_version` are recorded on **every** decision, including
 the failures.

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/typemore/typemore-server/internal/replay/policy/policytest"
 )
 
 // THE REVALIDATE FORECAST, measured instead of predicted.
@@ -99,4 +102,113 @@ func TestRevalidateForecast(t *testing.T) {
 	// keystrokes, and neither has anything to do with that credit.
 	assert.Zero(t, rawDiffers, "raw moved — this release was not supposed to touch it")
 	assert.Zero(t, accDiffers, "accuracy moved — this release was not supposed to touch it")
+}
+
+// The repair, stated as the behaviour that changed rather than as the flag that
+// controls it.
+//
+// A run whose stored client metrics disagree with the server's is flagged
+// `metric_mismatch` on INGESTION — that is the check doing its job, against a
+// client that is right there. The same run on a RE-JUDGEMENT is not flagged,
+// because the client is not there and its numbers are an archival record of a
+// formula that may since have moved.
+//
+// Both halves matter and the test asserts both. Dropping the check everywhere
+// would remove a real ingestion-time signal; keeping it everywhere is what put
+// 41 honest runs in the review queue.
+func TestMetricMismatchIsAnIngestionCheckOnly(t *testing.T) {
+	core, reg := sharedDicts(t)
+	ctx := context.Background()
+
+	// A real, clean run — then its stored client metrics are nudged, exactly as
+	// a core formula change would nudge them relative to a fresh recomputation.
+	var clean vector
+	for _, v := range loadVectors(t) {
+		if v.Expect.Status == StatusAccepted && v.Quote == nil && v.Dictionary == nil {
+			clean = v
+			break
+		}
+	}
+	require.NotEmpty(t, clean.Name, "no seeded accepted vector to work from")
+
+	run := clean.pendingRun(t)
+	var metrics map[string]any
+	require.NoError(t, json.Unmarshal(run.ClientMetrics, &metrics))
+	metrics["wpm"] = metrics["wpm"].(float64) + 3.5
+	nudged, err := json.Marshal(metrics)
+	require.NoError(t, err)
+	run.ClientMetrics = nudged
+
+	decider, err := NewDecider(policytest.NewFake())
+	require.NoError(t, err)
+
+	fresh := Judge(ctx, core, reg, nil, decider, run, time.Time{})
+	var freshDoc struct {
+		Reason string `json:"reason"`
+	}
+	require.NoError(t, json.Unmarshal(fresh.Validation, &freshDoc))
+	assert.Equal(t, StatusFlagged, fresh.Status, "ingestion must still catch a client that disagrees")
+	assert.Equal(t, ReasonMetricMismatch, freshDoc.Reason)
+
+	again := Judge(ctx, core, reg, nil, decider.ForRejudgement(), run, time.Time{})
+	var againDoc struct {
+		Reason string `json:"reason"`
+	}
+	require.NoError(t, json.Unmarshal(again.Validation, &againDoc))
+	assert.Equal(t, StatusAccepted, again.Status,
+		"a re-judgement must not flag a run for disagreeing with a frozen client record")
+	assert.NotEqual(t, ReasonMetricMismatch, againDoc.Reason)
+
+	// And the fresh numbers are still what gets written — the comparison is
+	// skipped, the recomputation is not.
+	assert.NotEmpty(t, again.ServerMetrics)
+	assert.NotEqual(t, string(run.ClientMetrics), string(again.ServerMetrics))
+}
+
+// The score check is NOT skipped, and that asymmetry is the load-bearing part:
+// a run's score is version-pinned (`score_version` routes v1 vs v2), so the
+// client's score stays recomputable exactly, forever, and a disagreement is
+// still evidence — including evidence that someone edited the column. Metrics
+// have no such pin.
+func TestScoreMismatchSurvivesRejudgement(t *testing.T) {
+	core, reg := sharedDicts(t)
+	ctx := context.Background()
+
+	var clean vector
+	for _, v := range loadVectors(t) {
+		if v.Expect.Status == StatusAccepted && v.Quote == nil && v.Dictionary == nil {
+			clean = v
+			break
+		}
+	}
+	require.NotEmpty(t, clean.Name)
+
+	run := clean.pendingRun(t)
+	var score map[string]any
+	require.NoError(t, json.Unmarshal(run.ClientScore, &score))
+	score["total"] = score["total"].(float64) + 1000
+	inflated, err := json.Marshal(score)
+	require.NoError(t, err)
+	run.ClientScore = inflated
+
+	decider, err := NewDecider(policytest.NewFake())
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		d    Decider
+	}{
+		{"ingestion", decider},
+		{"re-judgement", decider.ForRejudgement()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Judge(ctx, core, reg, nil, tc.d, run, time.Time{})
+			var doc struct {
+				Reason string `json:"reason"`
+			}
+			require.NoError(t, json.Unmarshal(d.Validation, &doc))
+			assert.Equal(t, StatusFlagged, d.Status)
+			assert.Equal(t, ReasonScoreMismatch, doc.Reason)
+		})
+	}
 }
