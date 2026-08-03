@@ -259,12 +259,43 @@ func TestSustainedSuperhumanHasNoAccuracyGate(t *testing.T) {
 	assert.Equal(t, []string{ruleSustainedSuperhuman},
 		p.Judge(floor, RunMeta{DurationSec: 60}).Reasons)
 
-	// Which matters because the SHAPE outranks the magnitude: at weight 0.80
-	// that severity is 0.2 of suspicion, nowhere near the 1.0 threshold, and
-	// the run is routed to review regardless.
+	// And firing is where it stops. The rule is REPORTED and it contributes its
+	// weight, but it does not route the run to review on its own — see
+	// forcesReview. At weight 0.80 a floor-severity instance is 0.2 of
+	// suspicion against a threshold of 1.0, so this run stays accepted with the
+	// shape recorded against it.
+	//
+	// That is deliberate and it is the difference between this rule and
+	// bot_cadence. Speed is a continuum with real people at the top of it, and
+	// `flagged` is not `accepted` — a forced review takes the run off the
+	// leaderboard. A rule that fires on speed must therefore need corroboration
+	// before it costs somebody a result.
 	decision := p.Judge(floor, RunMeta{DurationSec: 60})
 	assert.Less(t, decision.Suspicion, decision.Threshold)
-	assert.True(t, decision.NeedsReview)
+	assert.False(t, decision.NeedsReview,
+		"speed alone must not route a run to review — it has to reach the threshold")
+	assert.Equal(t, []string{ruleSustainedSuperhuman}, decision.Reasons,
+		"...but the shape is still recorded, or the decision is not explainable")
+}
+
+// The other half of the same rule, and the one that must NOT have changed:
+// bot_cadence still routes on its own.
+//
+// Identical keystroke intervals to the millisecond across a whole run is a
+// clock, not a fast human. There is no honest run to protect from it, so it
+// keeps the bypass that superhuman-burst gave up — and a change that removed
+// both would have quietly turned the shape rules into decoration.
+func TestBotCadenceStillRoutesOnItsOwn(t *testing.T) {
+	p := mustPolicy(t, Config{})
+	// Severities low enough that the weighted sum is nowhere near the threshold.
+	cadence := []Flag{
+		{Code: FlagUniformIntervals, Score: 0.05},
+		{Code: FlagZeroVariance, Score: 0.05},
+	}
+	d := p.Judge(cadence, RunMeta{DurationSec: 60})
+	assert.Less(t, d.Suspicion, d.Threshold, "the fixture must not reach the threshold by weight")
+	assert.True(t, d.NeedsReview, "bot_cadence must still route on the shape alone")
+	assert.Equal(t, []string{ruleBotCadence}, d.Reasons)
 }
 
 // v4 is the first policy version whose rule set did not change. It moved because

@@ -147,16 +147,39 @@ func RunContract(t *testing.T, name string, newJudge func() policy.Judge) {
 			}
 		})
 
-		t.Run("a reason means review", func(t *testing.T) {
-			// A shape is a routing decision, so a judge that names one and then
-			// declines to review is telling the audit trail something it does
-			// not act on.
+		t.Run("a reason is recorded, not necessarily acted on", func(t *testing.T) {
+			// This clause used to read "a reason means review", on the argument
+			// that a judge naming a shape and then declining to act is telling
+			// the audit trail something it does not use.
+			//
+			// The argument was wrong about what routing costs. `flagged` is not
+			// `accepted`, and `leaderboard_eligible_runs` selects on `accepted`,
+			// so forcing review takes a run off the board — and until an
+			// operator can put it back, a rule that forces review is a rule that
+			// deletes results. That is the right price for a shape only a
+			// machine produces, and the wrong price for a shape a fast human can
+			// also produce. A judge must be free to say "this fired, and it is
+			// not enough on its own".
+			//
+			// What survives is the part that was always the real contract: a
+			// reason must be REPORTED so the decision is explainable, and
+			// reporting one must never make the judge less certain.
 			for _, meta := range []policy.RunMeta{{DurationSec: 1}, {DurationSec: 600}} {
 				for _, flags := range flagSets() {
 					d := newJudge().Judge(flags, meta)
-					if len(d.Reasons) > 0 {
-						assert.True(t, d.NeedsReview,
-							"reasons %v fired but the run was not routed to review", d.Reasons)
+					if len(d.Reasons) == 0 {
+						continue
+					}
+					// Whatever it decides, it decides the same way twice and
+					// records what it saw.
+					assert.Equal(t, d.Reasons, newJudge().Judge(flags, meta).Reasons)
+					// And a shape never LOWERS suspicion: the flags that
+					// produced it still count for what they are worth.
+					assert.GreaterOrEqual(t, d.Suspicion, 0.0)
+					if !d.NeedsReview {
+						assert.Less(t, d.Suspicion, d.Threshold,
+							"reasons %v fired and the run was not reviewed, so suspicion must be under the threshold — otherwise the decision is not explainable from what was recorded",
+							d.Reasons)
 					}
 				}
 			}

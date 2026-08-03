@@ -171,6 +171,9 @@ const (
 
 // Combination rule ids. A rule is a shape that is suspicious even when no single
 // flag is severe enough to reach the threshold on its own.
+//
+// Firing and FORCING REVIEW are two different things, and only some rules do
+// both — see forcesReview.
 const (
 	// ruleBotCadence: uniform intervals AND zero variance together. Machine
 	// timing — a human hand cannot hold an identical interval, and the two flags
@@ -261,9 +264,16 @@ func (p *reviewPolicy) Version() string { return strconv.Itoa(p.version) }
 func (p *reviewPolicy) Judge(flags []Flag, meta RunMeta) Decision {
 	suspicion := p.suspicion(flags)
 	reasons := p.combinations(flags, meta)
+	forced := false
+	for _, rule := range reasons {
+		if forcesReview(rule) {
+			forced = true
+			break
+		}
+	}
 	return Decision{
 		Suspicion:    suspicion,
-		NeedsReview:  len(reasons) > 0 || suspicion >= p.reviewThreshold,
+		NeedsReview:  forced || suspicion >= p.reviewThreshold,
 		Reasons:      reasons,
 		Threshold:    p.reviewThreshold,
 		UnknownFlags: p.unknownFlagCodes(flags),
@@ -312,6 +322,37 @@ func (p *reviewPolicy) combinations(flags []Flag, meta RunMeta) []string {
 		fired = append(fired, ruleSustainedSuperhuman)
 	}
 	return fired
+}
+
+// forcesReview reports whether a fired rule routes the run to review on its own,
+// whatever the weights say.
+//
+// NOT every rule does, and the distinction is the point rather than a
+// concession. Routing a run to review is not a note in a file: `flagged` is not
+// `accepted`, and `leaderboard_eligible_runs` selects on `accepted`, so a forced
+// review takes the run off the board. Until an operator can put it back, a rule
+// that forces review is a rule that deletes results.
+//
+//   - bot_cadence FORCES. Identical keystroke intervals to the millisecond,
+//     across a whole run, is not a fast human — it is a clock. No amount of
+//     talent produces it, so there is no honest run to protect.
+//
+//   - sustained_superhuman DOES NOT. It fires on SPEED, and speed is a
+//     continuum with real people at the top of it: the published records are
+//     318 wpm over 15 seconds and 281 over 60, and typists who hold 200 for ten
+//     minutes exist. Wherever the ceiling sits, someone honest will eventually
+//     cross it, and forcing review on them silently removes a legitimate
+//     result. So it still fires, is still recorded in the audit document, and
+//     still contributes its weight to suspicion — it simply does not decide the
+//     status by itself. A genuinely bot-shaped run reaches the threshold on the
+//     sum of its signals, which is what the threshold is for.
+//
+// The rule that changes here is the one that made 336.2 wpm reviewable. It is
+// still reviewable — at suspicion 0.52 against a threshold of 1.0 it now needs
+// one more signal, and that is the correct amount of evidence to demand before
+// taking a run off a leaderboard with no way to put it back.
+func forcesReview(rule string) bool {
+	return rule == ruleBotCadence
 }
 
 // Describe reports the policy's arithmetic to operator tooling. The weights are

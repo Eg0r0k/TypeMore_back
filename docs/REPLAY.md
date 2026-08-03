@@ -102,7 +102,7 @@ against two texts.
 | `validateLog` verdict `invalid` | `rejected` | the core's own reason | unchanged |
 | server score total ≠ client score total | `flagged` | `score_mismatch` | unchanged |
 | a client metric differs by > 1e-9 — **on ingestion only** | `flagged` | `metric_mismatch` | unchanged |
-| a bot-shaped flag combination fired | `flagged` | `bot_pattern` | unchanged |
+| a bot-shaped flag combination fired **that routes on its own** (`bot_cadence`) | `flagged` | `bot_pattern` | unchanged |
 | suspicion ≥ review threshold | `flagged` | `suspicion_threshold` | unchanged |
 | none of the above | `accepted` | *(absent)* | unchanged |
 
@@ -124,6 +124,21 @@ them honest.
 
 `Decider.ForRejudgement` skips that one comparison. The recomputed metrics are
 still written; they are simply not argued with.
+
+**Not every shape rule routes on its own.** A rule firing is recorded; whether it
+decides the STATUS is a separate question, because `flagged` is not `accepted`
+and `leaderboard_eligible_runs` selects on `accepted` — so forcing review takes
+the run off the board, and until an operator can put it back, a rule that forces
+review is a rule that deletes results.
+
+`bot_cadence` forces: identical keystroke intervals to the millisecond across a
+whole run is a clock, not a fast human, and there is no honest run to protect.
+`sustained_superhuman` does NOT: it fires on speed, speed is a continuum with
+real people at the top of it (318 wpm over 15 s and 281 over 60 are recorded
+human results), and wherever the ceiling sits somebody honest eventually crosses
+it. It still fires, is still recorded in the audit document, and still
+contributes its weight — it simply needs corroboration to reach the threshold
+before it costs anyone a result.
 
 **The score comparison is not skipped, and the asymmetry is the point.** A run's
 score is version-pinned — it carries `score_version`, and v1 and v2 route to
