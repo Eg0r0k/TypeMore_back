@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createRun = `-- name: CreateRun :one
@@ -263,6 +264,92 @@ func (q *Queries) GetRunLog(ctx context.Context, arg GetRunLogParams) ([]byte, e
 	return log, err
 }
 
+const insertRunStatusOverride = `-- name: InsertRunStatusOverride :one
+INSERT INTO run_status_overrides (run_id, from_status, to_status, reason, decided_by)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, run_id, from_status, to_status, reason, decided_by, decided_at
+`
+
+type InsertRunStatusOverrideParams struct {
+	RunID      uuid.UUID
+	FromStatus string
+	ToStatus   string
+	Reason     string
+	DecidedBy  uuid.UUID
+}
+
+// Append the decision. One row per decision, never an upsert — see 00028.
+func (q *Queries) InsertRunStatusOverride(ctx context.Context, arg InsertRunStatusOverrideParams) (RunStatusOverride, error) {
+	row := q.db.QueryRow(ctx, insertRunStatusOverride,
+		arg.RunID,
+		arg.FromStatus,
+		arg.ToStatus,
+		arg.Reason,
+		arg.DecidedBy,
+	)
+	var i RunStatusOverride
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.FromStatus,
+		&i.ToStatus,
+		&i.Reason,
+		&i.DecidedBy,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
+const listRunStatusOverrides = `-- name: ListRunStatusOverrides :many
+SELECT o.id, o.run_id, o.from_status, o.to_status, o.reason,
+       o.decided_by, u.display_name AS decided_by_name, o.decided_at
+FROM run_status_overrides o
+         JOIN users u ON u.id = o.decided_by
+WHERE o.run_id = $1
+ORDER BY o.decided_at DESC
+`
+
+type ListRunStatusOverridesRow struct {
+	ID            uuid.UUID
+	RunID         uuid.UUID
+	FromStatus    string
+	ToStatus      string
+	Reason        string
+	DecidedBy     uuid.UUID
+	DecidedByName string
+	DecidedAt     time.Time
+}
+
+// The audit read, newest first.
+func (q *Queries) ListRunStatusOverrides(ctx context.Context, runID uuid.UUID) ([]ListRunStatusOverridesRow, error) {
+	rows, err := q.db.Query(ctx, listRunStatusOverrides, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunStatusOverridesRow{}
+	for rows.Next() {
+		var i ListRunStatusOverridesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.FromStatus,
+			&i.ToStatus,
+			&i.Reason,
+			&i.DecidedBy,
+			&i.DecidedByName,
+			&i.DecidedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunsAfter = `-- name: ListRunsAfter :many
 SELECT r.id, r.mode, r.duration_ms, r.word_count, r.lang, r.seed, r.dict_hash,
        r.setup, r.client_metrics, r.client_score, r.score_version, r.status,
@@ -478,4 +565,120 @@ func (q *Queries) ListRunsFirst(ctx context.Context, arg ListRunsFirstParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const listRunsForReview = `-- name: ListRunsForReview :many
+SELECT r.id, r.user_id, u.display_name, r.status, r.mode, r.lang, r.created_at,
+       v.server_metrics, v.validation,
+       (v.validation -> 'policy' ->> 'suspicion')::numeric AS suspicion,
+       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
+         LEFT JOIN users u ON u.id = r.user_id
+WHERE r.status <> 'pending'
+  AND COALESCE((v.validation -> 'policy' ->> 'suspicion')::numeric, 0) >= $1::numeric
+ORDER BY (v.validation -> 'policy' ->> 'suspicion')::numeric DESC NULLS LAST, r.created_at DESC
+LIMIT $2
+`
+
+type ListRunsForReviewParams struct {
+	MinSuspicion pgtype.Numeric
+	RowLimit     int32
+}
+
+type ListRunsForReviewRow struct {
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	DisplayName       *string
+	Status            string
+	Mode              string
+	Lang              string
+	CreatedAt         time.Time
+	ServerMetrics     []byte
+	Validation        json.RawMessage
+	Suspicion         pgtype.Numeric
+	AlreadyOverridden bool
+}
+
+// The review queue: judged runs the policy scored at or above a suspicion floor,
+// worst first.
+//
+// It reads `accepted` runs too, and that is the whole point of it. A run that
+// crossed the threshold is already `flagged` and easy to find; the runs worth a
+// human's attention are the ones carrying real suspicion that did NOT cross it,
+// which is precisely where `sustained_superhuman` now leaves a superhuman speed.
+// A queue that only listed `flagged` would show the cases the machine was
+// already sure about and hide the ones it wanted help with.
+func (q *Queries) ListRunsForReview(ctx context.Context, arg ListRunsForReviewParams) ([]ListRunsForReviewRow, error) {
+	rows, err := q.db.Query(ctx, listRunsForReview, arg.MinSuspicion, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunsForReviewRow{}
+	for rows.Next() {
+		var i ListRunsForReviewRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.DisplayName,
+			&i.Status,
+			&i.Mode,
+			&i.Lang,
+			&i.CreatedAt,
+			&i.ServerMetrics,
+			&i.Validation,
+			&i.Suspicion,
+			&i.AlreadyOverridden,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const runStatusForOverride = `-- name: RunStatusForOverride :one
+SELECT r.status,
+       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden
+FROM runs r
+WHERE r.id = $1
+FOR UPDATE
+`
+
+type RunStatusForOverrideRow struct {
+	Status            string
+	AlreadyOverridden bool
+}
+
+// The run as an operator override needs it: its current status, and whether a
+// human has already decided about it. Locked FOR UPDATE so two operators acting
+// on the same run at the same time serialise instead of both reading the
+// pre-move status and writing contradictory audit rows.
+func (q *Queries) RunStatusForOverride(ctx context.Context, id uuid.UUID) (RunStatusForOverrideRow, error) {
+	row := q.db.QueryRow(ctx, runStatusForOverride, id)
+	var i RunStatusForOverrideRow
+	err := row.Scan(&i.Status, &i.AlreadyOverridden)
+	return i, err
+}
+
+const setRunStatus = `-- name: SetRunStatus :exec
+UPDATE runs SET status = $2 WHERE id = $1
+`
+
+type SetRunStatusParams struct {
+	ID     uuid.UUID
+	Status string
+}
+
+// The status write itself. Deliberately narrow: it touches `status` and nothing
+// else, because the verdict, the server's numbers and the client's stay exactly
+// as the worker recorded them. An override disagrees with what the evidence was
+// taken to MEAN; it does not rewrite the evidence.
+func (q *Queries) SetRunStatus(ctx context.Context, arg SetRunStatusParams) error {
+	_, err := q.db.Exec(ctx, setRunStatus, arg.ID, arg.Status)
+	return err
 }

@@ -142,6 +142,9 @@ func run() error {
 	// principal from the request context via an adapter over auth.UserFrom, so
 	// the domain imports no sibling package.
 	runsStore := runspg.New(pool)
+	// The operator surface's store half. WithProjector is attached below, once
+	// the leaderboard store exists — a status an operator changes has to move
+	// the board inside the same transaction, exactly as the worker's does.
 	runsSvc := runs.NewService(runsStore,
 		auth.NewInMemoryRateLimiter(cfg.RunsRateEvery, cfg.RunsRateBurst),
 		auth.NewInMemoryRateLimiter(cfg.LeaderboardReplayRateEvery, cfg.LeaderboardReplayRateBurst),
@@ -171,6 +174,11 @@ func run() error {
 	// producer — the alternative was rebuilding `quote:<id>` inside the
 	// leaderboard's SQL, where nothing would keep it in step.
 	boardStore := leaderboardpg.New(pool, cfg.LeaderboardRequireVerifiedEmail)
+	// Both writers of runs.status project through the SAME adapter: the replay
+	// worker (below) and an operator override. "accepted" and "on the board" is
+	// one atomic fact whichever of them decided it.
+	runsStore.WithProjector(boardStore)
+	runsSvc.WithModerator(runsStore)
 	boardSvc := leaderboard.NewService(boardStore,
 		func(ctx context.Context) (uuid.UUID, bool) {
 			u, ok := auth.UserFrom(ctx)
@@ -497,6 +505,15 @@ func run() error {
 				ar.Mount("/quotes", quoteAdminSvc.Routes(
 					authSvc.RequirePermission(auth.PermReportsRead),
 					writeGate(auth.PermQuotesWrite)))
+				// The run surface: the review queue, and the one action that can
+				// overrule the replay worker. Its write permission is its own
+				// (runs:override) rather than a moderation one — a run's status
+				// decides whether it holds a leaderboard slot, so putting a
+				// result back on the board is not the same capability as issuing
+				// a ban.
+				ar.Mount("/runs", runsSvc.AdminRoutes(
+					authSvc.RequirePermission(auth.PermRunsReviewRead),
+					writeGate(auth.PermRunsOverride)))
 				ar.Mount("/", moderationSvc.AdminRoutes(
 					authSvc.RequirePermission(auth.PermBansRead),
 					writeGate(auth.PermBansWrite)))

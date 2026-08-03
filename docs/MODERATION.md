@@ -223,3 +223,69 @@ same kind of thing.
 - `db/migrations/00006_leaderboards.sql` — where `bans` and `active_bans` began
 - `db/migrations/00012_bans_v1.sql` — the shape they have now
 - `db/migrations/00023_admin.sql` — the role column and the audit actors
+
+
+## Overruling a run's verdict
+
+`POST /api/v1/admin/runs/{id}/status` (`runs:override`), with `{"status":
+"accepted"|"flagged"|"rejected", "reason": "…"}`.
+
+**Why this exists.** The replay worker decides every run's status, and it used to
+be the only writer of it. That is right while a verdict is arithmetic — a seed
+that does not reproduce, a log the reducer refused — and wrong the moment one is
+a JUDGEMENT. `superhuman-burst` is a judgement: it fires on speed, speed is a
+continuum with real people at the top of it, and `leaderboard_eligible_runs`
+selects on `status = 'accepted'`, so a wrongly flagged run does not annoy a
+player — it removes their result from the board.
+
+A check whose false positives cannot be undone has to be set where the blast
+radius allows rather than where the evidence says. This endpoint is what lets the
+speed ceiling be set honestly (docs/REPLAY.md, `BURST_CEILING`).
+
+Four things happen in ONE transaction: the run is locked and re-read, the status
+is written, the decision is appended to `run_status_overrides`, and the
+leaderboard projection is brought back in line. A rollback takes all four. The
+alternative — status now, projection later — is a window in which a reinstated
+run is `accepted` and absent from the board it was reinstated onto.
+
+**A decision sticks.** The revalidation claim skips any run with an override
+row, so the next core release does not recompute the worker's answer over the
+operator's. Without that the endpoint would be a suggestion.
+
+**What it does NOT touch:** the verdict, the server's numbers, the client's. An
+override disagrees with what the evidence was taken to MEAN; rewriting the
+evidence would leave a decision with no case behind it.
+
+`pending` is refused on both sides of the move. A pending run has no verdict to
+disagree with, and moving one there would hand it back to the worker as new work
+— which is `revalidate`, not an override. An override that changes nothing is
+refused too: the trail is a list of decisions, and a row that moves nothing later
+reads as one.
+
+`reason` is required by the schema as well as the handler.
+
+## The review queue
+
+`GET /api/v1/admin/runs/review?minSuspicion=0.1&limit=50` (`runs:review`).
+
+Judged runs at or above a suspicion floor, worst first. **It lists `accepted`
+runs too, and that is the point of it.** A run that crossed the review threshold
+is already `flagged` and easy to find; the ones worth a human's attention are
+those carrying real suspicion that did NOT cross it — which is exactly where
+`sustained_superhuman` now leaves a superhuman speed, since that rule no longer
+routes on its own (docs/REPLAY.md). A queue showing only `flagged` would list the
+cases the machine was already sure about and hide the ones it wanted help with.
+
+The default floor is `0.1`. Not zero: every judged run carries a suspicion, most
+of them a rounding error from key rollover. Over the 127 honest runs of the
+2026-08-03 export the highest is 0.1776 and the mean is 0.0031, so 0.1 is where
+the queue starts being short enough to read.
+
+`GET /api/v1/admin/runs/{id}/overrides` (`runs:review`) is one run's decision
+history, newest first.
+
+**The two permissions are separate on purpose.** `runs:review` reads the queue;
+`runs:override` acts on it. A run's status decides whether it holds a leaderboard
+slot, so putting a result back on the board is the most consequential thing the
+admin surface can do — a role that triages should be able to do so without also
+being able to do that.

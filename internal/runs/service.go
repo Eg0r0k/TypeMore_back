@@ -33,7 +33,10 @@ type UserIDFunc func(ctx context.Context) (uuid.UUID, bool)
 // routes — metadata and log — draw on that one bucket, so splitting the payload
 // did not double what an anonymous IP may command.
 type Service struct {
-	store         Store
+	store Store
+	// moderator is the operator surface (override.go). Nil = not wired, and the
+	// admin routes answer 503 rather than panicking.
+	moderator     Moderator
 	limiter       RateLimiter
 	replayLimiter RateLimiter
 	userID        UserIDFunc

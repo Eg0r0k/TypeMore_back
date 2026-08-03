@@ -157,3 +157,58 @@ WHERE r.id = @run_id
   AND jsonb_typeof(v.server_metrics -> 'accuracy') = 'number'
   AND NOT EXISTS (SELECT 1 FROM active_bans b WHERE b.user_id = r.user_id)
   AND (u.profile_public OR EXISTS (SELECT 1 FROM leaderboard_entries e WHERE e.run_id = r.id));
+
+-- name: RunStatusForOverride :one
+-- The run as an operator override needs it: its current status, and whether a
+-- human has already decided about it. Locked FOR UPDATE so two operators acting
+-- on the same run at the same time serialise instead of both reading the
+-- pre-move status and writing contradictory audit rows.
+SELECT r.status,
+       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden
+FROM runs r
+WHERE r.id = $1
+FOR UPDATE;
+
+-- name: SetRunStatus :exec
+-- The status write itself. Deliberately narrow: it touches `status` and nothing
+-- else, because the verdict, the server's numbers and the client's stay exactly
+-- as the worker recorded them. An override disagrees with what the evidence was
+-- taken to MEAN; it does not rewrite the evidence.
+UPDATE runs SET status = $2 WHERE id = $1;
+
+-- name: InsertRunStatusOverride :one
+-- Append the decision. One row per decision, never an upsert — see 00028.
+INSERT INTO run_status_overrides (run_id, from_status, to_status, reason, decided_by)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, run_id, from_status, to_status, reason, decided_by, decided_at;
+
+-- name: ListRunStatusOverrides :many
+-- The audit read, newest first.
+SELECT o.id, o.run_id, o.from_status, o.to_status, o.reason,
+       o.decided_by, u.display_name AS decided_by_name, o.decided_at
+FROM run_status_overrides o
+         JOIN users u ON u.id = o.decided_by
+WHERE o.run_id = $1
+ORDER BY o.decided_at DESC;
+
+-- name: ListRunsForReview :many
+-- The review queue: judged runs the policy scored at or above a suspicion floor,
+-- worst first.
+--
+-- It reads `accepted` runs too, and that is the whole point of it. A run that
+-- crossed the threshold is already `flagged` and easy to find; the runs worth a
+-- human's attention are the ones carrying real suspicion that did NOT cross it,
+-- which is precisely where `sustained_superhuman` now leaves a superhuman speed.
+-- A queue that only listed `flagged` would show the cases the machine was
+-- already sure about and hide the ones it wanted help with.
+SELECT r.id, r.user_id, u.display_name, r.status, r.mode, r.lang, r.created_at,
+       v.server_metrics, v.validation,
+       (v.validation -> 'policy' ->> 'suspicion')::numeric AS suspicion,
+       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden
+FROM runs r
+         JOIN run_verdicts v ON v.run_id = r.id
+         LEFT JOIN users u ON u.id = r.user_id
+WHERE r.status <> 'pending'
+  AND COALESCE((v.validation -> 'policy' ->> 'suspicion')::numeric, 0) >= @min_suspicion::numeric
+ORDER BY (v.validation -> 'policy' ->> 'suspicion')::numeric DESC NULLS LAST, r.created_at DESC
+LIMIT @row_limit;

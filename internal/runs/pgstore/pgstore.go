@@ -21,6 +21,10 @@ import (
 type Store struct {
 	pool *pgxpool.Pool
 	q    *runsdb.Queries
+	// projector keeps the leaderboard in step with a status an OPERATOR
+	// changed, inside the same transaction. Nil = the deployment does not
+	// project. See overrides.go.
+	projector Projector
 }
 
 // Compile-time check that Store satisfies the consumer interface.

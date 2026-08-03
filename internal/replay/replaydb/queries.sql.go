@@ -121,9 +121,14 @@ SELECT r.id, r.seed, r.dict_hash, r.score_version, r.setup, r.client_metrics,
        r.client_score, r.log, r.attempts, r.created_at
 FROM runs r
          JOIN run_verdicts v ON v.run_id = r.id
-WHERE v.policy_version IS NULL
-   OR v.policy_version < $1
-   OR v.bundle_sha IS DISTINCT FROM $2::text
+WHERE (v.policy_version IS NULL
+    OR v.policy_version < $1
+    OR v.bundle_sha IS DISTINCT FROM $2::text)
+  -- A run a HUMAN has decided about is never re-judged. Without this the
+  -- override is a suggestion: the next revalidate pass recomputes the verdict
+  -- and writes the worker's answer straight back over the operator's, which is
+  -- the exact failure the overrides table exists to prevent (00028).
+  AND NOT EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id)
 ORDER BY r.created_at
 FOR UPDATE OF r, v SKIP LOCKED
 LIMIT $3

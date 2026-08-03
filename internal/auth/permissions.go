@@ -27,6 +27,19 @@ const (
 	// it back. It does NOT cover publishing or editing one — no permission
 	// does, because the importer is the only writer of a quote's bytes.
 	PermQuotesWrite Permission = "quotes:write"
+	// PermRunsReviewRead covers the review queue and one run's override
+	// history: reading which runs the policy is unsure about, and who has
+	// already decided anything about them.
+	PermRunsReviewRead Permission = "runs:review"
+	// PermRunsOverride covers overruling the replay worker's verdict on a run.
+	//
+	// Deliberately its own permission and NOT part of the read one. The worker's
+	// verdict is the system's only automatic answer to "is this real", and a
+	// run's status decides whether it holds a leaderboard slot, so overruling it
+	// is the single most consequential thing the admin surface can do — a role
+	// that triages the queue should be able to do so without also being able to
+	// put a result back on the board.
+	PermRunsOverride Permission = "runs:override"
 )
 
 // rolePermissions is the whole authorization model, in one place, versioned
@@ -38,6 +51,7 @@ var rolePermissions = map[string][]Permission{
 		PermBansRead, PermBansWrite,
 		PermReportsRead, PermReportsWrite,
 		PermQuotesWrite,
+		PermRunsReviewRead, PermRunsOverride,
 	},
 }
 

@@ -106,6 +106,7 @@ func TestMeCarriesPermissionsOnlyForAdmins(t *testing.T) {
 		string(auth.PermBansRead), string(auth.PermBansWrite),
 		string(auth.PermReportsRead), string(auth.PermReportsWrite),
 		string(auth.PermQuotesWrite),
+		string(auth.PermRunsReviewRead), string(auth.PermRunsOverride),
 	}, perms,
 		"an admin's /me lists the expanded permission set, which is what the client renders surfaces from")
 }

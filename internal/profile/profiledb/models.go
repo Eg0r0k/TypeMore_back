@@ -196,6 +196,16 @@ type Run struct {
 	RestartsSinceLastSubmit int32
 }
 
+type RunStatusOverride struct {
+	ID         uuid.UUID
+	RunID      uuid.UUID
+	FromStatus string
+	ToStatus   string
+	Reason     string
+	DecidedBy  uuid.UUID
+	DecidedAt  time.Time
+}
+
 type RunVerdict struct {
 	RunID         uuid.UUID
 	UserID        uuid.UUID

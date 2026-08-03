@@ -51,6 +51,20 @@ var (
 		"an unexpected error occurred")
 )
 
+// apiErrConflict is a 409: the request is well formed and the run's current
+// state refuses it — already that status, or not judged yet. A conflict rather
+// than a 422 because retrying it unchanged will keep failing for a reason the
+// caller can see and act on.
+func apiErrConflict(message string) *apiError {
+	return newAPIError(http.StatusConflict, "conflict", message)
+}
+
+// apiErrUnavailable is what an operator route answers when the deployment has
+// no moderator seam wired. 503 rather than 404: the route exists, this instance
+// simply does not run that half.
+var apiErrUnavailable = newAPIError(http.StatusServiceUnavailable, "unavailable",
+	"this deployment does not have the operator surface wired")
+
 // apiErrBadRequest is a 400 for malformed input with a custom message.
 func apiErrBadRequest(message string) *apiError {
 	return newAPIError(http.StatusBadRequest, "bad_request", message)
@@ -61,3 +75,13 @@ func apiErrBadRequest(message string) *apiError {
 func apiErrUnprocessable(code, message string) *apiError {
 	return newAPIError(http.StatusUnprocessableEntity, code, message)
 }
+
+// ErrRunNotJudged is a status override aimed at a run the worker has not
+// decided about yet. There is no verdict to disagree with, and moving it out of
+// `pending` would take it away from the queue rather than overrule it.
+var ErrRunNotJudged = errors.New("runs: run has not been judged yet")
+
+// ErrStatusUnchanged is an override that asks for the status the run already
+// has. Refused rather than recorded: the audit trail is a list of DECISIONS,
+// and a row that moves nothing is a note that will later read as one.
+var ErrStatusUnchanged = errors.New("runs: run already has that status")
