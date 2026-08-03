@@ -56,9 +56,13 @@ type populationRun struct {
 	// The metrics the server recorded at the time, for reporting: this test does
 	// not assert them (that is what the golden vectors are for), it prints them
 	// so a failure says WHICH run at WHAT speed.
-	wpm      float64
-	accuracy float64
-	duration float64
+	wpm       float64
+	rawWpm    float64
+	clientWpm float64
+	clientRaw float64
+	clientAcc float64
+	accuracy  float64
+	duration  float64
 }
 
 func gunzipHex(t *testing.T, s string) json.RawMessage {
@@ -142,6 +146,10 @@ func loadPopulation(t *testing.T) (runs []populationRun, skipped map[string]int)
 			setup:        json.RawMessage(setup),
 			log:          gunzipHex(t, get(row, "log")),
 			wpm:          num(metrics, "wpm"),
+			rawWpm:       num(metrics, "raw"),
+			clientWpm:    num(json.RawMessage(get(row, "client_metrics")), "wpm"),
+			clientRaw:    num(json.RawMessage(get(row, "client_metrics")), "raw"),
+			clientAcc:    num(json.RawMessage(get(row, "client_metrics")), "acc"),
 			accuracy:     num(metrics, "accuracy"),
 			duration:     num(metrics, "durationSec"),
 		})

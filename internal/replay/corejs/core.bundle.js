@@ -113,6 +113,7 @@ var TypeMoreCore = (() => {
     commitEvent: () => commitEvent,
     computeMetrics: () => computeMetrics,
     consistencyOf: () => consistencyOf,
+    correctPrefixLength: () => correctPrefixLength,
     deleteEvent: () => deleteEvent,
     dictVersion: () => dictVersion,
     emitsRawTokens: () => emitsRawTokens,
@@ -1325,6 +1326,12 @@ var TypeMoreCore = (() => {
     }
     return spaces;
   }
+  function correctPrefixLength(target, buffer) {
+    const shared = target.length < buffer.length ? target.length : buffer.length;
+    let i = 0;
+    while (i < shared && buffer[i] === target[i]) i++;
+    return i;
+  }
   function netCharsOf(ctx, state) {
     var _a, _b, _c, _d, _e, _f;
     const core = coreOf(state);
@@ -1350,7 +1357,7 @@ var TypeMoreCore = (() => {
     if (state.wordIndex < ctx.words.length) {
       const target = (_e = ctx.words[state.wordIndex]) != null ? _e : "";
       const buffer = incremental ? bufferOf(state, state.wordIndex) : (_f = state.input[state.wordIndex]) != null ? _f : "";
-      if (buffer.length > 0 && target.startsWith(buffer)) credited += buffer.length;
+      credited += correctPrefixLength(target, buffer);
     }
     return credited;
   }
@@ -1954,7 +1961,7 @@ var TypeMoreCore = (() => {
         rawWorth = typed.length + (earnsSeparator ? 1 : 0);
         at = everCommitted[i] ? settledAt[i] : end;
       } else if (i === activeIndex) {
-        netWorth = typed.length > 0 && target.startsWith(typed) ? typed.length : 0;
+        netWorth = correctPrefixLength(target, typed);
         rawWorth = typed.length;
       }
       const settlement = netWorth - paidNet;
@@ -2717,4 +2724,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"885302d8670c8b9d262ca250f9a0eac391456af7","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"d6298cd010c04804885277601b648272cdd062cb","gitDirty":false}

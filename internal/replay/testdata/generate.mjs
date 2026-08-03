@@ -392,6 +392,66 @@ function emit(name, description, expect, payload, extra = {}) {
   )
 }
 
+// ── 2b. a timed run that ends mid-word, with the word already wrong ──────────
+// The one shape none of the other fourteen vectors has, and the exact shape the
+// in-flight WPM rule governs: the deadline arrives while a word is half typed
+// AND already contains a mistake.
+//
+// Net WPM credits the word in hand its CORRECT PREFIX (`correctPrefixLength`).
+// It used to be all-or-nothing on `target.startsWith(buffer)`, so a run in this
+// state banked NOTHING for the word — on a short run that is most of the
+// number, and on the first word it is the whole of it. Changing it moves a
+// SUBMITTED figure, which is why it needs a vector rather than a unit test: the
+// client computes the credit and the server recomputes it through goja, and a
+// disagreement about one character here is a `metric_mismatch` on every timed
+// run that ends this way, which is nearly all of them.
+//
+// Regenerating without this vector moved NOTHING, which is how the gap was
+// found: every other vector commits every word it types, so the word in hand is
+// always empty and the rule under test never fires.
+{
+  const config = coreConfig({ mode: 'time', durationMs: 15_000 })
+  const generation = generationConfig({ mode: 'time', length: 15 })
+  const seed = 4150723
+  const s = session({ config, generation, declaration: noMods, seed, jitterSeed: 17 })
+  let w = 0
+  while (s.now < config.durationMs - 4000 && w < s.words.length) {
+    typeWord(s, s.words[w])
+    s.commit()
+    w += 1
+  }
+  // The word left in hand: a correct prefix, then one wrong character, then
+  // more typing on top of it. The prefix is what must still be paid for.
+  const target = s.words[w]
+  if (target.length < 4) throw new Error(`vector 2b: target ${target} is too short to halve`)
+  const prefix = target.slice(0, 2)
+  for (const ch of prefix) s.type(ch)
+  s.type(target[2] === 'z' ? 'q' : 'z') // the mistake
+  s.type(target[3] ?? 'z')
+  s.tick(s.core.state.startedAt + config.durationMs)
+  const buffer = s.core.state.input[w] ?? ''
+  const finished = s.finish()
+  // The state this vector exists to pin, asserted before it is frozen: a word in
+  // hand that is NOT a valid prefix of its target, so the old all-or-nothing
+  // rule credited it zero and the new one credits its correct prefix.
+  if (buffer === target) {
+    throw new Error('vector 2b: the word in hand came out right — nothing is pinned')
+  }
+  if (target.startsWith(buffer)) {
+    throw new Error(`vector 2b: '${buffer}' is still a valid prefix of '${target}' — the mistake did not land`)
+  }
+  if (!(finished.metrics.wpm > 0)) throw new Error('vector 2b did not settle at the deadline')
+  emit(
+    'time-ends-midword-wrong',
+    'A timed run whose deadline lands while a word is half typed and already wrong. Net WPM pays that ' +
+      'word its correct PREFIX — under the previous all-or-nothing rule it paid nothing at all, which on ' +
+      'the first word is the entire displayed number. The vector exists so client and goja are pinned to ' +
+      'the same credit: a disagreement here is a metric_mismatch on nearly every timed run.',
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({ config, generation, declaration: noMods, seed, finished, scoreVersion: 2 })
+  )
+}
+
 // ── 3. text mods + declared mods (the scoreV2 multiplier path) ───────────────
 {
   const config = coreConfig({ difficulty: 'expert' })
