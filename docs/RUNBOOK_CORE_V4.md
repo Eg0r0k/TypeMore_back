@@ -26,6 +26,25 @@ is harmless — the server recomputes everything anyway.
 
 ## 0. Before you start — the forecast to check against
 
+> **THE TABLE BELOW IS STALE AND MUST BE RE-MEASURED BEFORE STEP 1.**
+>
+> It was computed against a bundle that predates the in-flight WPM change (the
+> word being typed is now worth its correct PREFIX rather than all-or-nothing).
+> That moves `metrics.wpm` for every run that ended mid-word with an imperfect
+> buffer — which in timed mode is most of them — so the "runs whose status
+> changes" rows are no longer trustworthy in either direction.
+>
+> Re-measure by replaying the population fixture through the NEWLY VENDORED
+> bundle:
+>
+> ```bash
+> go test ./internal/replay/ -run TestSuperhumanBurst -v
+> ```
+>
+> and by re-running the mismatch count against a copy of production. Do not
+> deploy against the numbers below; they are kept only so the re-measurement has
+> something to diff against.
+
 These were computed from the export of 2026-08-03 (138 runs). Step 5 is expected
 to reproduce them; a large divergence is itself a finding, so write down what you
 actually get.
