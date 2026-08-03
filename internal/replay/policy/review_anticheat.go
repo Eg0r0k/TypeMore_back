@@ -35,7 +35,15 @@ import (
 // the epoch has not armed (replay.CanariesArmedAt), and the epoch is unset
 // until a human sets it. A revalidate pass at v3 with no epoch therefore
 // reproduces every v2 verdict exactly.
-const currentVersion = 3
+//
+// v4 is NOT inert, and it is the first version that is not. No weight and no
+// threshold moved — the change is in the CORE, where `superhuman-burst` stopped
+// being gated on `accuracy === 1` and its ceiling became a function of the run's
+// duration. The rule set here reads the same, but the flags it reads are
+// different, so the version has to move for `revalidate` to walk stored runs
+// forward. Runs that were accepted at ~0.007 suspicion because one mistyped
+// character hid a 336 wpm minute are the runs that change.
+const currentVersion = 4
 
 // Flag codes emitted by the core's validateLog (shared/core/validate.ts).
 // Listed here so the weights table is exhaustive by construction — a code the
@@ -87,10 +95,18 @@ var TelemetryOnlyFlags = []string{FlagUnpairedKeyup}
 //   - uniform-intervals (0.90) — ≥90% of intervals within ±2 ms of the mean.
 //     Same signal, slightly softer, because a metronome-steady typist is rare
 //     but not impossible.
-//   - superhuman-burst (0.80) — above the WPM ceiling at flawless accuracy.
-//     Strong, but its severity is a ratio against 2× the ceiling, so a genuine
-//     short burst lands well under the threshold; sustained speed is caught by
+//   - superhuman-burst (0.80) — above the WPM ceiling FOR THE RUN'S OWN
+//     DURATION (core: BURST_CEILING, 250 wpm at 15 s falling to 200 at 60 s+).
+//     Strong, but its severity is speed against a fixed 500 wpm scale, softened
+//     by an accuracy curve that bottoms out at 0.25 rather than at zero — so a
+//     genuine short burst lands well under the threshold, and a fast run made
+//     sloppy on purpose still counts for something. Sustained speed is caught by
 //     the combination rule instead.
+//
+//     The weight is unchanged at v4 and that is deliberate: the core fix alone
+//     changes which runs raise the flag, and re-weighting at the same time would
+//     make the revalidate diff unreadable. Retune after `calibrate` runs against
+//     the repaired detector, not before.
 //   - paste (0.80) — text that arrived without being typed. Unambiguous, but
 //     the severity is pastes/events, so one paste in a long log stays small.
 //   - multi-grapheme-insert (0.50) — more than one grapheme per event. Usually
@@ -155,6 +171,14 @@ const (
 	// ruleSustainedSuperhuman: superhuman burst held past the duration floor. A
 	// two-second flurry above the WPM ceiling is rollover or a short sample; ten
 	// seconds of it is not.
+	//
+	// It carries NO accuracy condition of its own and never did — but until the
+	// v4 core it inherited one, because it cannot fire unless
+	// FlagSuperhumanBurst is present and that flag was gated on
+	// `accuracy === 1`. One typo therefore disabled the combination rule as
+	// well as the flag, which is why a 336 wpm run held for a full minute was
+	// never routed to review. Nothing in this file had to change to fix that,
+	// and TestSustainedSuperhumanHasNoAccuracyGate is what keeps it that way.
 	ruleSustainedSuperhuman = "sustained_superhuman"
 )
 

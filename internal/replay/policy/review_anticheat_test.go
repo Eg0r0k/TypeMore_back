@@ -228,6 +228,57 @@ func TestSustainedSuperhumanNeedsTheDurationFloor(t *testing.T) {
 	assert.Empty(t, p.Judge(burst, RunMeta{}).Reasons)
 }
 
+// The rule has no accuracy condition, and until the v4 core it had one anyway.
+//
+// `sustained_superhuman` cannot fire unless FlagSuperhumanBurst is present, and
+// that flag used to be gated on `metrics.accuracy === 1` — a STRICT equality —
+// so a single mistyped character removed the flag and disabled the combination
+// rule along with it. That is how a 336.2 wpm run held for a full minute at
+// 99.6 % accuracy was accepted at suspicion 0.0074 while a 282 wpm run of ten
+// seconds at 100 % was flagged.
+//
+// The fix is in the core, not here. This test is what keeps it that way: the
+// rule fires on the FLAG and the DURATION and on nothing else, whatever severity
+// the core attached — including the reduced severity an imperfect run now
+// carries, which is the exact case the old gate erased.
+func TestSustainedSuperhumanHasNoAccuracyGate(t *testing.T) {
+	p := mustPolicy(t, Config{})
+
+	// The severity the v4 core produces for 336.2 wpm at 99.6 % over 60 s:
+	// min(1, 336.2/500) × f(0.996) ≈ 0.664. Nothing about it is "flawless", and
+	// the rule must not care.
+	imperfect := []Flag{{Code: FlagSuperhumanBurst, Score: 0.664}}
+	assert.Equal(t, []string{ruleSustainedSuperhuman},
+		p.Judge(imperfect, RunMeta{DurationSec: 60}).Reasons,
+		"a run does not stop being sustained because it contains a typo")
+
+	// And the rule is severity-blind at the floor as well as the ceiling: the
+	// accuracy curve bottoms out at 0.25, so the weakest possible instance of
+	// the flag still names the shape.
+	floor := []Flag{{Code: FlagSuperhumanBurst, Score: 0.25}}
+	assert.Equal(t, []string{ruleSustainedSuperhuman},
+		p.Judge(floor, RunMeta{DurationSec: 60}).Reasons)
+
+	// Which matters because the SHAPE outranks the magnitude: at weight 0.80
+	// that severity is 0.2 of suspicion, nowhere near the 1.0 threshold, and
+	// the run is routed to review regardless.
+	decision := p.Judge(floor, RunMeta{DurationSec: 60})
+	assert.Less(t, decision.Suspicion, decision.Threshold)
+	assert.True(t, decision.NeedsReview)
+}
+
+// v4 is the first policy version whose rule set did not change. It moved because
+// the CORE's flags changed underneath it — `superhuman-burst` lost its accuracy
+// gate and gained a duration-dependent ceiling — and `revalidate` keys on the
+// version to walk stored runs forward. A release that fixes a detector and
+// leaves the version alone judges the whole history by the broken one.
+func TestPolicyVersionTracksTheCoreDetectorChange(t *testing.T) {
+	col, err := ParseVersion(mustPolicy(t, Config{}).Version())
+	require.NoError(t, err)
+	assert.EqualValues(t, 4, col,
+		"bump this together with docs/REPLAY.md and a revalidate pass, never on its own")
+}
+
 // --- configuration -------------------------------------------------------------
 
 func TestWeightOverridesApply(t *testing.T) {

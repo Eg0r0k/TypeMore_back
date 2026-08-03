@@ -279,6 +279,72 @@ Because the weights are tunable, `policy_version` alone would not explain a
 verdict on a server running an override — so the effective suspicion and
 threshold are stored on the row as well.
 
+#### What has to be measured before the next weights move
+
+Every weight in the table is either calibrated against a real population or
+explicitly parked at a number that says "no data yet". The parked ones are the
+work list, and this is what has to be brought to it. **Whoever proposes the next
+weight change owns producing these numbers first** — a weight set without them
+is a guess that lands on real players.
+
+**1. The IME baseline — measured 2026-08-03, and now the input to a new flag.**
+
+Over the 138-run export of that date, characters that reached the buffer through
+an `ime` replace rather than a keystroke:
+
+| | value |
+|---|---|
+| share of all typed characters | **0.4 %** (101 of 22 905) |
+| runs carrying any ime replace | **7 of 138** (5.1 %) |
+| per-run share on those seven | 0.5 % – 19.8 % |
+| composition sessions | **0** |
+| soft-keyboard word commits | 24, every one carrying a trailing space |
+
+Read carefully, because two of those rows are about a bug rather than a
+population. Every ime replace in this export is a soft-keyboard word commit, and
+they are all shaped the way the pre-fix input adapter shaped them (a caret-width
+range carrying the keyboard's own trailing space). That adapter has since been
+fixed, so a re-export will not be comparable event for event: the SHARE is the
+durable figure, the shape is not.
+
+The proposal this baseline exists for is a scored flag on **the share of a run's
+text that arrived as an ime replace**. The case for it is that a real mobile run
+sits in the single digits and a run typed by feeding whole words through
+`insertText` is at or near 100 %, so the two are separable by a wide margin. The
+case against shipping it untuned is this same table: one honest run is already at
+19.8 %, so any threshold below about a third would land on a person with a
+predictive keyboard. It needs a mobile population — this export has essentially
+none — before it gets a weight above zero.
+
+**2. Kent's cheapest remaining vector is now "type the run in whole words."**
+
+The canary work closed reading the text off the screen. It did not close writing
+it back in: a `replace` with `source: 'ime'` is indistinguishable from a phone
+keyboard committing a suggestion, and `multi-grapheme-insert` (weight 0.50) only
+counts multi-grapheme **inserts**, not replaces. A scraper that emits one replace
+per word therefore raises nothing that costs it anything. That is the target to
+build against, and the ime-share flag above is the answer being calibrated for
+it.
+
+**3. `unpaired-keyup` has its first real evidence, and it is not enough yet.**
+
+Weight 0.00 by contract (`TelemetryOnlyFlags`), on the argument that there was no
+v2 calibration data at all. There is now a little: on the same export the flag
+fires on **81.8 %** of the confirmed cheating account's runs against **25.2 %** of
+everyone else's — a 3.2× enrichment. That is a signal, and eleven runs from one
+account is not a population. It stays at zero until a second confirmed account
+reproduces the enrichment, and the number to beat is written down here so the
+next person does not have to rediscover it.
+
+**4. What `calibrate` must be re-run against.**
+
+The v4 core changed which runs raise `superhuman-burst` (it is no longer gated on
+flawless accuracy, and its ceiling now falls with the run's duration). Every
+distribution recorded before that — including the ones in this section — was
+measured through the old detector. Re-run `make calibrate` after the v4 deploy and
+its revalidate pass, and treat the fresh baseline as the input to any weight
+change, not the ones above.
+
 ### Policy versioning
 
 A judge's `Version()` identifies its rule set. Bump it whenever weights, the
