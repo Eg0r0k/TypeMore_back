@@ -690,6 +690,95 @@ function emit(name, description, expect, payload, extra = {}) {
   )
 }
 
+// ── 10b. a quote whose text nobody could type ────────────────────────────────
+// U+2026 is the one character the tokenizer REWRITES (`expandEllipsis`,
+// words.ts): no mainstream layout produces it, so a target holding one is not a
+// hard target but an unwinnable one, and 34 vendored quotes contain 42 of them.
+//
+// This is the parity half of that change, and parity is the whole risk. The
+// client builds its targets from the text and the server rebuilds them from the
+// SAME text through goja; if the two ever disagreed about one character, every
+// run on every affected quote would come back `metric_mismatch` — which is
+// exactly the class of failure that cost this deployment 34 false flags the last
+// time client and judge drifted apart. The vector types the periods, so a server
+// that still produced `…` targets would score every one of them wrong.
+//
+// Three shapes in one text: an ellipsis CLOSING a word (twice), one standing
+// ALONE as its own token, and `ö` alongside them — non-ASCII through
+// `dictVersion`, which folds over UTF-16 code units and is the one place V8 and
+// goja could plausibly disagree about a hash.
+const ELLIPSIS_QUOTE_ID = '7c1d4e2a-8b3f-4a5d-9e6c-0f1a2b3c4d5e'
+const ELLIPSIS_QUOTE_TEXT = 'Und dann … ganz plötzlich… nichts mehr…'
+const ELLIPSIS_QUOTE_HASH = dictVersion([ELLIPSIS_QUOTE_TEXT])
+{
+  const config = coreConfig({ mode: 'quote', maxExtraChars: 40 })
+  const generation = {
+    ...quoteGeneration(),
+    length: ELLIPSIS_QUOTE_TEXT.split(' ').filter((w) => w.length > 0).length,
+    textSource: {
+      kind: 'quote',
+      quoteId: ELLIPSIS_QUOTE_ID,
+      quoteHash: ELLIPSIS_QUOTE_HASH,
+      text: ELLIPSIS_QUOTE_TEXT
+    }
+  }
+  const seed = 20260803
+  const s = session({
+    config,
+    generation,
+    declaration: noMods,
+    seed,
+    jitterSeed: 29,
+    dict: quoteDictionary,
+    dictHash: ELLIPSIS_QUOTE_HASH
+  })
+  // The rewrite happened, and it did not move a separator: seven tokens, none
+  // of them carrying the character the text was written with.
+  if (s.words.length !== 7) {
+    throw new Error(`vector 10b: expected 7 targets, got ${s.words.length}`)
+  }
+  if (s.words.some((w) => w.includes('…'))) {
+    throw new Error(`vector 10b: a target still holds U+2026 — the rewrite did not run`)
+  }
+  if (s.words[2] !== '...') {
+    throw new Error(`vector 10b: the lone ellipsis should be its own token, got ${s.words[2]}`)
+  }
+  for (let i = 0; i < s.words.length; i++) {
+    typeWord(s, s.words[i])
+    s.commit()
+  }
+  const finished = s.finish()
+  // Flawless BY TYPING PERIODS. Before the rewrite this same run was
+  // unwinnable: every keystroke against a `…` position was an error no
+  // correction could fix.
+  if (finished.metrics.accuracy !== 1) {
+    throw new Error(`vector 10b: expected a flawless run, got acc=${finished.metrics.accuracy}`)
+  }
+  emit(
+    'quote-ellipsis-typed-as-periods',
+    'A quote containing U+2026, finished by typing three periods for each one. The tokenizer rewrites ' +
+      '`…` to `...` AFTER the text has been hashed, so the quote keeps its identity (dictHash is still ' +
+      'dictVersion of the ORIGINAL bytes) while the target becomes typeable. The vector exists for the ' +
+      'parity: client and goja must build the same seven targets from the same text, or every run on ' +
+      'every ellipsis quote is a metric mismatch.',
+    { status: 'accepted', verdict: 'valid', flags: [] },
+    payloadOf({
+      config,
+      generation,
+      declaration: noMods,
+      seed,
+      finished,
+      scoreVersion: 2,
+      dict: quoteDictionary,
+      dictHash: ELLIPSIS_QUOTE_HASH
+    }),
+    {
+      quote: { id: ELLIPSIS_QUOTE_ID, hash: ELLIPSIS_QUOTE_HASH, text: ELLIPSIS_QUOTE_TEXT },
+      spaces: finished.metrics.spaces
+    }
+  )
+}
+
 // ── 11 + 12. log v2 telemetry, and its stripped v1 twin ──────────────────────
 // The compatibility proof in vector form. Two sessions run the SAME strokes at
 // the SAME instants (same seed, same jitter stream — telemetry consumes no

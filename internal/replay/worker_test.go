@@ -406,6 +406,7 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 
 	var sawTime, sawWords, sawMods, sawRejectedBackspace, sawV1, sawV2, sawTypos bool
 	var sawWeakFlagAccepted, sawBotFlagged, sawNospace, sawNewlineDict, sawQuote bool
+	var sawQuoteDoubleSpace bool
 	var sawMetricsPinned bool
 	for _, v := range vectors {
 		switch v.Payload.Mode {
@@ -499,14 +500,22 @@ func TestGoldenVectorsCoverTheContractSurface(t *testing.T) {
 			assert.Nil(t, v.Payload.WordCount, "%s: a quote run carries no wordCount", v.Name)
 			assert.NotContains(t, v.Quote.Text, "\n",
 				"%s: pick a quote whose separators are spaces; '\\n' is the code-dictionary vector's job", v.Name)
-			assert.Contains(t, v.Quote.Text, "  ",
-				"%s: the quote must contain a double space — collapsing it is what this vector pins", v.Name)
+			// The double-space collapse is pinned by SOME quote vector, not by
+			// every one. It was written per-vector when there was exactly one
+			// quote vector and the collapse was its whole point; requiring it of
+			// each of them would mean the next quote vector — whatever it exists
+			// to pin — has to smuggle in an unrelated trap to be allowed in.
+			if strings.Contains(v.Quote.Text, "  ") {
+				sawQuoteDoubleSpace = true
+			}
 		} else {
 			// The seeded side of the same rule: exactly one dimension, always.
 			assert.NotEqual(t, v.Payload.DurationMs == nil, v.Payload.WordCount == nil,
 				"%s: a seeded run carries exactly one of durationMs / wordCount", v.Name)
 		}
 	}
+	assert.True(t, sawQuoteDoubleSpace,
+		"no quote vector carries a double space — nothing pins that it collapses to one separator")
 	assert.True(t, sawTime, "no time-mode vector")
 	assert.True(t, sawWords, "no words-mode vector")
 	assert.True(t, sawMods, "no text-mods vector")
