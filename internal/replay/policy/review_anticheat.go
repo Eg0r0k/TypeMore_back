@@ -92,9 +92,11 @@ var TelemetryOnlyFlags = []string{FlagUnpairedKeyup}
 //
 //   - zero-variance (1.00) — every keystroke interval identical to the
 //     millisecond. Humans do not do this; a script does. Worth review alone.
+//
 //   - uniform-intervals (0.90) — ≥90% of intervals within ±2 ms of the mean.
 //     Same signal, slightly softer, because a metronome-steady typist is rare
 //     but not impossible.
+//
 //   - superhuman-burst (0.80) — above the WPM ceiling FOR THE RUN'S OWN
 //     DURATION (core: BURST_CEILING, 250 wpm at 15 s falling to 200 at 60 s+).
 //     Strong, but its severity is speed against a fixed 500 wpm scale, softened
@@ -107,24 +109,31 @@ var TelemetryOnlyFlags = []string{FlagUnpairedKeyup}
 //     changes which runs raise the flag, and re-weighting at the same time would
 //     make the revalidate diff unreadable. Retune after `calibrate` runs against
 //     the repaired detector, not before.
+//
 //   - paste (0.80) — text that arrived without being typed. Unambiguous, but
 //     the severity is pastes/events, so one paste in a long log stays small.
+//
 //   - multi-grapheme-insert (0.50) — more than one grapheme per event. Usually
 //     an IME or a mobile keyboard, occasionally automation.
+//
 //   - min-interval (0.30) — intervals under 15 ms. THE false-positive
 //     generator: ordinary key rollover produces one or two of these in a
 //     hundred, which is a severity around 0.02 and must never reach review on
 //     its own.
+//
 //   - afk-heavy / trailing-afk (0.02) — idle is a bad run, not a suspicious
 //     one. It is already punished by its own score and buys the player nothing,
 //     so it must not fill the review queue. Non-zero on purpose so a run that is
 //     BOTH mostly idle and otherwise suspicious still tips a little.
+//
 //   - unpaired-keyup (0.00) — see TelemetryOnlyFlags.
+//
 //   - canary-grapheme (1.00) — an invisible codepoint that exists ONLY in the
 //     rendered text reached the event log. No keyboard, layout, IME or compose
 //     sequence produces it, and pasted text is a different flag entirely, so it
 //     belongs in the zero-variance class: one occurrence is worth review by
 //     itself. The core already emits score 1 whatever the count.
+//
 //   - canary-commit (0.60) — commits landing on seed-scheduled offsets. Real
 //     evidence, but positional rather than impossible: the core already refuses
 //     to raise it below three hits and scales severity from there, so the
