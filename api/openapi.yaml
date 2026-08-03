@@ -1189,6 +1189,99 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/AdminNotFound" }
 
+  /api/v1/admin/runs/review:
+    get:
+      tags: [admin]
+      summary: Runs the policy is unsure about
+      description: >
+        Judged runs at or above a suspicion floor, worst first. It lists ACCEPTED
+        runs too, and that is the point of it - a run that crossed the review
+        threshold is already flagged and easy to find, while the ones worth a
+        human's attention are those carrying real suspicion that did not cross
+        it. The default floor is 0.1: every judged run carries a suspicion, most
+        of them a rounding error from key rollover, and over the honest
+        population of 2026-08-03 the highest is 0.1776 against a mean of 0.0031.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: minSuspicion, in: query, required: false, schema: { type: number, minimum: 0, default: 0.1 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: The queue, worst first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  minSuspicion: { type: number }
+                  runs:
+                    type: array
+                    items: { $ref: "#/components/schemas/ReviewRun" }
+
+  /api/v1/admin/runs/{id}/overrides:
+    get:
+      tags: [admin]
+      summary: One run's decision history
+      description: Newest first. Append-only - a trail that overwrites itself cannot answer who decided, when, and why.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Decisions, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overrides:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunStatusOverride" }
+
+  /api/v1/admin/runs/{id}/status:
+    post:
+      tags: [admin]
+      summary: Overrule the replay worker's verdict
+      description: >
+        Moves a run's status by hand and records who did it. The status write,
+        the audit row and the leaderboard projection happen in ONE transaction,
+        so "accepted" and "on the board" stay one fact. The decision STICKS - a
+        run with an override is never re-judged, or the next core release would
+        write the worker's answer back over the operator's.
+
+        It does not touch the verdict or either side's numbers: an override
+        disagrees with what the evidence was taken to MEAN, and rewriting the
+        evidence would leave a decision with no case behind it.
+
+        'pending' is refused on both sides of the move - a pending run has no
+        verdict to disagree with, and moving one there hands it back to the
+        worker as new work, which is revalidate and not an override.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, reason]
+              properties:
+                status: { type: string, enum: [accepted, flagged, rejected] }
+                reason:
+                  type: string
+                  minLength: 1
+                  description: Required. An override with no stated reason is indistinguishable from a mistake six months later.
+      responses:
+        "200":
+          description: The recorded decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunStatusOverride" }
+        "404": { $ref: "#/components/responses/AdminNotFound" }
+        "409":
+          description: The run already has that status, or has not been judged yet
+
   /api/v1/admin/quotes/{id}:
     get:
       tags: [admin]
@@ -1419,6 +1512,33 @@ components:
                 items: { $ref: "#/components/schemas/ModerationUser" }
 
   schemas:
+    RunStatusOverride:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        runId: { type: string, format: uuid }
+        fromStatus: { type: string, enum: [accepted, flagged, rejected] }
+        toStatus: { type: string, enum: [accepted, flagged, rejected] }
+        reason: { type: string }
+        decidedBy: { type: string, format: uuid }
+        decidedByName: { type: string }
+        decidedAt: { type: string, format: date-time }
+    ReviewRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        displayName: { type: string }
+        status: { type: string, enum: [accepted, flagged, rejected] }
+        mode: { type: string }
+        lang: { type: string }
+        suspicion: { type: number }
+        overridden:
+          type: boolean
+          description: A human has already decided about this run. The queue keeps showing it - "already handled" is what a reviewer most needs to know before handling it again.
+        metrics: { type: object, additionalProperties: true }
+        validation: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
     ReportSubject:
       type: object
       required: [type, id]
