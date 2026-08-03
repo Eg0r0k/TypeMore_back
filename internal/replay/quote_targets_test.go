@@ -88,6 +88,53 @@ func TestQuoteTargetsComeFromTheBundleAndNormaliseNothing(t *testing.T) {
 		},
 	}
 
+	// U+2026 is the ONE character the tokeniser rewrites, and the exception is
+	// deliberate: everything above is a character a player CAN type and a server
+	// must not tidy, while an ellipsis is a character no mainstream layout
+	// produces at all. A target containing one is not a hard target, it is an
+	// unwinnable one — see `expandEllipsis` (words.ts) for why the answer is
+	// three periods rather than a normalize.ts equivalence.
+	//
+	// Position is what these cases are about: the rewrite runs per TOKEN, after
+	// the split, so the token count and every boundary stay exactly where they
+	// were with the ellipsis left alone.
+	cases = append(cases, []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			name: "an ellipsis opening a word becomes three periods, in place",
+			text: "…и снова",
+			want: []string{"...и", "снова"},
+		},
+		{
+			name: "an ellipsis inside a word becomes three periods, in place",
+			text: "หา…ไม่ ok",
+			want: []string{"หา...ไม่", "ok"},
+		},
+		{
+			name: "an ellipsis closing a word becomes three periods, in place",
+			text: "калі… нова…",
+			want: []string{"калі...", "нова..."},
+		},
+		{
+			name: "a lone ellipsis is a whole token of three periods",
+			text: "a … b",
+			want: []string{"a", "...", "b"},
+		},
+		{
+			name: "two ellipses in a row expand independently",
+			text: "wait…… what",
+			want: []string{"wait......", "what"},
+		},
+		{
+			name: "the rewrite is per token, so a separator never moves",
+			text: "…\n… x",
+			want: []string{"...\n", "...", "x"},
+		},
+	}...)
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := core.QuoteTargets(ctx, tc.text)

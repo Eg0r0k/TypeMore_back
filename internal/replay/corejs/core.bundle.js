@@ -74,6 +74,7 @@ var TypeMoreCore = (() => {
   // src/index.ts
   var index_exports = {};
   __export(index_exports, {
+    BURST_CEILING: () => BURST_CEILING,
     CANARY_CODEPOINTS: () => CANARY_CODEPOINTS,
     CANARY_DIRECT: () => CANARY_DIRECT,
     CANARY_SOFT: () => CANARY_SOFT,
@@ -105,6 +106,7 @@ var TypeMoreCore = (() => {
     asMs: () => asMs,
     asSeq: () => asSeq,
     bufferOf: () => bufferOf,
+    burstAccuracyWeight: () => burstAccuracyWeight,
     canaryAt: () => canaryAt,
     charObservationsOf: () => charObservationsOf,
     comboMultiplier: () => comboMultiplier,
@@ -117,6 +119,7 @@ var TypeMoreCore = (() => {
     endsLine: () => endsLine,
     errorWords: () => errorWords,
     errorWordsOf: () => errorWordsOf,
+    expandEllipsis: () => expandEllipsis,
     finalizeScore: () => finalizeScore,
     finalizeScoreV2: () => finalizeScoreV2,
     fnv1a: () => fnv1a,
@@ -135,6 +138,7 @@ var TypeMoreCore = (() => {
     languageMatches: () => languageMatches,
     makeNormalizer: () => makeNormalizer,
     makeSeedContext: () => makeSeedContext,
+    maxBurstWpmFor: () => maxBurstWpmFor,
     metricsFrom: () => metricsFrom,
     metricsOf: () => metricsOf,
     minSpeedFailInstant: () => minSpeedFailInstant,
@@ -255,7 +259,20 @@ var TypeMoreCore = (() => {
   ];
   var EQUIVALENCE_GROUPS = [
     { id: "apostrophes", chars: ["'", "\u2019", "\u2018", "\u02BC", "\u05F3", "\u02BB", "\u1FBD"] },
-    { id: "double-quotes", chars: ['"', "\u201D", "\u201C", "\u201E"] },
+    // Guillemets belong here for the same reason `„` does: they are the double
+    // quote of a language, not a different character. A Russian, French or
+    // Belarusian quote is written with `«…»` and the player's keyboard offers `"`
+    // — the layout has no guillemet key, and dead-key sequences for them are not
+    // standard anywhere the dictionaries cover. Untypeable-by-default, exactly
+    // like U+2026, and answered here rather than in the tokenizer because this
+    // one IS one grapheme against one grapheme: the fix `expandEllipsis` could
+    // not be (words.ts).
+    //
+    // Deliberately one group and not two. `«` and `»` are directional, but the
+    // registry's job is "may this keystroke stand for that target", and a
+    // keyboard that cannot produce either direction cannot be asked to pick
+    // between them — the same reason `“` and `”` have always shared an entry.
+    { id: "double-quotes", chars: ['"', "\u201D", "\u201C", "\u201E", "\xAB", "\xBB"] },
     { id: "dashes", chars: ["-", "\u2013", "\u2014", "\u2010", "\u2011"] },
     { id: "commas", chars: [",", "\u201A"] },
     { id: "spaces", chars: SPACE_CHARS, canonical: " " },
@@ -1014,6 +1031,10 @@ var TypeMoreCore = (() => {
   function reverseWord(word) {
     return [...word].reverse().join("");
   }
+  var ELLIPSIS = "\u2026";
+  function expandEllipsis(token) {
+    return token.includes(ELLIPSIS) ? token.split(ELLIPSIS).join("...") : token;
+  }
   function generateWords(dict, context) {
     var _a;
     const quote = quoteOf(context.generation);
@@ -1026,7 +1047,7 @@ var TypeMoreCore = (() => {
         });
       }
       const normalized = quote.text.replace(/ *(\r\n|\r|\n) */g, "\n ");
-      const words2 = normalized.split(" ").filter((word) => word.length > 0);
+      const words2 = normalized.split(" ").filter((word) => word.length > 0).map(expandEllipsis);
       if (words2.length === 0) {
         return err({ kind: "EmptyQuote", message: `quote ${quote.quoteId} has no typeable words` });
       }
@@ -1055,13 +1076,13 @@ var TypeMoreCore = (() => {
       prevIndex = index;
       const base = dict.words[index];
       if (raw) {
-        words.push(base);
+        words.push(expandEllipsis(base));
         continue;
       }
       const decorated = decorate(base, context.generation, rng, capitalizeNext);
       let out = lazy ? replaceAccents(decorated, context.generation.language) : decorated;
       if (context.generation.reverse) out = reverseWord(out);
-      words.push(out);
+      words.push(expandEllipsis(out));
       capitalizeNext = context.generation.punctuation && SENTENCE_END.includes((_a = decorated[decorated.length - 1]) != null ? _a : "");
     }
     return ok({ words, context, dictName: dict.name });
@@ -1697,6 +1718,9 @@ var TypeMoreCore = (() => {
   }
 
   // src/stats.ts
+  function elapsedMinutes(startedAt, at) {
+    return Math.max(0, (at - startedAt) / 1e3) / 60;
+  }
   function analyzeLog(ctx, events) {
     var _a;
     let state = initialStateOf(ctx);
@@ -1709,6 +1733,7 @@ var TypeMoreCore = (() => {
     const keyCorrect = [];
     const keyWordIndex = [];
     const commitTimes = [];
+    const commitWordIndex = [];
     events = events.some(isTelemetryEvent) ? events.filter((e) => !isTelemetryEvent(e)) : events;
     for (const event of sortEvents(events)) {
       state = settle(ctx, state, event.t);
@@ -1739,7 +1764,10 @@ var TypeMoreCore = (() => {
         break;
       }
       state = result.value;
-      for (let j = beforeIndex; j < state.wordIndex; j++) commitTimes.push(event.t);
+      for (let j = beforeIndex; j < state.wordIndex; j++) {
+        commitTimes.push(event.t);
+        commitWordIndex.push(j);
+      }
     }
     return {
       finalState: state,
@@ -1751,7 +1779,8 @@ var TypeMoreCore = (() => {
       keyTimes,
       keyCorrect,
       keyWordIndex,
-      commitTimes
+      commitTimes,
+      commitWordIndex
     };
   }
   function compareWord(target, typed, includeMissed) {
@@ -1849,7 +1878,7 @@ var TypeMoreCore = (() => {
     const startedAt = analysis.finalState.startedAt;
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
     const durationSec = startedAt === null ? 0 : Math.max(0, (end - startedAt) / 1e3);
-    const minutes = durationSec / 60;
+    const minutes = startedAt === null ? 0 : elapsedMinutes(startedAt, end);
     const netChars = netCharsOf(ctx, analysis.finalState);
     const rawChars = chars.correct + chars.incorrect + chars.extra + spaces;
     return {
@@ -1872,7 +1901,7 @@ var TypeMoreCore = (() => {
     return timelineFrom(ctx, analyzeLog(ctx, events), endMs);
   }
   function timelineFrom(ctx, analysis, endMs) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e;
     const startedAt = analysis.finalState.startedAt;
     if (startedAt === null) return [];
     const end = (_a = analysis.finalState.finishedAt) != null ? _a : endMs;
@@ -1882,37 +1911,61 @@ var TypeMoreCore = (() => {
     const input = analysis.finalState.input;
     const creditTimes = [];
     const creditChars = [];
+    const rawTimes = [];
+    const rawChars = [];
     const paidPerWord = new Float64Array(ctx.words.length);
+    const paidRawPerWord = new Float64Array(ctx.words.length);
     for (let k = 0; k < analysis.keyTimes.length; k++) {
-      if (!analysis.keyCorrect[k]) continue;
       const word = analysis.keyWordIndex[k];
       if (word < 0 || word >= ctx.words.length) continue;
+      rawTimes.push(analysis.keyTimes[k]);
+      rawChars.push(1);
+      paidRawPerWord[word]++;
+      if (!analysis.keyCorrect[k]) continue;
       creditTimes.push(analysis.keyTimes[k]);
       creditChars.push(1);
       paidPerWord[word]++;
     }
+    const settledAt = new Float64Array(ctx.words.length);
+    const everCommitted = new Uint8Array(ctx.words.length);
     for (let i = 0; i < analysis.commitTimes.length; i++) {
-      const target = (_b = ctx.words[i]) != null ? _b : "";
-      let worth = 0;
-      if (((_c = input[i]) != null ? _c : "") === target) {
-        worth = target.length;
-        if (!endsLine(target) && !(finishedByCount && i === analysis.commitTimes.length - 1)) worth++;
-      }
-      const settlement = worth - ((_d = paidPerWord[i]) != null ? _d : 0);
-      if (settlement !== 0) {
-        creditTimes.push(analysis.commitTimes[i]);
-        creditChars.push(settlement);
-      }
+      const word = analysis.commitWordIndex[i];
+      if (word < 0 || word >= ctx.words.length) continue;
+      settledAt[word] = analysis.commitTimes[i];
+      everCommitted[word] = 1;
     }
     const activeIndex = analysis.finalState.wordIndex;
-    if (activeIndex < ctx.words.length) {
-      const target = (_e = ctx.words[activeIndex]) != null ? _e : "";
-      const buffer = (_f = input[activeIndex]) != null ? _f : "";
-      const worth = buffer.length > 0 && target.startsWith(buffer) ? buffer.length : 0;
-      const settlement = worth - ((_g = paidPerWord[activeIndex]) != null ? _g : 0);
+    const committed = Math.min(activeIndex, ctx.words.length);
+    for (let i = 0; i < ctx.words.length; i++) {
+      const paidNet = (_b = paidPerWord[i]) != null ? _b : 0;
+      const paidRaw = (_c = paidRawPerWord[i]) != null ? _c : 0;
+      if (paidNet === 0 && paidRaw === 0 && !everCommitted[i]) continue;
+      const target = (_d = ctx.words[i]) != null ? _d : "";
+      const typed = (_e = input[i]) != null ? _e : "";
+      let netWorth = 0;
+      let rawWorth = 0;
+      let at = end;
+      if (i < committed) {
+        const earnsSeparator = !endsLine(target) && !(finishedByCount && i === committed - 1);
+        if (typed === target) {
+          netWorth = target.length;
+          if (earnsSeparator) netWorth++;
+        }
+        rawWorth = typed.length + (earnsSeparator ? 1 : 0);
+        at = everCommitted[i] ? settledAt[i] : end;
+      } else if (i === activeIndex) {
+        netWorth = typed.length > 0 && target.startsWith(typed) ? typed.length : 0;
+        rawWorth = typed.length;
+      }
+      const settlement = netWorth - paidNet;
       if (settlement !== 0) {
-        creditTimes.push(end);
+        creditTimes.push(at);
         creditChars.push(settlement);
+      }
+      const rawSettlement = rawWorth - paidRaw;
+      if (rawSettlement !== 0) {
+        rawTimes.push(at);
+        rawChars.push(rawSettlement);
       }
     }
     const { keyTimes, keyCorrect } = analysis;
@@ -1927,13 +1980,18 @@ var TypeMoreCore = (() => {
         if (!keyCorrect[k]) errorsInBucket[bucket]++;
       }
     }
-    const netByCheckpoint = new Float64Array(seconds + 2);
-    for (let i = 0; i < creditTimes.length; i++) {
-      const offset = creditTimes[i] - startedAt;
-      const from = offset <= 0 ? 0 : Math.ceil(offset / 1e3);
-      if (from <= seconds) netByCheckpoint[from] += creditChars[i];
-    }
-    for (let s = 1; s <= seconds; s++) netByCheckpoint[s] += netByCheckpoint[s - 1];
+    const bankBy = (times, chars) => {
+      const banked = new Float64Array(seconds + 2);
+      for (let i = 0; i < times.length; i++) {
+        const offset = times[i] - startedAt;
+        const from = offset <= 0 ? 0 : Math.ceil(offset / 1e3);
+        if (from <= seconds) banked[from] += chars[i];
+      }
+      for (let s = 1; s <= seconds; s++) banked[s] += banked[s - 1];
+      return banked;
+    };
+    const netByCheckpoint = bankBy(creditTimes, creditChars);
+    const rawByCheckpoint = bankBy(rawTimes, rawChars);
     const points = [];
     for (let s = 1; s <= seconds; s++) {
       const bucketStart = startedAt + (s - 1) * 1e3;
@@ -1942,33 +2000,40 @@ var TypeMoreCore = (() => {
       const tail = checkpoint < bucketEnd;
       const rateStart = Math.max(startedAt, checkpoint - 1e3);
       let netSoFar;
-      let rawInWindow;
+      let rawSoFar;
+      let burstInWindow;
       let errors;
       if (s < seconds) {
         netSoFar = netByCheckpoint[s];
-        rawInWindow = rawInBucket[s];
+        rawSoFar = rawByCheckpoint[s];
+        burstInWindow = rawInBucket[s];
         errors = errorsInBucket[s];
       } else {
         netSoFar = 0;
-        rawInWindow = 0;
+        rawSoFar = 0;
+        burstInWindow = 0;
         errors = 0;
         for (let k = 0; k < keyTimes.length; k++) {
           const t = keyTimes[k];
           const correct = keyCorrect[k];
           if (t >= bucketStart && t < bucketEnd && !correct) errors++;
           const inWindow = tail ? t >= rateStart : t >= bucketStart && t < bucketEnd;
-          if (inWindow) rawInWindow++;
+          if (inWindow) burstInWindow++;
         }
         for (let i = 0; i < creditTimes.length; i++) {
           if (creditTimes[i] <= checkpoint) netSoFar += creditChars[i];
         }
+        for (let i = 0; i < rawTimes.length; i++) {
+          if (rawTimes[i] <= checkpoint) rawSoFar += rawChars[i];
+        }
       }
-      const elapsedMin = (checkpoint - startedAt) / 6e4;
+      const elapsedMin = elapsedMinutes(startedAt, checkpoint);
       const rateMin = (checkpoint - rateStart) / 6e4;
       points.push({
         second: s,
         wpm: elapsedMin > 0 ? netSoFar / 5 / elapsedMin : 0,
-        raw: rateMin > 0 ? rawInWindow / 5 / rateMin : 0,
+        raw: elapsedMin > 0 ? rawSoFar / 5 / elapsedMin : 0,
+        burst: rateMin > 0 ? burstInWindow / 5 / rateMin : 0,
         errors
       });
     }
@@ -2285,11 +2350,38 @@ var TypeMoreCore = (() => {
   }
 
   // src/validate.ts
+  var BURST_CEILING = [
+    { durationSec: 15, wpm: 250 },
+    { durationSec: 30, wpm: 210 },
+    { durationSec: 60, wpm: 200 }
+  ];
+  function maxBurstWpmFor(durationSec, anchors = BURST_CEILING) {
+    if (anchors.length === 0) return Infinity;
+    const first = anchors[0];
+    if (!(durationSec > first.durationSec)) return first.wpm;
+    for (let i = 1; i < anchors.length; i++) {
+      const prev = anchors[i - 1];
+      const next = anchors[i];
+      if (durationSec <= next.durationSec) {
+        const span = next.durationSec - prev.durationSec;
+        if (span <= 0) return next.wpm;
+        return prev.wpm + (durationSec - prev.durationSec) * (next.wpm - prev.wpm) / span;
+      }
+    }
+    return anchors[anchors.length - 1].wpm;
+  }
+  var SUPERHUMAN_SEVERITY_SCALE = 500;
+  var ACCURACY_WEIGHT_FLOOR = 0.25;
+  var ACCURACY_WEIGHT_EXPONENT = 4;
+  function burstAccuracyWeight(accuracy) {
+    const acc = Math.min(1, Math.max(0, accuracy));
+    return ACCURACY_WEIGHT_FLOOR + (1 - ACCURACY_WEIGHT_FLOOR) * acc ** ACCURACY_WEIGHT_EXPONENT;
+  }
   var DEFAULT_THRESHOLDS = {
     minKeyIntervalMs: 15,
     uniformToleranceMs: 2,
     uniformFlagRatio: 0.9,
-    maxBurstWpm: 250,
+    burstCeiling: BURST_CEILING,
     afkFlagShare: 0.5,
     trailingAfkMs: 1e4
   };
@@ -2427,11 +2519,12 @@ var TypeMoreCore = (() => {
         flags.push({ code: "zero-variance", score: 1, detail: "all keystroke intervals identical" });
       }
     }
-    if (metrics.wpm > thresholds.maxBurstWpm && metrics.accuracy === 1) {
+    const burstCeiling = maxBurstWpmFor(metrics.durationSec, thresholds.burstCeiling);
+    if (metrics.wpm > burstCeiling) {
       flags.push({
         code: "superhuman-burst",
-        score: Math.min(1, metrics.wpm / (thresholds.maxBurstWpm * 2)),
-        detail: `${Math.round(metrics.wpm)} wpm at 100% accuracy`
+        score: Math.min(1, metrics.wpm / SUPERHUMAN_SEVERITY_SCALE) * burstAccuracyWeight(metrics.accuracy),
+        detail: `${Math.round(metrics.wpm)} wpm over ${Math.round(metrics.durationSec)}s (ceiling ${Math.round(burstCeiling)}) at ${Math.round(metrics.accuracy * 100)}% accuracy`
       });
     }
     const runEnd = (_h = (_g = finalState.finishedAt) != null ? _g : endMs) != null ? _h : stateEvents.length > 0 ? stateEvents[stateEvents.length - 1].t : startT;
@@ -2624,4 +2717,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"0fa8e29f8cf5cd821d777b44cd8d9da9c6c05322","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"885302d8670c8b9d262ca250f9a0eac391456af7","gitDirty":false}
