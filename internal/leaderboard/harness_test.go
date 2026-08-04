@@ -96,6 +96,22 @@ type board struct {
 
 type boardOpts struct {
 	requireVerifiedEmail bool
+	// indexLimiter is nil by default: this suite hits the index freely, and the
+	// bucket belongs to the one test that is about the bucket.
+	indexLimiter leaderboard.RateLimiter
+}
+
+// allowN is a RateLimiter that permits the first n calls and refuses the rest —
+// enough to assert the gate is wired to the index route and to nothing else,
+// without the clock a real token bucket would drag in.
+type allowN struct{ left int }
+
+func (a *allowN) Allow(string) bool {
+	if a.left <= 0 {
+		return false
+	}
+	a.left--
+	return true
 }
 
 func newBoard(t *testing.T, mutators ...func(*boardOpts)) *board {
@@ -128,6 +144,7 @@ func newBoard(t *testing.T, mutators ...func(*boardOpts)) *board {
 		// withdrawn here; the withdrawn-board rule is exercised end to end in
 		// internal/runs, where a real quote exists to withdraw.
 		func(context.Context) (map[uuid.UUID]struct{}, error) { return nil, nil },
+		opts.indexLimiter,
 		logger)
 
 	r := chi.NewRouter()

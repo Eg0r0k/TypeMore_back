@@ -52,6 +52,13 @@ type session struct {
 	resumeToken string
 	room        *Room
 
+	// Inbound budgets (ratelimit.go). On the CONNECTION, not the seat: a seat is
+	// minted by every join, so a budget kept there was reset by leave + join.
+	// Read-loop-owned like the rest of the state above.
+	commands bucket
+	batches  bucket
+	chats    bucket
+
 	// displaceMu guards displacedAs, the close reason a displacing connection
 	// leaves behind for this session's own serve goroutine to close with. A
 	// mutex and not an atomic flag because the two goroutines need an ordering
@@ -183,6 +190,28 @@ func (s *session) dispatch(ctx context.Context, data []byte, recvMs int64) (clos
 		return s.handleHello(ctx, data)
 	}
 
+	// Everything below is rate-limited per connection, in two budgets
+	// (ratelimit.go). The check happens BEFORE the payload is decoded, so a
+	// refused frame costs one envelope parse rather than a full unmarshal.
+	//
+	// Exempt: `finish` (once per match, and refusing it would forfeit a real
+	// run) and `ntp_ping`, whose answer is a fixed-size frame computed from
+	// three integers — it is the one message whose cost does not grow with
+	// anything, and clock sync bursts legitimately at match start.
+	switch env.Type {
+	case protocol.TypeFinish, protocol.TypeNTPPing:
+	case protocol.TypeEventBatch:
+		if !s.batches.allow(time.Now(), batchBurst, batchRefill) {
+			s.send(ctx, protocol.NewError(protocol.CodeRateLimited, "event batch rate limit exceeded"))
+			return closeReason{}, false
+		}
+	default:
+		if !s.commands.allow(time.Now(), commandBurst, commandRefill) {
+			s.send(ctx, protocol.NewError(protocol.CodeRateLimited, "message rate limit exceeded"))
+			return closeReason{}, false
+		}
+	}
+
 	switch env.Type {
 	case protocol.TypeHello:
 		// A second hello on an already-established session is a client bug.
@@ -212,7 +241,10 @@ func (s *session) dispatch(ctx context.Context, data []byte, recvMs int64) (clos
 			s.withRoom(ctx, func(r *Room) { r.setFreemods(s, m.Freemods) })
 		}
 	case protocol.TypeStartMatch:
-		s.withRoom(ctx, func(r *Room) { r.startMatch(s) })
+		var m protocol.StartMatch
+		if s.decode(ctx, data, &m) {
+			s.withRoom(ctx, func(r *Room) { r.startMatch(s, m.Force) })
+		}
 	case protocol.TypeKick:
 		var m protocol.Kick
 		if s.decode(ctx, data, &m) {

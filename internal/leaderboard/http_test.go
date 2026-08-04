@@ -75,6 +75,31 @@ func TestBucketsIndex(t *testing.T) {
 	assert.Nil(t, wordBucket.DurationMs)
 }
 
+// The index is the one read here whose cost scales with how much the product
+// has grown — an aggregate over every board (up to ~9 881 quote ones) plus the
+// withdrawn-quote read, anonymously, on every hit. So it is the one read that
+// is rationed, and the two halves of that are asserted here: the per-IP bucket
+// bounds one caller, the cache header bounds all of them. A board PAGE is
+// bounded by its own limit and is deliberately behind neither.
+func TestBucketsIndexIsRationedAndCacheable(t *testing.T) {
+	b := newBoard(t, func(o *boardOpts) { o.indexLimiter = &allowN{left: 1} })
+	user := b.user("racer", true)
+	b.addRun(runSpec{user: user, score: 1000, durationMs: new(int32(15000))})
+
+	resp := b.get("/api/v1/leaderboards")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "public, max-age=60", resp.Header.Get("Cache-Control"),
+		"the index answer is the same bytes for every reader, so it is publicly cacheable")
+
+	resp = b.get("/api/v1/leaderboards")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	assert.Contains(t, string(readBody(t, resp)), "rate_limited")
+
+	// The gate is on the index and nowhere else: a board page still answers with
+	// the bucket long since empty.
+	assert.Equal(t, http.StatusOK, b.get("/api/v1/leaderboards/time:15000:en:seeded").StatusCode)
+}
+
 func TestBucketsIndexIsEmptyNotNull(t *testing.T) {
 	b := newBoard(t)
 	resp := b.get("/api/v1/leaderboards")

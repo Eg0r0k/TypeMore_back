@@ -8,31 +8,11 @@ import (
 	"github.com/typemore/typemore-server/internal/protocol"
 )
 
-// Chat rate-limit token bucket: burst of 5, fully refilled over 2s (one token
-// every 400ms). Matches the shared limiter's intent without importing the auth
-// domain into the transport layer.
-const (
-	chatBurst  = 5
-	chatRefill = 400 * time.Millisecond
-)
-
-// allowChat reports whether this seat may send a chat message now, consuming a
-// token if so. A token-bucket refilling one token per chatRefill up to chatBurst.
-func (st *seat) allowChat(now time.Time) bool {
-	if st.chatLast.IsZero() {
-		st.chatTokens = chatBurst
-	} else {
-		st.chatTokens = min(float64(chatBurst), st.chatTokens+now.Sub(st.chatLast).Seconds()/chatRefill.Seconds())
-	}
-	st.chatLast = now
-	if st.chatTokens >= 1 {
-		st.chatTokens--
-		return true
-	}
-	return false
-}
-
 // chat validates, rate-limits, and broadcasts a lobby chat message.
+//
+// The budget is the SESSION's (ratelimit.go), not the seat's. It used to be the
+// seat's, which meant leave + join_room minted a fresh seat with a full burst
+// and the limit bounded nothing at all.
 func (r *Room) chat(sess *session, text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -47,7 +27,7 @@ func (r *Room) chat(sess *session, text string) {
 		r.errLocked(sess, protocol.CodeBadMessage, "chat text must be 1-200 characters")
 		return
 	}
-	if !st.allowChat(time.Now()) {
+	if !sess.chats.allow(time.Now(), chatBurst, chatRefill) {
 		r.errLocked(sess, protocol.CodeRateLimited, "chat rate limit exceeded")
 		return
 	}

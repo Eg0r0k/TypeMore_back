@@ -325,3 +325,95 @@ ORDER BY (lower(u.display_name::text) = @needle::text) DESC,
          char_length(u.display_name::text),
          u.display_name
 LIMIT @lim;
+
+-- name: GetPublicProfileIdentity :one
+-- The profile's IDENTITY half for one account (00029): what the owner wrote
+-- about themselves. Read as a SEPARATE statement from GetPublicProfileUser
+-- rather than by widening it, because the two answer different questions and
+-- are gated differently: the header row decides whether the page exists at all
+-- (and answers for a CLOSED profile), while this is profile content and is only
+-- served once the profile gate has passed.
+SELECT bio, keyboard
+FROM users
+WHERE id = $1;
+
+-- name: ListShowcaseBadges :many
+-- One account's badge SHOWCASE, in the order its owner arranged.
+--
+-- The live predicate is `revoked_at IS NULL` and nothing else. In particular it
+-- is NOT "has a display_order": a revoked badge keeps whatever position it had,
+-- because revocation is an operator's act and must not quietly rewrite a
+-- showcase the owner arranged — so the filter has to be the revocation, and a
+-- reader that trusted display_order alone would keep rendering a badge that was
+-- taken away. `display_order IS NOT NULL` is the owner's own "show this" half.
+--
+-- badge_code breaks ties: display_order is not unique (00029 explains why), and
+-- an ordering that can permute between two identical reads renders as a
+-- showcase that shuffles under the cursor.
+SELECT badge_code, display_order
+FROM user_badges
+WHERE user_id = $1
+  AND revoked_at IS NULL
+  AND display_order IS NOT NULL
+ORDER BY display_order, badge_code;
+
+-- name: ListGrantedBadges :many
+-- Every badge the account HOLDS, shown or not — what the settings screen offers
+-- as the pool to arrange, and what the showcase write validates against. Same
+-- live predicate, without the owner's visibility half.
+SELECT badge_code, granted_at, display_order
+FROM user_badges
+WHERE user_id = $1
+  AND revoked_at IS NULL
+ORDER BY granted_at, badge_code;
+
+-- name: ListUserLinks :many
+-- One account's social links. `kind` orders them so the profile header renders
+-- the same sequence on every load.
+SELECT kind, handle
+FROM user_links
+WHERE user_id = $1
+ORDER BY kind;
+
+-- name: UpdateProfileIdentity :exec
+-- The bio/keyboard half of PATCH /me/profile. Both are resolved against the
+-- current row by the handler before this runs, so this writes the pair the
+-- caller will be shown; NULL clears (00029: NULL is "unset", '' is impossible).
+UPDATE users
+SET bio      = sqlc.narg(bio),
+    keyboard = sqlc.narg(keyboard),
+    updated_at = now()
+WHERE id = @user_id;
+
+-- name: UpsertUserLink :exec
+-- Set one link. The natural key IS the primary key, so "change my GitHub" is an
+-- upsert on (user_id, kind) rather than a delete-then-insert that would open a
+-- window where the link does not exist.
+INSERT INTO user_links (user_id, kind, handle)
+VALUES (@user_id, @kind, @handle)
+ON CONFLICT (user_id, kind) DO UPDATE SET handle = EXCLUDED.handle;
+
+-- name: DeleteUserLink :exec
+-- Clearing a link is deleting its row: an empty handle is not a state
+-- user_links can hold (the per-kind CHECKs forbid it), and storing one would
+-- make "has no GitHub" and "has a broken GitHub" the same row.
+DELETE FROM user_links WHERE user_id = @user_id AND kind = @kind;
+
+-- name: ClearBadgeShowcase :exec
+-- Take every live badge out of the showcase. The showcase write is
+-- "clear, then place the chosen ones", inside one transaction: the alternative
+-- — diffing the request against what is stored — would have to decide what an
+-- absent code means, and the answer ("hide it") is exactly what clearing does.
+UPDATE user_badges
+SET display_order = NULL
+WHERE user_id = @user_id AND revoked_at IS NULL;
+
+-- name: PlaceBadgeInShowcase :exec
+-- Give one badge its position. The `revoked_at IS NULL` predicate is what makes
+-- this refuse a revoked badge: the handler validates the code against the live
+-- grants first, but the write must not depend on that check still being true —
+-- a revocation racing a showcase save would otherwise put a taken-away badge
+-- back on a public page. A no-op here is the honest outcome of that race.
+UPDATE user_badges
+SET display_order = @display_order
+WHERE user_id = @user_id AND badge_code = @badge_code AND revoked_at IS NULL;

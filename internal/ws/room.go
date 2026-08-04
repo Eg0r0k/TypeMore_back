@@ -24,7 +24,9 @@ const (
 // drop the *seat survives for the grace window (sess goes nil; mid-match the
 // backlog buffers) and a new session re-attaches to it via the resume token.
 //
-// The zero-value chat bucket is lazily initialized to a full burst on first use.
+// Deliberately holds NO rate-limit budget. Those live on the session
+// (ratelimit.go), because a seat is minted fresh by every join and a budget
+// here was reset by leaving and rejoining.
 type seat struct {
 	sess        *session // nil while disconnected (grace) or after a terminal exit
 	playerID    string
@@ -35,9 +37,6 @@ type seat struct {
 	ready       bool
 	freemods    protocol.Freemods
 	joinSeq     uint64
-
-	chatTokens float64
-	chatLast   time.Time
 
 	// Match/relay state — valid while r.match != nil and this seat is a roster
 	// participant.
@@ -389,6 +388,19 @@ func (r *Room) ready(sess *session, value bool) {
 		r.errLocked(sess, protocol.CodeNotInRoom, "not in a room")
 		return
 	}
+	// Readiness is a LOBBY state and means nothing once the countdown has frozen
+	// the roster. Refusing it mid-match is not pedantry: every accepted `ready`
+	// costs one full room_state, marshalled separately per seat, and this was the
+	// cheapest broadcast amplifier on the connection.
+	if r.inMatch {
+		r.errLocked(sess, protocol.CodeBadMessage, "cannot change readiness during a match")
+		return
+	}
+	// A flag that already holds is not news. Skipping the broadcast keeps a
+	// held-down button from costing the room anything at all.
+	if st.ready == value {
+		return
+	}
 	st.ready = value
 	r.broadcastStateLocked()
 }
@@ -498,6 +510,14 @@ func (r *Room) transferHost(sess *session, targetID string) {
 	}
 	if st.playerID != r.hostID {
 		r.errLocked(sess, protocol.CodeForbidden, "only the host can transfer the host role")
+		return
+	}
+	// Mid-match the host role decides nothing that is still open to decide — the
+	// settings are frozen and the match ends on its own rules — while each
+	// transfer costs a room_state plus a system chat to every seat. Alternating
+	// between two seats was a ~10× write amplifier on one inbound frame.
+	if r.inMatch {
+		r.errLocked(sess, protocol.CodeBadMessage, "cannot transfer the host role during a match")
 		return
 	}
 	target := r.findSeatByIDLocked(targetID)

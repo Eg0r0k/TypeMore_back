@@ -13,6 +13,38 @@ import (
 	"github.com/google/uuid"
 )
 
+const clearBadgeShowcase = `-- name: ClearBadgeShowcase :exec
+UPDATE user_badges
+SET display_order = NULL
+WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+// Take every live badge out of the showcase. The showcase write is
+// "clear, then place the chosen ones", inside one transaction: the alternative
+// — diffing the request against what is stored — would have to decide what an
+// absent code means, and the answer ("hide it") is exactly what clearing does.
+func (q *Queries) ClearBadgeShowcase(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearBadgeShowcase, userID)
+	return err
+}
+
+const deleteUserLink = `-- name: DeleteUserLink :exec
+DELETE FROM user_links WHERE user_id = $1 AND kind = $2
+`
+
+type DeleteUserLinkParams struct {
+	UserID uuid.UUID
+	Kind   string
+}
+
+// Clearing a link is deleting its row: an empty handle is not a state
+// user_links can hold (the per-kind CHECKs forbid it), and storing one would
+// make "has no GitHub" and "has a broken GitHub" the same row.
+func (q *Queries) DeleteUserLink(ctx context.Context, arg DeleteUserLinkParams) error {
+	_, err := q.db.Exec(ctx, deleteUserLink, arg.UserID, arg.Kind)
+	return err
+}
+
 const getProfileActivity = `-- name: GetProfileActivity :many
 SELECT (r.created_at AT TIME ZONE 'UTC')::date                        AS day,
        count(*)::int                                                AS tests,
@@ -526,6 +558,30 @@ func (q *Queries) GetProfileWpmPerHour(ctx context.Context, arg GetProfileWpmPer
 	return wpm_per_hour, err
 }
 
+const getPublicProfileIdentity = `-- name: GetPublicProfileIdentity :one
+SELECT bio, keyboard
+FROM users
+WHERE id = $1
+`
+
+type GetPublicProfileIdentityRow struct {
+	Bio      *string
+	Keyboard *string
+}
+
+// The profile's IDENTITY half for one account (00029): what the owner wrote
+// about themselves. Read as a SEPARATE statement from GetPublicProfileUser
+// rather than by widening it, because the two answer different questions and
+// are gated differently: the header row decides whether the page exists at all
+// (and answers for a CLOSED profile), while this is profile content and is only
+// served once the profile gate has passed.
+func (q *Queries) GetPublicProfileIdentity(ctx context.Context, id uuid.UUID) (GetPublicProfileIdentityRow, error) {
+	row := q.db.QueryRow(ctx, getPublicProfileIdentity, id)
+	var i GetPublicProfileIdentityRow
+	err := row.Scan(&i.Bio, &i.Keyboard)
+	return i, err
+}
+
 const getPublicProfilePBs = `-- name: GetPublicProfilePBs :many
 SELECT bucket_key, run_id, score, wpm::float8 AS wpm, raw::float8 AS raw,
        acc::float8 AS acc, grade, mods, quote_source, achieved_at
@@ -775,6 +831,145 @@ func (q *Queries) GetPublicProfileUser(ctx context.Context, displayName string) 
 	return i, err
 }
 
+const listGrantedBadges = `-- name: ListGrantedBadges :many
+SELECT badge_code, granted_at, display_order
+FROM user_badges
+WHERE user_id = $1
+  AND revoked_at IS NULL
+ORDER BY granted_at, badge_code
+`
+
+type ListGrantedBadgesRow struct {
+	BadgeCode    string
+	GrantedAt    time.Time
+	DisplayOrder *int32
+}
+
+// Every badge the account HOLDS, shown or not — what the settings screen offers
+// as the pool to arrange, and what the showcase write validates against. Same
+// live predicate, without the owner's visibility half.
+func (q *Queries) ListGrantedBadges(ctx context.Context, userID uuid.UUID) ([]ListGrantedBadgesRow, error) {
+	rows, err := q.db.Query(ctx, listGrantedBadges, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGrantedBadgesRow{}
+	for rows.Next() {
+		var i ListGrantedBadgesRow
+		if err := rows.Scan(&i.BadgeCode, &i.GrantedAt, &i.DisplayOrder); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listShowcaseBadges = `-- name: ListShowcaseBadges :many
+SELECT badge_code, display_order
+FROM user_badges
+WHERE user_id = $1
+  AND revoked_at IS NULL
+  AND display_order IS NOT NULL
+ORDER BY display_order, badge_code
+`
+
+type ListShowcaseBadgesRow struct {
+	BadgeCode    string
+	DisplayOrder *int32
+}
+
+// One account's badge SHOWCASE, in the order its owner arranged.
+//
+// The live predicate is `revoked_at IS NULL` and nothing else. In particular it
+// is NOT "has a display_order": a revoked badge keeps whatever position it had,
+// because revocation is an operator's act and must not quietly rewrite a
+// showcase the owner arranged — so the filter has to be the revocation, and a
+// reader that trusted display_order alone would keep rendering a badge that was
+// taken away. `display_order IS NOT NULL` is the owner's own "show this" half.
+//
+// badge_code breaks ties: display_order is not unique (00029 explains why), and
+// an ordering that can permute between two identical reads renders as a
+// showcase that shuffles under the cursor.
+func (q *Queries) ListShowcaseBadges(ctx context.Context, userID uuid.UUID) ([]ListShowcaseBadgesRow, error) {
+	rows, err := q.db.Query(ctx, listShowcaseBadges, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListShowcaseBadgesRow{}
+	for rows.Next() {
+		var i ListShowcaseBadgesRow
+		if err := rows.Scan(&i.BadgeCode, &i.DisplayOrder); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserLinks = `-- name: ListUserLinks :many
+SELECT kind, handle
+FROM user_links
+WHERE user_id = $1
+ORDER BY kind
+`
+
+type ListUserLinksRow struct {
+	Kind   string
+	Handle string
+}
+
+// One account's social links. `kind` orders them so the profile header renders
+// the same sequence on every load.
+func (q *Queries) ListUserLinks(ctx context.Context, userID uuid.UUID) ([]ListUserLinksRow, error) {
+	rows, err := q.db.Query(ctx, listUserLinks, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserLinksRow{}
+	for rows.Next() {
+		var i ListUserLinksRow
+		if err := rows.Scan(&i.Kind, &i.Handle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const placeBadgeInShowcase = `-- name: PlaceBadgeInShowcase :exec
+UPDATE user_badges
+SET display_order = $1
+WHERE user_id = $2 AND badge_code = $3 AND revoked_at IS NULL
+`
+
+type PlaceBadgeInShowcaseParams struct {
+	DisplayOrder *int32
+	UserID       uuid.UUID
+	BadgeCode    string
+}
+
+// Give one badge its position. The `revoked_at IS NULL` predicate is what makes
+// this refuse a revoked badge: the handler validates the code against the live
+// grants first, but the write must not depend on that check still being true —
+// a revocation racing a showcase save would otherwise put a taken-away badge
+// back on a public page. A no-op here is the honest outcome of that race.
+func (q *Queries) PlaceBadgeInShowcase(ctx context.Context, arg PlaceBadgeInShowcaseParams) error {
+	_, err := q.db.Exec(ctx, placeBadgeInShowcase, arg.DisplayOrder, arg.UserID, arg.BadgeCode)
+	return err
+}
+
 const searchUsersByName = `-- name: SearchUsersByName :many
 SELECT u.display_name, u.created_at, u.profile_public
 FROM users u
@@ -848,4 +1043,46 @@ func (q *Queries) SearchUsersByName(ctx context.Context, arg SearchUsersByNamePa
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateProfileIdentity = `-- name: UpdateProfileIdentity :exec
+UPDATE users
+SET bio      = $1,
+    keyboard = $2,
+    updated_at = now()
+WHERE id = $3
+`
+
+type UpdateProfileIdentityParams struct {
+	Bio      *string
+	Keyboard *string
+	UserID   uuid.UUID
+}
+
+// The bio/keyboard half of PATCH /me/profile. Both are resolved against the
+// current row by the handler before this runs, so this writes the pair the
+// caller will be shown; NULL clears (00029: NULL is "unset", ” is impossible).
+func (q *Queries) UpdateProfileIdentity(ctx context.Context, arg UpdateProfileIdentityParams) error {
+	_, err := q.db.Exec(ctx, updateProfileIdentity, arg.Bio, arg.Keyboard, arg.UserID)
+	return err
+}
+
+const upsertUserLink = `-- name: UpsertUserLink :exec
+INSERT INTO user_links (user_id, kind, handle)
+VALUES ($1, $2, $3)
+ON CONFLICT (user_id, kind) DO UPDATE SET handle = EXCLUDED.handle
+`
+
+type UpsertUserLinkParams struct {
+	UserID uuid.UUID
+	Kind   string
+	Handle string
+}
+
+// Set one link. The natural key IS the primary key, so "change my GitHub" is an
+// upsert on (user_id, kind) rather than a delete-then-insert that would open a
+// window where the link does not exist.
+func (q *Queries) UpsertUserLink(ctx context.Context, arg UpsertUserLinkParams) error {
+	_, err := q.db.Exec(ctx, upsertUserLink, arg.UserID, arg.Kind, arg.Handle)
+	return err
 }

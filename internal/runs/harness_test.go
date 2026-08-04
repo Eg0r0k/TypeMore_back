@@ -100,6 +100,9 @@ type harness struct {
 	// worker. Tests that move a run's status by hand use it to project through
 	// the same path production does.
 	board *leaderboardpg.Store
+	// moderation is the same store the admin surface writes through — how these
+	// tests put a badge on an account without an admin session.
+	moderation *moderation.Store
 }
 
 type harnessOpts struct {
@@ -193,7 +196,7 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 	boardSvc := leaderboard.NewService(boardStore, func(c context.Context) (uuid.UUID, bool) {
 		u, ok := auth.UserFrom(c)
 		return u.ID, ok
-	}, quoteStore.WithdrawnIDs, logger)
+	}, quoteStore.WithdrawnIDs, nil, logger)
 
 	// Profile wired exactly as cmd/server does it, bucket parser adapter and
 	// layout namer included, so this suite exercises the same decoration
@@ -236,6 +239,9 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 		r.With(authSvc.RequireAuth).Get("/me", authSvc.HandleMe)
 		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
 			Patch("/me/settings", authSvc.HandleUpdateSettings)
+		r.With(authSvc.RequireAuth).Get("/me/profile", profileSvc.HandleOwnProfile)
+		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
+			Patch("/me/profile", profileSvc.HandleUpdateProfile)
 		r.Mount("/runs", runsSvc.Routes(authSvc.RequireOrigin, authSvc.RequireAuth))
 		r.Mount("/profile", profileSvc.Routes(authSvc.RequireAuth))
 		r.Mount("/layouts", layouts.Routes(logger))
@@ -280,7 +286,8 @@ func newHarness(t *testing.T, mutators ...func(*harnessOpts)) *harness {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
-	return &harness{t: t, server: server, client: client, mailer: mailer, pool: pool, board: boardStore}
+	return &harness{t: t, server: server, client: client, mailer: mailer, pool: pool,
+		board: boardStore, moderation: moderationStore}
 }
 
 // --- HTTP helpers ---

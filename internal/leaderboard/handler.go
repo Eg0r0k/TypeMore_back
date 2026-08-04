@@ -27,10 +27,26 @@ const (
 // the other two must not have.
 func (s *Service) Routes() http.Handler {
 	r := chi.NewRouter()
-	r.Get("/", s.handleBuckets)
+	r.With(s.rateLimitIndex).Get("/", s.handleBuckets)
 	r.Get("/{bucket}", s.handlePage)
 	r.Get("/{bucket}/me", s.handleMe)
 	return r
+}
+
+// rateLimitIndex is the per-IP bucket on the board index — see the field
+// comment on Service.indexLimiter for why that route and no other. A nil
+// limiter disables the gate entirely rather than refusing everything.
+func (s *Service) rateLimitIndex(next http.Handler) http.Handler {
+	if s.indexLimiter == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.indexLimiter.Allow(httpx.ClientIP(r)) {
+			s.writeError(w, r, apiErrRateLimited)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // bucketView is one board in the index. A language board renders its dimension
@@ -101,6 +117,17 @@ func (s *Service) handleBuckets(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, toBucketView(b, counts[i].Entries))
 	}
+	// A minute of shared caching, and it is the limiter's other half: the bucket
+	// bounds one caller, this bounds how often ALL of them can reach the two
+	// aggregations behind this route. `public` because the answer carries
+	// nothing reader-specific — the index is the same bytes for everyone, signed
+	// in or not — so a CDN or a browser cache may serve it to anybody.
+	//
+	// A minute is chosen against what the response actually says: a board
+	// appearing in the index at all takes a first accepted run on it, and a
+	// withdrawal is a moderator's deliberate act. Neither is something a reader
+	// is waiting on to the second, and the per-board reads are uncached.
+	w.Header().Set("Cache-Control", "public, max-age=60")
 	s.writeJSON(w, http.StatusOK, bucketsResponse{Buckets: views})
 }
 

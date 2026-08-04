@@ -25,13 +25,18 @@ import (
 // Store implements profile.Store.
 type Store struct {
 	q *profiledb.Queries
+	// pool is held for the ONE write this adapter does: a profile patch moves
+	// the bio, the links and the badge showcase together, and a half-applied
+	// edit would leave a profile its owner never asked for and cannot see they
+	// have. Every read below goes through q.
+	pool *pgxpool.Pool
 }
 
 var _ profile.Store = (*Store)(nil)
 
 // New builds a Store from a pgx pool.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{q: profiledb.New(pool)}
+	return &Store{q: profiledb.New(pool), pool: pool}
 }
 
 // Summary assembles GET /profile/summary from its component aggregates,

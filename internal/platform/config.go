@@ -298,6 +298,22 @@ type Config struct {
 	// projection, so this is abuse control, not load shedding.
 	LobbyRateEvery time.Duration `env:"LOBBY_RATE_EVERY" envDefault:"2s"`
 	LobbyRateBurst int           `env:"LOBBY_RATE_BURST" envDefault:"30"`
+
+	// LeaderboardIndexRateEvery / _BURST are the per-IP token bucket on
+	// GET /api/v1/leaderboards — the board INDEX, not a board.
+	//
+	// It is the one read in the API whose cost scales with how much the product
+	// has grown rather than with what was asked for: an aggregate over every
+	// board plus the withdrawn-quote read, on every hit, anonymously. A page
+	// read is bounded by its own limit and is deliberately not behind this.
+	//
+	// A reader loads the index when the boards screen opens and then browses
+	// boards, so 1 token/s sustained is already far above real use; the burst of
+	// 20 covers a reload storm, several tabs, or a few players behind one NAT.
+	// The response also carries a one-minute `Cache-Control`, which is the other
+	// half of this: the bucket bounds one caller, the cache bounds all of them.
+	LeaderboardIndexRateEvery time.Duration `env:"LEADERBOARD_INDEX_RATE_EVERY" envDefault:"1s"`
+	LeaderboardIndexRateBurst int           `env:"LEADERBOARD_INDEX_RATE_BURST" envDefault:"20"`
 }
 
 // LoadConfig reads Config from the process environment. It returns an error if a

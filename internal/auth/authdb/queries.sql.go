@@ -110,7 +110,7 @@ const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (display_name)
 VALUES ($1)
-RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role
+RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard
 `
 
 // Queries for the auth domain. sqlc generates type-safe Go from these into
@@ -127,6 +127,8 @@ func (q *Queries) CreateUser(ctx context.Context, displayName string) (User, err
 		&i.KeyboardPublic,
 		&i.UpdatedAt,
 		&i.Role,
+		&i.Bio,
+		&i.Keyboard,
 	)
 	return i, err
 }
@@ -276,7 +278,7 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, display_name, created_at, profile_public, keyboard_public, updated_at, role FROM users WHERE id = $1
+SELECT id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -290,6 +292,8 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.KeyboardPublic,
 		&i.UpdatedAt,
 		&i.Role,
+		&i.Bio,
+		&i.Keyboard,
 	)
 	return i, err
 }
@@ -402,7 +406,7 @@ const updateUserSettings = `-- name: UpdateUserSettings :one
 UPDATE users
 SET profile_public = $2, keyboard_public = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role
+RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard
 `
 
 type UpdateUserSettingsParams struct {
@@ -428,6 +432,8 @@ func (q *Queries) UpdateUserSettings(ctx context.Context, arg UpdateUserSettings
 		&i.KeyboardPublic,
 		&i.UpdatedAt,
 		&i.Role,
+		&i.Bio,
+		&i.Keyboard,
 	)
 	return i, err
 }

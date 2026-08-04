@@ -48,11 +48,18 @@ func (s *Service) AdminRoutes(requireRead, requireWrite func(http.Handler) http.
 		r.Use(requireRead)
 		r.Get("/bans", s.handleListBans)
 		r.Get("/users/{identifier}/bans", s.handleUserBans)
+		// Badges read behind the SAME permission as bans: they are the operator
+		// half of a decoration, not a second kind of authority, and a role that
+		// can read who is banned is not less trusted with who is a beta tester.
+		r.Get("/users/{identifier}/badges", s.handleUserBadges)
+		r.Get("/badges/{code}/holders", s.handleBadgeHolders)
 	})
 	r.Group(func(r chi.Router) {
 		r.Use(requireWrite)
 		r.Post("/bans", s.handleBan)
 		r.Delete("/users/{userID}/ban", s.handleUnban)
+		r.Post("/users/{identifier}/badges", s.handleGrantBadge)
+		r.Delete("/users/{identifier}/badges/{code}", s.handleRevokeBadge)
 	})
 	return r
 }

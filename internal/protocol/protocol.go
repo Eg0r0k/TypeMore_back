@@ -25,9 +25,12 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/typemore/typemore-server/internal/runlimits"
 )
 
 // Version is the protocol version this server speaks. It is transmitted as a
@@ -164,6 +167,15 @@ type TextMods struct {
 	Numbers     bool `json:"numbers"`
 	RandomCase  bool `json:"randomCase"`
 	Reverse     bool `json:"reverse"`
+	// Lazy strips the diacritics from every generated word (`épée` → `epee`).
+	// A TEXT mod and not a freemod: the core applies it at GENERATION time, so
+	// it changes what everyone types and must therefore be identical for every
+	// seat. It is also why it earns no score multiplier — only log-provable
+	// per-player rules multiply (MATCH.md §3), and this one is the map.
+	//
+	// Additive on the wire: a client that predates the field decodes it as
+	// false, which is exactly the old behaviour.
+	Lazy bool `json:"lazy"`
 }
 
 // TextSource is the discriminated source of the match text. v0 has the single
@@ -265,8 +277,15 @@ type SetFreemods struct {
 // StartMatch is the host-only request to begin. It is valid iff there are at
 // least two seats and every non-host seat is ready; otherwise it is rejected
 // with CodeNotReady. On success the server emits a Countdown.
+//
+// Force skips ONLY the readiness check, never the seat count: a not-ready seat
+// is seated into the countdown like everyone else, and the existing AFK rules
+// are what deal with a player who then does not type. The alternative — carve
+// the not-ready seats out of the match — would need a spectator state the
+// protocol does not have, and would let a host silently exclude people.
 type StartMatch struct {
-	Type string `json:"type"`
+	Type  string `json:"type"`
+	Force bool   `json:"force,omitempty"`
 }
 
 // Kick removes another seat (host-only). The kicked client receives a Kicked
@@ -566,6 +585,29 @@ const (
 	ChatTextMaxLen = 200
 )
 
+// Length ceilings on the free-text identifiers in Settings.
+//
+// These are an ABUSE bound, not a format one. Every one of these strings is
+// echoed by the server far beyond the sender: into each seat's own room_state
+// frame, into the countdown, into the persisted match row, and — for an open
+// room — verbatim into the ANONYMOUS lobby listing (internal/ws/lobby.go). With
+// only a non-empty check, one host sending a 2 MiB `lang` under the transport's
+// own 2 MiB frame limit turned a single WebSocket frame into multi-megabyte
+// public GET responses. A cap here is what keeps the amplification factor
+// bounded by the room roster rather than by the sender's imagination.
+//
+// The numbers deliberately mirror the HTTP ingest validator's
+// (internal/runs/validate.go): the same two identifiers describe the same two
+// things on both paths, and a room that can be configured with a lang the run
+// endpoint would refuse is a room whose results cannot be submitted.
+const (
+	LangMaxLen     = 32
+	DictHashMaxLen = 64
+	// A quote id is a uuid (36 characters); the slack is for a future id shape,
+	// not for free text.
+	QuoteIDMaxLen = 64
+)
+
 // validMinWpm is the fixed set of accepted freemod minimum-WPM floors.
 var validMinWpm = map[int]bool{0: true, 60: true, 80: true, 100: true}
 
@@ -600,20 +642,36 @@ func ValidateSettings(s Settings) error {
 	if s.Visibility != VisibilityOpen && s.Visibility != VisibilityPrivate {
 		return errors.New("visibility must be 'open' or 'private'")
 	}
+	// The dimensions are bounded by the SAME constants the HTTP ingest path uses
+	// (internal/runlimits), and for two reasons beyond tidiness. A match whose
+	// dimension the run endpoint would refuse is a match whose results nobody can
+	// submit — the run is played and then thrown away. And unbounded here is a
+	// resource bound as well as a product one: `durationMs` arms the match
+	// deadline timer directly and decides how long the server keeps accepting and
+	// retaining every seat's relayed events.
 	switch s.Mode {
 	case ModeTime:
 		if s.DurationMs <= 0 {
 			return errors.New("durationMs must be positive for time mode")
 		}
+		if s.DurationMs > runlimits.MaxDurationMs {
+			return fmt.Errorf("durationMs must be at most %d", runlimits.MaxDurationMs)
+		}
 	case ModeWords, ModeQuote:
 		if s.WordCount <= 0 {
 			return errors.New("wordCount must be positive for " + s.Mode + " mode")
+		}
+		if s.WordCount > runlimits.MaxWordCount {
+			return fmt.Errorf("wordCount must be at most %d", runlimits.MaxWordCount)
 		}
 	default:
 		return errors.New("mode must be 'time', 'words' or 'quote'")
 	}
 	if s.Lang == "" {
 		return errors.New("lang is required")
+	}
+	if utf8.RuneCountInString(s.Lang) > LangMaxLen {
+		return fmt.Errorf("lang must be at most %d characters", LangMaxLen)
 	}
 	// A quote match is the OTHER text path (QUOTES.md): the bytes are published
 	// and resolved by id, nothing is generated, and there is no dictionary to
@@ -629,10 +687,16 @@ func ValidateSettings(s Settings) error {
 		if s.TextSource.QuoteID == "" {
 			return errors.New("textSource.quoteId is required for quote mode")
 		}
+		if utf8.RuneCountInString(s.TextSource.QuoteID) > QuoteIDMaxLen {
+			return fmt.Errorf("textSource.quoteId must be at most %d characters", QuoteIDMaxLen)
+		}
 		return nil
 	}
 	if s.DictHash == "" {
 		return errors.New("dictHash is required")
+	}
+	if utf8.RuneCountInString(s.DictHash) > DictHashMaxLen {
+		return fmt.Errorf("dictHash must be at most %d characters", DictHashMaxLen)
 	}
 	if s.TextSource.Kind != TextSourceSeeded {
 		return errors.New("textSource.kind must be 'seeded'")

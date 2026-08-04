@@ -160,11 +160,30 @@ func (s *Service) writeError(w http.ResponseWriter, r *http.Request, err error) 
 	s.writeJSON(w, apiErrInternal.status, apiErrInternal)
 }
 
+// maxBodyBytes bounds every auth request body.
+//
+// It exists because the per-IP limiter and the argon2id hash gate both guard
+// the WRONG SIDE of the allocation: by the time either can refuse anything, the
+// decoder below has already read whatever the client sent. Without a cap a
+// single `POST /auth/login` could allocate a multi-hundred-megabyte JSON string
+// and the hash gate — which bounds hashing memory, not parsing memory — would
+// never see it.
+//
+// Same 64 KiB as the captcha gate buffers, and deliberately so: these bodies
+// are an email, a password and a display name. That gate only exists when a
+// deployment configures Turnstile (empty by default), so it can never have been
+// the thing bounding the body.
+const maxBodyBytes = 64 << 10
+
 // decodeJSON strictly decodes the request body into dst. On failure it writes a
 // bad_request error and returns false, so callers just `if !s.decodeJSON(...) {
 // return }`.
+//
+// An oversized body reports the same bad_request as a malformed one: both mean
+// "this body is not something we will parse", and splitting them tells an
+// anonymous caller exactly where the ceiling is.
 func (s *Service) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		s.writeError(w, r, apiErrBadRequest("request body is not valid JSON"))

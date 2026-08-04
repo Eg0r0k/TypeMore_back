@@ -35,6 +35,11 @@ var (
 		"around must be \"me\"")
 	apiErrUnauthorized = newAPIError(http.StatusUnauthorized, "unauthorized",
 		"authentication required")
+	// The board-index bucket is empty. Same code and shape the auth, runs and
+	// profile domains use for the same condition — a client backing off should
+	// not have to learn a second vocabulary per surface.
+	apiErrRateLimited = newAPIError(http.StatusTooManyRequests, "rate_limited",
+		"too many requests, slow down")
 	apiErrInternal = newAPIError(http.StatusInternalServerError, "internal",
 		"an unexpected error occurred")
 )

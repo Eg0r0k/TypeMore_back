@@ -176,10 +176,38 @@ type headerView struct {
 	// summary would not.
 	Joined time.Time `json:"joined"`
 	Public bool      `json:"public"`
+
+	// The identity half (00029), present only on an OPEN profile and only when
+	// its owner filled it in. omitempty throughout: an untouched profile serves
+	// the byte-identical header it served before these existed.
+	Bio      *string `json:"bio,omitempty"`
+	Keyboard *string `json:"keyboard,omitempty"`
+	// Links carry the HANDLE, never a URL: the client owns the prefix list, so
+	// the set of hosts this product links to is a list in the source rather
+	// than data anybody can write (internal/profile/links.go).
+	Links []publicLinkView `json:"links,omitempty"`
+	// Badges is the showcase, in its owner's order — codes only. What a badge
+	// LOOKS like (name, description, icon, colour) lives in the frontend
+	// registry; this server has never had an opinion about any of it.
+	Badges []string `json:"badges,omitempty"`
+}
+
+// publicLinkView is one social link on the public header.
+type publicLinkView struct {
+	Kind   string `json:"kind"`
+	Handle string `json:"handle"`
 }
 
 // handlePublicHeader serves GET /users/{name}: 200 for every existing name,
 // 404 for an unknown one.
+//
+// The IDENTITY half (bio, keyboard, links, badge showcase) rides along only
+// when the profile is open, or for the owner previewing their own page. It is
+// gated even though it is small and self-authored, because the closed state
+// means "this page does not answer strangers" — and a bio and a set of social
+// handles are exactly the kind of thing somebody closes a profile to withhold.
+// A closed header therefore still answers, and still answers with a name, a
+// join date and the closed flag, which is what it has always carried.
 func (s *Service) handlePublicHeader(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.resolvePublicUser(w, r)
 	if !ok {
@@ -187,9 +215,50 @@ func (s *Service) handlePublicHeader(w http.ResponseWriter, r *http.Request) {
 	}
 	// The owner sees their real setting (that is the preview's point); for
 	// anyone else `public` IS the answer to "may I ask for more".
-	s.writeJSON(w, http.StatusOK, headerView{
+	view := headerView{
 		Name: user.DisplayName, Joined: user.Joined, Public: user.ProfilePublic,
-	})
+	}
+	if user.ProfilePublic || s.isOwner(r, user) {
+		if err := s.decorateHeader(r, user.ID, &view); err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// decorateHeader fills the identity half of an OPEN profile's header.
+//
+// Every one of these is omitempty: a profile with no bio, no links and no
+// badges answers exactly the bytes it answered before this feature existed,
+// which is what keeps the public payload an allowlist that grows only when
+// somebody actually filled a field in.
+func (s *Service) decorateHeader(r *http.Request, userID uuid.UUID, view *headerView) error {
+	identity, err := s.store.Identity(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	view.Bio, view.Keyboard = identity.Bio, identity.Keyboard
+
+	links, err := s.store.Links(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	for _, l := range links {
+		view.Links = append(view.Links, publicLinkView{Kind: l.Kind, Handle: l.Handle})
+	}
+
+	// The showcase read carries the live predicate in SQL (`revoked_at IS
+	// NULL`), so a revoked badge leaves a public page the moment it is revoked,
+	// with nothing to rebuild and no display_order to trust.
+	showcase, err := s.store.ShowcaseBadges(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	for _, b := range showcase {
+		view.Badges = append(view.Badges, b.Code)
+	}
+	return nil
 }
 
 // publicData wraps a shared serve func with the public surface's gate:

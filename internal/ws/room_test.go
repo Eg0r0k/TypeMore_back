@@ -207,6 +207,33 @@ func TestStartMatchGating(t *testing.T) {
 		assert.Equal(t, protocol.CodeNotReady, decodeErr(t, expect(t, ctx, host, protocol.TypeError)).Code)
 	})
 
+	t.Run("force waives readiness but not the seat count", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		srv := roomTestServer(t)
+
+		// Alone, force is still not a match: the seat floor holds.
+		solo := dialAs(t, ctx, srv, "")
+		hostRoom(t, ctx, solo)
+		writeJSON(t, ctx, solo, protocol.StartMatch{Type: protocol.TypeStartMatch, Force: true})
+		assert.Equal(t, protocol.CodeNotReady, decodeErr(t, expect(t, ctx, solo, protocol.TypeError)).Code)
+
+		// Two seats, guest NOT ready: plain start refuses, force yields a
+		// countdown that seats BOTH players — nobody is carved out.
+		host := dialAs(t, ctx, srv, "")
+		_, hs := hostRoom(t, ctx, host)
+		guest := dialAs(t, ctx, srv, "")
+		joinRoom(t, ctx, guest, hs.Code, host)
+		writeJSON(t, ctx, host, protocol.StartMatch{Type: protocol.TypeStartMatch})
+		assert.Equal(t, protocol.CodeNotReady, decodeErr(t, expect(t, ctx, host, protocol.TypeError)).Code)
+		writeJSON(t, ctx, host, protocol.StartMatch{Type: protocol.TypeStartMatch, Force: true})
+		for _, c := range []*websocket.Conn{host, guest} {
+			var cd protocol.Countdown
+			require.NoError(t, json.Unmarshal(expect(t, ctx, c, protocol.TypeCountdown), &cd))
+			assert.Len(t, cd.Players, 2)
+		}
+	})
+
 	t.Run("non-host cannot start", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -422,6 +449,81 @@ func TestChatRateLimit(t *testing.T) {
 	}
 	assert.Equal(t, 5, chats, "burst of chats before the limit")
 	assert.True(t, gotLimit, "6th message must be rate limited")
+}
+
+// TestChatRateLimitSurvivesRejoin is the regression for a limiter that bounded
+// nothing: the chat bucket used to live on the SEAT, and a seat is minted fresh
+// by every join — so leave + join_room handed the sender a full burst again and
+// the sustained chat rate was unbounded. It lives on the connection now.
+func TestChatRateLimitSurvivesRejoin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv := roomTestServer(t)
+
+	host := dialAs(t, ctx, srv, "")
+	_, hs := hostRoom(t, ctx, host)
+	guest := dialAs(t, ctx, srv, "")
+	joinRoom(t, ctx, guest, hs.Code, host)
+
+	// Spend the burst.
+	for range 6 {
+		writeJSON(t, ctx, guest, protocol.ChatSend{Type: protocol.TypeChatSend, Text: "hi"})
+	}
+	assert.Equal(t, protocol.CodeRateLimited,
+		decodeErr(t, readUntil(t, ctx, guest, protocol.TypeError)).Code)
+
+	// The old reset: drop the seat and take a new one on the same connection.
+	writeJSON(t, ctx, guest, protocol.Leave{Type: protocol.TypeLeave})
+	writeJSON(t, ctx, guest, protocol.JoinRoom{Type: protocol.TypeJoinRoom, Code: hs.Code})
+	readUntil(t, ctx, guest, protocol.TypeRoomState)
+
+	// A fresh seat, the same budget: still refused.
+	writeJSON(t, ctx, guest, protocol.ChatSend{Type: protocol.TypeChatSend, Text: "again"})
+	assert.Equal(t, protocol.CodeRateLimited,
+		decodeErr(t, readUntil(t, ctx, guest, protocol.TypeError)).Code)
+}
+
+// TestCommandRateLimit asserts the per-connection command budget refuses a
+// flood of room-mutating frames. `ready` is the probe: it used to be the
+// cheapest broadcast amplifier on the wire (one room_state, marshalled per
+// seat, per inbound frame).
+func TestCommandRateLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv := roomTestServer(t)
+
+	host := dialAs(t, ctx, srv, "")
+	_, hs := hostRoom(t, ctx, host)
+	guest := dialAs(t, ctx, srv, "")
+	joinRoom(t, ctx, guest, hs.Code, host)
+
+	// Well past the burst; alternating so no frame is dropped as a no-op.
+	for i := range 40 {
+		ready := i%2 == 0
+		writeJSON(t, ctx, guest, protocol.Ready{Type: protocol.TypeReady, Ready: &ready})
+	}
+	assert.Equal(t, protocol.CodeRateLimited,
+		decodeErr(t, readUntil(t, ctx, guest, protocol.TypeError)).Code)
+}
+
+// TestLobbyOnlyFramesAreRefusedDuringAMatch pins the two frames that used to be
+// accepted mid-match. Neither decides anything once the countdown has frozen the
+// roster, and both broadcast to every seat — `transfer_host` twice over.
+func TestLobbyOnlyFramesAreRefusedDuringAMatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv := roomTestServer(t)
+	m := startMatch(t, ctx, srv, 2, 30_000)
+
+	writeJSON(t, ctx, m.conns[1], protocol.Ready{Type: protocol.TypeReady})
+	assert.Equal(t, protocol.CodeBadMessage,
+		decodeErr(t, readUntil(t, ctx, m.conns[1], protocol.TypeError)).Code)
+
+	writeJSON(t, ctx, m.conns[0], protocol.TransferHost{
+		Type: protocol.TypeTransferHost, PlayerID: m.ids[1],
+	})
+	assert.Equal(t, protocol.CodeBadMessage,
+		decodeErr(t, readUntil(t, ctx, m.conns[0], protocol.TypeError)).Code)
 }
 
 // TestChatBroadcast asserts a valid chat is broadcast to every seat with the

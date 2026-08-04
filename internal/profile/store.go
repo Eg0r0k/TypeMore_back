@@ -160,6 +160,63 @@ type RunCursor struct {
 	ID        uuid.UUID
 }
 
+// Identity is the profile's self-described half (00029): what the owner wrote
+// about themselves. Both fields are nil when never set — NULL and "" are
+// deliberately different states in the schema, so a client never has to guess
+// whether an empty bio was cleared or never written.
+type Identity struct {
+	Bio      *string
+	Keyboard *string
+}
+
+// ShowcaseBadge is one badge as the PUBLIC surface sees it: a code and where
+// its owner put it. Nothing about how it renders — the name, the description,
+// the icon and the colour live in the frontend registry, and this server has
+// no opinion about any of them (internal/badges).
+type ShowcaseBadge struct {
+	Code  string
+	Order int32
+}
+
+// GrantedBadge is one badge the account HOLDS, shown or not: the pool the
+// settings screen arranges, and what a showcase write is validated against.
+type GrantedBadge struct {
+	Code      string
+	GrantedAt time.Time
+	// Order is nil when the badge is held but hidden.
+	Order *int32
+}
+
+// Link is one social link: the service and the HANDLE, never a URL. The
+// renderer pastes the handle onto a prefix it owns, so the set of hosts this
+// product can link to is a list in the source (see links.go).
+type Link struct {
+	Kind   string
+	Handle string
+}
+
+// ProfilePatch is one write of the owner-editable profile. Every field is a
+// pointer because the route is a PATCH: nil means "not mentioned, leave it",
+// which is a different instruction from "set this to empty".
+type ProfilePatch struct {
+	// Bio/Keyboard, each with an explicit "was this mentioned" flag.
+	//
+	// A bare *string cannot carry this: the handler normalises a cleared field
+	// to NULL, so "clear my bio" and "my request was not about the bio" would
+	// both arrive as nil — and the write would silently erase a field nobody
+	// touched. SetBio distinguishes them; Bio then says clear (nil) or set.
+	Bio         *string
+	SetBio      bool
+	Keyboard    *string
+	SetKeyboard bool
+	// Links, keyed by kind. An empty handle removes that link's row — an empty
+	// handle is not a state user_links can hold.
+	Links map[string]string
+	// Showcase is the badge codes to display, in the order given. Non-nil and
+	// empty means "show none"; nil means the request was not about badges.
+	Showcase []string
+}
+
 // Store is the profile read model, implemented by pgstore. Every method is
 // scoped to one user; today is the caller's UTC date for the streak boundary.
 type Store interface {
@@ -192,4 +249,21 @@ type Store interface {
 	// PublicPBs is PBs through the boards' ban predicate: a banned owner's
 	// records are hidden here exactly as they are on every board.
 	PublicPBs(ctx context.Context, userID uuid.UUID) ([]PB, error)
+
+	// --- the identity half (00029) ---
+
+	// Identity returns the account's bio/keyboard, both nil when unset.
+	Identity(ctx context.Context, userID uuid.UUID) (Identity, error)
+	// ShowcaseBadges returns the badges the owner chose to display, in their
+	// order. Revoked grants are never returned — the live predicate is the
+	// revocation, never display_order (the query explains why).
+	ShowcaseBadges(ctx context.Context, userID uuid.UUID) ([]ShowcaseBadge, error)
+	// GrantedBadges returns every live grant, shown or not.
+	GrantedBadges(ctx context.Context, userID uuid.UUID) ([]GrantedBadge, error)
+	// Links returns the account's social links, ordered by kind.
+	Links(ctx context.Context, userID uuid.UUID) ([]Link, error)
+	// ApplyProfilePatch writes one owner edit ATOMICALLY: the bio, the links
+	// and the showcase move together or not at all. A half-applied patch would
+	// leave a profile the owner never asked for and cannot see they have.
+	ApplyProfilePatch(ctx context.Context, userID uuid.UUID, patch ProfilePatch) error
 }

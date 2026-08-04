@@ -215,3 +215,57 @@ WHERE status = 'open'
 -- on breadth that the per-IP token bucket cannot express: the limiter caps the
 -- RATE of filing, this caps how much of the queue one person can occupy at once.
 SELECT count(*)::bigint FROM reports WHERE reporter_id = @reporter_id AND status = 'open';
+
+-- name: GrantBadge :one
+-- Grant a badge (00029). IDEMPOTENT by construction: the partial unique index
+-- covers exactly the live grants, so a second grant of a badge the account
+-- already holds conflicts and updates nothing — and still RETURNS the row, so
+-- the admin surface can answer "they have it, since this date, from that admin"
+-- rather than an error the operator has to interpret.
+--
+-- display_order is deliberately untouched on conflict: re-granting must not
+-- rearrange a showcase its owner arranged, and a fresh grant starts hidden
+-- (NULL) so a badge never appears on somebody's public page without them
+-- putting it there.
+INSERT INTO user_badges (user_id, badge_code, granted_by)
+VALUES (@user_id, @badge_code, sqlc.narg(granted_by))
+ON CONFLICT (user_id, badge_code) WHERE revoked_at IS NULL
+    DO UPDATE SET badge_code = user_badges.badge_code
+RETURNING id, badge_code, granted_at, granted_by, display_order;
+
+-- name: RevokeBadge :one
+-- Soft-revoke the live grant of one badge. Idempotent in the same shape a
+-- ban's revocation is: the predicate only matches a LIVE grant, so running it
+-- twice revokes once, and the caller distinguishes the two by whether a row
+-- came back — never by an error.
+UPDATE user_badges
+SET revoked_at = now(), revoked_by = sqlc.narg(revoked_by)
+WHERE user_id = @user_id AND badge_code = @badge_code AND revoked_at IS NULL
+RETURNING id, badge_code, granted_at, revoked_at;
+
+-- name: ListBadgesOfUser :many
+-- One account's badge history for the admin surface: live grants AND revoked
+-- ones. Revocations are shown because "why did they used to have that" is the
+-- question the soft revoke exists to answer, and because an operator about to
+-- re-grant wants to see it was taken away before.
+SELECT b.badge_code,
+       b.granted_at,
+       g.display_name AS granted_by_name,
+       b.revoked_at,
+       r.display_name AS revoked_by_name,
+       b.display_order
+FROM user_badges b
+         LEFT JOIN users g ON g.id = b.granted_by
+         LEFT JOIN users r ON r.id = b.revoked_by
+WHERE b.user_id = $1
+ORDER BY b.granted_at DESC;
+
+-- name: ListHoldersOfBadge :many
+-- Who currently holds badge X. Live grants only: this answers "who has it",
+-- and the revocation history of an account is that account's own listing.
+SELECT b.user_id, u.display_name, b.granted_at
+FROM user_badges b
+         JOIN users u ON u.id = b.user_id
+WHERE b.badge_code = @badge_code AND b.revoked_at IS NULL
+ORDER BY b.granted_at DESC
+LIMIT @lim;

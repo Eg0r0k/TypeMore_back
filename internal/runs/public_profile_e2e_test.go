@@ -101,6 +101,43 @@ func TestOpenProfileAnswersStrangers(t *testing.T) {
 	require.Len(t, runsPage.Runs, 1, "the accepted run is public history")
 }
 
+// TestPublicHeaderPayloadIsAnAllowlist snapshots the exact key set of
+// `GET /users/{name}` — the ONE public payload a closed profile still answers
+// with, and therefore the one an account's identity fields could leak through.
+//
+// It is the header's twin of TestPublicRunPayloadIsAnAllowlist and exists for
+// the same reason: the header is where profile fields get added (a bio, a
+// badge showcase, a link), and every one of those is a deliberate disclosure.
+// A field that appears here without this snapshot moving is a field nobody
+// argued for. The named negatives below are the account facts that must NEVER
+// ride along — they are not on the row this handler reads, and this is what
+// keeps that true when somebody widens the query.
+func TestPublicHeaderPayloadIsAnAllowlist(t *testing.T) {
+	h := newHarness(t)
+	h.login("allowheader@example.com", "correct horse battery", "headerplayer")
+	h.logout()
+
+	header := decodeInto[map[string]any](t, h.get("/api/v1/users/headerplayer"))
+
+	got := make([]string, 0, len(header))
+	for k := range header {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	assert.Equal(t, []string{"joined", "name", "public"}, got,
+		"a new field on the public header is a DELIBERATE disclosure — update this snapshot in the same commit that argues why")
+
+	// Spelled out as well as snapshotted: these are the ones whose absence is
+	// the point, and a reader of a failing test should see WHICH fact leaked.
+	raw := string(readBody(t, h.get("/api/v1/users/headerplayer")))
+	for _, secret := range []string{
+		"allowheader@example.com", "email", "password", "provider",
+		"keyboardPublic", "restricted", "role", "permissions",
+	} {
+		assert.NotContains(t, raw, secret, "the public header must not carry %q", secret)
+	}
+}
+
 // A closed profile: 403 profile_closed on every data route for strangers and
 // the anonymous, 200 with public:false on the header (the page EXISTS — closed
 // is a state, not a 404), and the owner still sees everything.

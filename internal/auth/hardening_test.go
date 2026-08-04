@@ -27,6 +27,34 @@ func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	require.NoError(t, err)
 }
 
+// --- 0. Request body ceiling ---
+
+// TestOversizedBodyIsRefused pins the cap on what an auth endpoint will parse.
+//
+// It is a REGRESSION test: the per-IP limiter and the argon2id hash gate both
+// guard the wrong side of the allocation. By the time either can refuse
+// anything, the decoder has already read whatever the caller sent — so without
+// a ceiling a single login could allocate a multi-hundred-megabyte JSON string,
+// and the hash gate (which bounds hashing memory, not parsing memory) would
+// never see it. The captcha gate does bound the body, but only on three routes
+// and only when a deployment configures Turnstile, which is off by default.
+func TestOversizedBodyIsRefused(t *testing.T) {
+	h := newHarness(t)
+
+	// Well past the 64 KiB ceiling, in a field the handler would otherwise
+	// happily decode.
+	huge := strings.Repeat("a", 256<<10)
+	resp := h.login(huge+"@example.com", "password-oversize-1")
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	// Deliberately the SAME answer a malformed body gets: telling an anonymous
+	// caller where the ceiling is only helps them sit just under it.
+	assert.Contains(t, readBody(t, resp), "bad_request")
+
+	// A normal body still works on the same connection, so the cap is a per
+	// request bound and not a connection the server gave up on.
+	requireStatus(t, h.register("sized@example.com", "password-oversize-1", "Sized"), http.StatusOK)
+}
+
 // --- 1. Email-subject case ---
 
 func TestEmailCaseNormalization(t *testing.T) {

@@ -184,7 +184,9 @@ func run() error {
 			u, ok := auth.UserFrom(ctx)
 			return u.ID, ok
 		},
-		quoteStore.WithdrawnIDs, logger)
+		quoteStore.WithdrawnIDs,
+		auth.NewInMemoryRateLimiter(cfg.LeaderboardIndexRateEvery, cfg.LeaderboardIndexRateBurst),
+		logger)
 
 	// Keyboard layouts: the shared data asset (internal/keyboard/layouts) —
 	// the char → physical-key mapping the keyboard projection folds through,
@@ -428,6 +430,13 @@ func run() error {
 		// /me itself is a safe read and deliberately carries no CSRF check.
 		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
 			Patch("/me/settings", authSvc.HandleUpdateSettings)
+		// The account's PROFILE — bio, board, links, badge showcase. A
+		// different route from /me/settings on purpose: those two switches
+		// decide who may read the profile, these are the profile. The GET is a
+		// safe read (no Origin check, like /me); the PATCH mutates and gets one.
+		r.With(authSvc.RequireAuth).Get("/me/profile", profileSvc.HandleOwnProfile)
+		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
+			Patch("/me/profile", profileSvc.HandleUpdateProfile)
 		// The dictionary catalogue is a public asset too — no session: guests
 		// play client-side and still need to pick a language.
 		r.Mount("/dictionaries", dictSvc.Routes())

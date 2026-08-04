@@ -32,18 +32,43 @@ type UserIDFunc func(ctx context.Context) (uuid.UUID, bool)
 // stop hiding withdrawn boards.
 type WithdrawnQuotesFunc func(ctx context.Context) (map[uuid.UUID]struct{}, error)
 
+// RateLimiter is the narrow token-bucket seam, the same shape the auth, runs
+// and profile domains declare, so the composition root can hand this one an
+// instance without this package importing a sibling.
+type RateLimiter interface {
+	Allow(key string) bool
+}
+
 // Service serves the public leaderboard read model.
 type Service struct {
-	store     Store
-	userID    UserIDFunc
-	withdrawn WithdrawnQuotesFunc
-	log       *slog.Logger
+	store  Store
+	userID UserIDFunc
+	// indexLimiter rations the ONE route here whose cost is not bounded by a
+	// single board: `GET /` aggregates over EVERY board (up to ~9 881 quote
+	// ones) plus the withdrawn-quote read, on every hit, for an anonymous
+	// caller. A page read is bounded by its limit; the index is bounded by how
+	// much the product has grown.
+	//
+	// Keyed by IP, like every other anonymous surface's bucket, and its own
+	// instance rather than a share of auth's: an index flood must not spend the
+	// budget that exists to protect argon2id.
+	indexLimiter RateLimiter
+	withdrawn    WithdrawnQuotesFunc
+	log          *slog.Logger
 }
 
 // NewService wires the leaderboard service. withdrawn must not be nil; pass one
 // that reports an empty set if nothing can be withdrawn in this build.
-func NewService(store Store, userID UserIDFunc, withdrawn WithdrawnQuotesFunc, log *slog.Logger) *Service {
-	return &Service{store: store, userID: userID, withdrawn: withdrawn, log: log}
+// indexLimiter may be nil, which disables the index bucket (tests, and a
+// self-hosted stand that would rather not ration a read at all).
+func NewService(store Store, userID UserIDFunc, withdrawn WithdrawnQuotesFunc, indexLimiter RateLimiter, log *slog.Logger) *Service {
+	return &Service{
+		store:        store,
+		userID:       userID,
+		withdrawn:    withdrawn,
+		indexLimiter: indexLimiter,
+		log:          log,
+	}
 }
 
 // --- shared HTTP helpers (mirroring the auth/runs domains', kept private) ---

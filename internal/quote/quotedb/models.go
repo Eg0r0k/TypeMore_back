@@ -234,6 +234,19 @@ type User struct {
 	KeyboardPublic bool
 	UpdatedAt      time.Time
 	Role           string
+	Bio            *string
+	Keyboard       *string
+}
+
+type UserBadge struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	BadgeCode    string
+	GrantedAt    time.Time
+	GrantedBy    *uuid.UUID
+	RevokedAt    *time.Time
+	RevokedBy    *uuid.UUID
+	DisplayOrder *int32
 }
 
 type UserCredential struct {
@@ -249,4 +262,10 @@ type UserKeyboardProfile struct {
 	Errors        int64
 	IntervalSumMs float64
 	IntervalCount int64
+}
+
+type UserLink struct {
+	UserID uuid.UUID
+	Kind   string
+	Handle string
 }

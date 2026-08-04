@@ -178,6 +178,51 @@ func (q *Queries) FindOpenReport(ctx context.Context, arg FindOpenReportParams) 
 	return i, err
 }
 
+const grantBadge = `-- name: GrantBadge :one
+INSERT INTO user_badges (user_id, badge_code, granted_by)
+VALUES ($1, $2, $3)
+ON CONFLICT (user_id, badge_code) WHERE revoked_at IS NULL
+    DO UPDATE SET badge_code = user_badges.badge_code
+RETURNING id, badge_code, granted_at, granted_by, display_order
+`
+
+type GrantBadgeParams struct {
+	UserID    uuid.UUID
+	BadgeCode string
+	GrantedBy *uuid.UUID
+}
+
+type GrantBadgeRow struct {
+	ID           uuid.UUID
+	BadgeCode    string
+	GrantedAt    time.Time
+	GrantedBy    *uuid.UUID
+	DisplayOrder *int32
+}
+
+// Grant a badge (00029). IDEMPOTENT by construction: the partial unique index
+// covers exactly the live grants, so a second grant of a badge the account
+// already holds conflicts and updates nothing — and still RETURNS the row, so
+// the admin surface can answer "they have it, since this date, from that admin"
+// rather than an error the operator has to interpret.
+//
+// display_order is deliberately untouched on conflict: re-granting must not
+// rearrange a showcase its owner arranged, and a fresh grant starts hidden
+// (NULL) so a badge never appears on somebody's public page without them
+// putting it there.
+func (q *Queries) GrantBadge(ctx context.Context, arg GrantBadgeParams) (GrantBadgeRow, error) {
+	row := q.db.QueryRow(ctx, grantBadge, arg.UserID, arg.BadgeCode, arg.GrantedBy)
+	var i GrantBadgeRow
+	err := row.Scan(
+		&i.ID,
+		&i.BadgeCode,
+		&i.GrantedAt,
+		&i.GrantedBy,
+		&i.DisplayOrder,
+	)
+	return i, err
+}
+
 const insertBan = `-- name: InsertBan :one
 INSERT INTO bans (user_id, reason, issued_by, issued_by_user, expires_at)
 VALUES ($1, $2, $3, $4, $5)
@@ -238,6 +283,60 @@ func (q *Queries) IsRestricted(ctx context.Context, userID uuid.UUID) (bool, err
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listBadgesOfUser = `-- name: ListBadgesOfUser :many
+SELECT b.badge_code,
+       b.granted_at,
+       g.display_name AS granted_by_name,
+       b.revoked_at,
+       r.display_name AS revoked_by_name,
+       b.display_order
+FROM user_badges b
+         LEFT JOIN users g ON g.id = b.granted_by
+         LEFT JOIN users r ON r.id = b.revoked_by
+WHERE b.user_id = $1
+ORDER BY b.granted_at DESC
+`
+
+type ListBadgesOfUserRow struct {
+	BadgeCode     string
+	GrantedAt     time.Time
+	GrantedByName *string
+	RevokedAt     *time.Time
+	RevokedByName *string
+	DisplayOrder  *int32
+}
+
+// One account's badge history for the admin surface: live grants AND revoked
+// ones. Revocations are shown because "why did they used to have that" is the
+// question the soft revoke exists to answer, and because an operator about to
+// re-grant wants to see it was taken away before.
+func (q *Queries) ListBadgesOfUser(ctx context.Context, userID uuid.UUID) ([]ListBadgesOfUserRow, error) {
+	rows, err := q.db.Query(ctx, listBadgesOfUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBadgesOfUserRow{}
+	for rows.Next() {
+		var i ListBadgesOfUserRow
+		if err := rows.Scan(
+			&i.BadgeCode,
+			&i.GrantedAt,
+			&i.GrantedByName,
+			&i.RevokedAt,
+			&i.RevokedByName,
+			&i.DisplayOrder,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listBans = `-- name: ListBans :many
@@ -347,6 +446,48 @@ func (q *Queries) ListBansForUser(ctx context.Context, userID uuid.UUID) ([]List
 			&i.RevokedAt,
 			&i.UserRestricted,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listHoldersOfBadge = `-- name: ListHoldersOfBadge :many
+SELECT b.user_id, u.display_name, b.granted_at
+FROM user_badges b
+         JOIN users u ON u.id = b.user_id
+WHERE b.badge_code = $1 AND b.revoked_at IS NULL
+ORDER BY b.granted_at DESC
+LIMIT $2
+`
+
+type ListHoldersOfBadgeParams struct {
+	BadgeCode string
+	Lim       int32
+}
+
+type ListHoldersOfBadgeRow struct {
+	UserID      uuid.UUID
+	DisplayName string
+	GrantedAt   time.Time
+}
+
+// Who currently holds badge X. Live grants only: this answers "who has it",
+// and the revocation history of an account is that account's own listing.
+func (q *Queries) ListHoldersOfBadge(ctx context.Context, arg ListHoldersOfBadgeParams) ([]ListHoldersOfBadgeRow, error) {
+	rows, err := q.db.Query(ctx, listHoldersOfBadge, arg.BadgeCode, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListHoldersOfBadgeRow{}
+	for rows.Next() {
+		var i ListHoldersOfBadgeRow
+		if err := rows.Scan(&i.UserID, &i.DisplayName, &i.GrantedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -670,6 +811,42 @@ func (q *Queries) ResolveUserByID(ctx context.Context, id uuid.UUID) (ResolveUse
 	row := q.db.QueryRow(ctx, resolveUserByID, id)
 	var i ResolveUserByIDRow
 	err := row.Scan(&i.ID, &i.DisplayName)
+	return i, err
+}
+
+const revokeBadge = `-- name: RevokeBadge :one
+UPDATE user_badges
+SET revoked_at = now(), revoked_by = $1
+WHERE user_id = $2 AND badge_code = $3 AND revoked_at IS NULL
+RETURNING id, badge_code, granted_at, revoked_at
+`
+
+type RevokeBadgeParams struct {
+	RevokedBy *uuid.UUID
+	UserID    uuid.UUID
+	BadgeCode string
+}
+
+type RevokeBadgeRow struct {
+	ID        uuid.UUID
+	BadgeCode string
+	GrantedAt time.Time
+	RevokedAt *time.Time
+}
+
+// Soft-revoke the live grant of one badge. Idempotent in the same shape a
+// ban's revocation is: the predicate only matches a LIVE grant, so running it
+// twice revokes once, and the caller distinguishes the two by whether a row
+// came back — never by an error.
+func (q *Queries) RevokeBadge(ctx context.Context, arg RevokeBadgeParams) (RevokeBadgeRow, error) {
+	row := q.db.QueryRow(ctx, revokeBadge, arg.RevokedBy, arg.UserID, arg.BadgeCode)
+	var i RevokeBadgeRow
+	err := row.Scan(
+		&i.ID,
+		&i.BadgeCode,
+		&i.GrantedAt,
+		&i.RevokedAt,
+	)
 	return i, err
 }
 

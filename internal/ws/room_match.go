@@ -28,6 +28,15 @@ const (
 	graceDurationDefault     = 15 * time.Second
 )
 
+// maxCapturedEvents bounds ONE seat's whole match capture, across every batch.
+//
+// It is the ingest path's v2 event cap (`maxEventsV2`, internal/runs/validate.go)
+// stated again here rather than imported, because the two packages are domains
+// and do not import each other — but the number is the same number on purpose,
+// and for the same reason the room dimensions now use runlimits: a capture the
+// run endpoint would refuse describes a run this server could never replay.
+const maxCapturedEvents = 480_000
+
 // matchTiming holds the tunable match-end timings a Registry applies to its rooms.
 type matchTiming struct {
 	grace           time.Duration
@@ -74,7 +83,7 @@ type matchState struct {
 // freezes the settings and per-player freemods into a Countdown, stamps a
 // server-generated seed and a fresh matchId, arms the hard deadline, and marks
 // the room in-match.
-func (r *Room) startMatch(sess *session) {
+func (r *Room) startMatch(sess *session, force bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -95,10 +104,15 @@ func (r *Room) startMatch(sess *session) {
 		r.errLocked(sess, protocol.CodeNotReady, "need at least two players")
 		return
 	}
-	for _, s := range r.seats {
-		if s.playerID != r.hostID && !s.ready {
-			r.errLocked(sess, protocol.CodeNotReady, "all players must be ready")
-			return
+	// Force (protocol.StartMatch) waives readiness alone — the seat count above
+	// still holds, and every seat is in the match: an unready seat that never
+	// types is the AFK sweep's problem, not the roster's.
+	if !force {
+		for _, s := range r.seats {
+			if s.playerID != r.hostID && !s.ready {
+				r.errLocked(sess, protocol.CodeNotReady, "all players must be ready")
+				return
+			}
 		}
 	}
 
@@ -191,6 +205,20 @@ func (r *Room) relayEventBatch(sess *session, eb protocol.EventBatch, recvMs int
 	}
 	if eb.BatchSeq != st.lastSeq+1 {
 		r.errLocked(sess, protocol.CodeBadMessage, fmt.Sprintf("batchSeq %d out of order (expected %d)", eb.BatchSeq, st.lastSeq+1))
+		return
+	}
+	// The capture is retained for the whole match and marshalled + gzipped in
+	// one piece at the end, so it needs a ceiling of its own: the per-frame cap
+	// bounds ONE batch, and the seat kept every batch it ever sent. Without this
+	// a seat that keeps typing is never AFK and never out of order, so nothing
+	// else in this function ever says stop.
+	//
+	// The number is the ingest path's own v2 event cap (internal/runs), and that
+	// is the honest bound rather than a new invention: a capture bigger than
+	// what `POST /runs` accepts describes a run the server could not have
+	// replayed anyway.
+	if st.eventCount+len(eb.Events) > maxCapturedEvents {
+		r.errLocked(sess, protocol.CodeBadMessage, "event capture limit exceeded")
 		return
 	}
 
