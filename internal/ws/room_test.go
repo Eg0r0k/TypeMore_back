@@ -417,6 +417,45 @@ func TestSettingsUpdateResetsReady(t *testing.T) {
 	assert.False(t, gp.Ready, "ready flags must reset on settings change")
 }
 
+// TestSettingsUpdateCarriesLazy asserts the lazy text mod survives the round
+// trip from a host's settings_update into the broadcast room_state.
+//
+// WHY A TEST FOR ONE BOOLEAN. `lazy` was added to TextMods after the field set
+// was frozen, and the client treats a missing `lazy` as `false` — it has to,
+// that is the forward-compatibility rule §5 asks for. Those two facts together
+// mean a server that does not know the field is INDISTINGUISHABLE from a host
+// who never turned it on: the toggle goes up, the state comes back without it,
+// and the switch silently snaps off. That is not hypothetical — it is exactly
+// what a deployed-but-stale binary did. A round-trip assertion is the only
+// thing that can tell "off" from "dropped".
+func TestSettingsUpdateCarriesLazy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv := roomTestServer(t)
+
+	host := dialAs(t, ctx, srv, "")
+	_, hs := hostRoom(t, ctx, host)
+	require.False(t, hs.Settings.TextMods.Lazy, "a fresh room starts with it off")
+
+	on := hs.Settings
+	on.TextMods.Lazy = true
+	writeJSON(t, ctx, host, protocol.SettingsUpdate{Type: protocol.TypeSettingsUpdate, Settings: on})
+	// readUntil, not expect: creating a room also queues the system chat line,
+	// and this test is about a settings field rather than about frame order.
+	st := decodeRoomState(t, readUntil(t, ctx, host, protocol.TypeRoomState))
+	assert.True(t, st.Settings.TextMods.Lazy, "the host turned it on; the room must say so")
+	// The neighbouring flags are untouched: this is one field, not a reset.
+	assert.Equal(t, hs.Settings.TextMods.Punctuation, st.Settings.TextMods.Punctuation)
+	assert.Equal(t, hs.Settings.TextMods.Numbers, st.Settings.TextMods.Numbers)
+
+	// And back off again — a mod you cannot turn off is its own bug.
+	off := st.Settings
+	off.TextMods.Lazy = false
+	writeJSON(t, ctx, host, protocol.SettingsUpdate{Type: protocol.TypeSettingsUpdate, Settings: off})
+	st = decodeRoomState(t, readUntil(t, ctx, host, protocol.TypeRoomState))
+	assert.False(t, st.Settings.TextMods.Lazy)
+}
+
 // TestChatRateLimit asserts the burst of 5 messages passes and the 6th is
 // rejected with rate_limited.
 func TestChatRateLimit(t *testing.T) {
