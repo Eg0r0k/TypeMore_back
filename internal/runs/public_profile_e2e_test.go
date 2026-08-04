@@ -124,7 +124,7 @@ func TestPublicHeaderPayloadIsAnAllowlist(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	assert.Equal(t, []string{"joined", "name", "public"}, got,
+	assert.Equal(t, []string{"id", "joined", "name", "public"}, got,
 		"a new field on the public header is a DELIBERATE disclosure — update this snapshot in the same commit that argues why")
 
 	// Spelled out as well as snapshotted: these are the ones whose absence is

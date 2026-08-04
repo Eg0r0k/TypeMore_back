@@ -170,7 +170,13 @@ func (s *Service) isOwner(r *http.Request, user PublicUser) bool {
 // identity a leaderboard already shows, plus the fact of being closed. The
 // page exists for every registered name — closed is a state, not a 404.
 type headerView struct {
-	Name string `json:"name"`
+	// ID is the account's uuid — what a REPORT names its subject by. It is
+	// already public on every leaderboard row (`userId`), so this discloses
+	// nothing new; it is here because the profile page is the other place a
+	// player is reported from, and a name is not a subject the reports API
+	// accepts.
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
 	// Joined is on the header (not just the summary) so the closed-profile
 	// page can still render its identity block; it discloses nothing the open
 	// summary would not.
@@ -216,7 +222,7 @@ func (s *Service) handlePublicHeader(w http.ResponseWriter, r *http.Request) {
 	// The owner sees their real setting (that is the preview's point); for
 	// anyone else `public` IS the answer to "may I ask for more".
 	view := headerView{
-		Name: user.DisplayName, Joined: user.Joined, Public: user.ProfilePublic,
+		ID: user.ID, Name: user.DisplayName, Joined: user.Joined, Public: user.ProfilePublic,
 	}
 	if user.ProfilePublic || s.isOwner(r, user) {
 		if err := s.decorateHeader(r, user.ID, &view); err != nil {

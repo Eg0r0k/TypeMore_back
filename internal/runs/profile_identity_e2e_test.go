@@ -278,7 +278,7 @@ func TestPublicHeaderAllowlistAfterIdentity(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	assert.Equal(t, []string{"badges", "bio", "joined", "keyboard", "links", "name", "public"}, got,
+	assert.Equal(t, []string{"badges", "bio", "id", "joined", "keyboard", "links", "name", "public"}, got,
 		"a new field on the public header is a DELIBERATE disclosure — update this snapshot in the same commit that argues why")
 
 	raw := string(readBody(t, h.get("/api/v1/users/allowlisttwo")))
