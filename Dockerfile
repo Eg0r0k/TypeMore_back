@@ -2,12 +2,13 @@
 
 # Production image for the TypeMore server.
 #
-# Two runtime targets share ONE build stage, so the server and the migration
-# runner come out of a single module download and a single build cache instead
-# of two independent passes over the same source:
+# Three runtime targets share ONE build stage, so the server, the migration
+# runner and the operator tools come out of a single module download and a
+# single build cache instead of independent passes over the same source:
 #
 #   docker build -t typemore-server  .                  # default target: server
 #   docker build -t typemore-migrate --target migrate .
+#   docker build -t typemore-tools   --target tools .   # replayctl + leaderboardctl
 #
 # The default (last) target is `server`, so an existing
 # `docker compose build app` with no `target:` keeps building the server.
@@ -57,7 +58,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
 		-ldflags "${LDFLAGS}" -o /out/migrate ./cmd/migrate; \
 	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
-		-ldflags "${LDFLAGS}" -o /out/quotectl ./cmd/quotectl
+		-ldflags "${LDFLAGS}" -o /out/quotectl ./cmd/quotectl; \
+	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
+		-ldflags "${LDFLAGS}" -o /out/replayctl ./cmd/replayctl; \
+	CGO_ENABLED=0 GOOS=linux go build -tags "${BUILD_TAGS}" -trimpath \
+		-ldflags "${LDFLAGS}" -o /out/leaderboardctl ./cmd/leaderboardctl
 
 # --- healthcheck probe -----------------------------------------------------
 # distroless has no shell and no curl, so HEALTHCHECK needs a binary to call.
@@ -82,6 +87,27 @@ COPY --from=build /out/quotectl /quotectl
 USER nonroot:nonroot
 ENTRYPOINT ["/migrate"]
 CMD ["up"]
+
+# --- operator tools ----------------------------------------------------------
+# replayctl (calibrate / revalidate) and leaderboardctl (rebuild / show) — the
+# commands `make calibrate` etc. run from a dev checkout. The production stack
+# publishes no Postgres port, so these have to run ON the compose network: the
+# root docker-compose.yml exposes them as one-shot services under the `tools`
+# profile, with the exact environment the server judges under. Built with the
+# same BUILD_TAGS on purpose — a replayctl without the review policy refuses to
+# run rather than quietly rewrite every stored verdict as unjudged.
+# Declared BEFORE `server` so the default build target stays the server.
+FROM gcr.io/distroless/static:nonroot AS tools
+LABEL org.opencontainers.image.title="typemore-tools" \
+	org.opencontainers.image.source="https://github.com/typemore/typemore-server" \
+	org.opencontainers.image.description="Operator tools (replayctl, leaderboardctl) for TypeMore"
+COPY --from=build /out/replayctl /replayctl
+COPY --from=build /out/leaderboardctl /leaderboardctl
+USER nonroot:nonroot
+# No shell in distroless, so there is nothing to dispatch on: the compose
+# services pick the binary via `entrypoint`. Default to replayctl for a bare
+# `docker run`.
+ENTRYPOINT ["/replayctl"]
 
 # --- server ----------------------------------------------------------------
 # distroless/static:nonroot: no shell, no package manager, runs as a non-root
