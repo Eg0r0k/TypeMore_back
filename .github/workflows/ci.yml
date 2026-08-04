@@ -39,8 +39,15 @@ jobs:
           cache: true
       # Linux runners have a C toolchain, so the race detector works here even
       # though it may not on a bare Windows dev box.
+      #
+      # -timeout 25m, because go's default is 10m PER PACKAGE and two packages
+      # do not fit in it: internal/replay and internal/runs each spend minutes
+      # in a real Postgres via testcontainers, and the race detector roughly
+      # doubles that. Hitting the default does not read as "too slow" — the
+      # package panics, and the panic buries whatever actually went wrong under
+      # a stack dump of every live goroutine.
       - name: go test -race
-        run: go test -race ./...
+        run: go test -race -timeout 25m ./...
 
   build:
     name: build
