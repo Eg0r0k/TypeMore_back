@@ -246,6 +246,38 @@ func TestLobbyModeDimensionsAreMutuallyExclusive(t *testing.T) {
 	assert.Equal(t, "russian", gotWords.Settings.Lang)
 }
 
+// A QUOTE room advertises its length like any other counted mode.
+//
+// This is the regression for a listing that carried NEITHER dimension: the
+// switch named `time` and `words`, quote fell through both, and the public list
+// advertised a match without saying how long it was. The fix asks IsCounted —
+// the same question the finish window and the per-word ceiling ask — so the
+// next counted mode cannot repeat it, and this test is what says so.
+func TestLobbyListsAQuoteRoomWithItsWordCount(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv := lobbyTestServer(t, nil)
+
+	host := dialAs(t, ctx, srv, "")
+	_, room := hostRoom(t, ctx, host)
+	publish(t, ctx, host, room, "quotes", func(s *protocol.Settings) {
+		s.Mode, s.DurationMs, s.WordCount, s.Lang = protocol.ModeQuote, 0, 42, "english"
+		s.DictHash = ""
+		s.TextSource = protocol.TextSource{
+			Kind:    protocol.TextSourceQuote,
+			QuoteID: "11111111-2222-3333-4444-555555555555",
+		}
+	})
+
+	listed := fetchLobby(t, ctx, srv)
+	require.Len(t, listed, 1)
+	got := listed[0]
+	assert.Equal(t, protocol.ModeQuote, got.Settings.Mode)
+	require.NotNil(t, got.Settings.WordCount, "a quote room must advertise its length")
+	assert.Equal(t, 42, *got.Settings.WordCount)
+	assert.Nil(t, got.Settings.DurationMs, "and it is not a timed room")
+}
+
 // TestLobbyRateLimited proves the endpoint is behind the shared limiter and
 // renders a refusal in the standard error shape.
 func TestLobbyRateLimited(t *testing.T) {
