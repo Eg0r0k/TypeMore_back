@@ -66,6 +66,11 @@ type seat struct {
 // exception is reconnect backlog replay, which is blocking and off-lock.
 type Room struct {
 	code string
+	// lastActivityMs is when a command last CHANGED this room, and idleWarned
+	// whether its closing warning has been sent (room_idle.go). Both are under
+	// r.mu like every other field here.
+	lastActivityMs int64
+	idleWarned     bool
 	// createdAt stamps construction and is immutable thereafter. It exists for
 	// the public lobby list, which orders rooms oldest-first so a newly opened
 	// room cannot displace an established one (see lobby.go).
@@ -86,8 +91,11 @@ type Room struct {
 // newRoom builds an empty room with default settings.
 func newRoom(code string, reg *Registry, log *slog.Logger, store MatchStore) *Room {
 	return &Room{
-		code:      code,
-		createdAt: time.Now(),
+		code: code,
+		// A fresh room starts its idle clock now: a room created and abandoned
+		// without a single command is exactly the case the reaper is for.
+		lastActivityMs: nowMs(),
+		createdAt:      time.Now(),
 		reg:       reg,
 		log:       log,
 		store:     store,
@@ -120,6 +128,7 @@ func (r *Room) seat(sess *session, asHost bool) bool {
 	}
 	r.nextSeq++
 	r.seats = append(r.seats, st)
+	r.touchLocked()
 	// This and removeSeatLocked are the only two places a seat enters or leaves
 	// the world, so they are the only two that touch the account index.
 	r.reg.indexSeat(r, st)
@@ -402,6 +411,7 @@ func (r *Room) ready(sess *session, value bool) {
 		return
 	}
 	st.ready = value
+	r.touchLocked()
 	r.broadcastStateLocked()
 }
 
@@ -434,6 +444,7 @@ func (r *Room) updateSettings(sess *session, ns protocol.Settings) {
 	for _, s := range r.seats {
 		s.ready = false
 	}
+	r.touchLocked()
 	r.broadcastStateLocked()
 	r.systemChatLocked(protocol.ChatKindSettings, "settings changed")
 }
@@ -457,6 +468,7 @@ func (r *Room) setFreemods(sess *session, fm protocol.Freemods) {
 		return
 	}
 	st.freemods = fm
+	r.touchLocked()
 	r.broadcastStateLocked()
 }
 
@@ -491,6 +503,7 @@ func (r *Room) kick(sess *session, targetID string) {
 		return
 	}
 	r.removeSeatLocked(idx)
+	r.touchLocked()
 	if target.sess != nil {
 		target.sess.trySend(protocol.Kicked{Type: protocol.TypeKicked})
 	}
@@ -530,6 +543,7 @@ func (r *Room) transferHost(sess *session, targetID string) {
 		return
 	}
 	r.hostID = target.playerID
+	r.touchLocked()
 	r.broadcastStateLocked()
 	r.systemChatLocked(protocol.ChatKindHostChanged, target.nick+" is now host")
 }

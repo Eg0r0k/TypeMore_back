@@ -135,6 +135,7 @@ func (r *Room) startMatch(sess *session, force bool) {
 		roster[i] = s
 	}
 
+	r.touchLocked()
 	id := newMatchID()
 	m := &matchState{
 		id:       id,
@@ -222,6 +223,7 @@ func (r *Room) relayEventBatch(sess *session, eb protocol.EventBatch, recvMs int
 		return
 	}
 
+	r.touchLocked()
 	st.lastSeq = eb.BatchSeq
 	st.batches = append(st.batches, CapturedBatch{
 		BatchSeq:     eb.BatchSeq,

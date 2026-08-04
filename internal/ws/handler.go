@@ -87,6 +87,10 @@ type Handler struct {
 	// request (session cookie). It may be nil (all connections are guests) and,
 	// when set, returns the account displayName, its user id, and true.
 	identify func(*http.Request) (name, userID string, authed bool)
+
+	// reaperStop ends the idle-room sweep; closeOnce makes Close idempotent.
+	reaperStop chan struct{}
+	closeOnce  sync.Once
 }
 
 // NewHandler builds a Handler. allowedOrigins is the browser Origin allow-list;
@@ -100,13 +104,24 @@ func NewHandler(log *slog.Logger, allowedOrigins []string, identify func(*http.R
 	for _, o := range opts {
 		o(&reg.timing)
 	}
-	return &Handler{
+	h := &Handler{
 		log:            log,
 		originPatterns: allowedOrigins,
 		idGen:          newID,
 		reg:            reg,
 		identify:       identify,
+		reaperStop:     make(chan struct{}),
 	}
+	// The idle-room backstop (room_idle.go). Started here because the handler is
+	// what owns the registry's lifetime; Close stops it.
+	go reg.runIdleReaper(h.reaperStop)
+	return h
+}
+
+// Close stops the handler's background work. Idempotent, so a test that defers
+// it beside an explicit call is not a panic.
+func (h *Handler) Close() {
+	h.closeOnce.Do(func() { close(h.reaperStop) })
 }
 
 // WaitForPersists blocks until every in-flight match-capture write has finished

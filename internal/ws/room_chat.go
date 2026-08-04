@@ -31,6 +31,7 @@ func (r *Room) chat(sess *session, text string) {
 		r.errLocked(sess, protocol.CodeRateLimited, "chat rate limit exceeded")
 		return
 	}
+	r.touchLocked()
 	msg := protocol.Chat{Type: protocol.TypeChat, From: st.playerID, Text: text, Ts: nowMs()}
 	for _, s := range r.seats {
 		r.deliverLocked(s, msg)
