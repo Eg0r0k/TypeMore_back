@@ -50,7 +50,7 @@ type publicHeader struct {
 // The round trip: write a profile, read it back on the owner's route and on the
 // public one. The links carry HANDLES — the public payload must never grow a
 // URL, because the renderer's fixed prefix is what owns the host.
-func TestProfilePatchRoundTripsToThePublicHeader(t *testing.T) {
+func TestPatchRoundTripsToThePublicHeader(t *testing.T) {
 	h := newHarness(t)
 	h.login("identity@example.com", "correct horse battery", "identityplayer")
 
@@ -75,7 +75,7 @@ func TestProfilePatchRoundTripsToThePublicHeader(t *testing.T) {
 }
 
 // A PATCH is partial, and clearing is a different instruction from omitting.
-func TestProfilePatchIsPartialAndClearsWithEmptyString(t *testing.T) {
+func TestPatchIsPartialAndClearsWithEmptyString(t *testing.T) {
 	h := newHarness(t)
 	h.login("partialprofile@example.com", "correct horse battery", "partialprofile")
 

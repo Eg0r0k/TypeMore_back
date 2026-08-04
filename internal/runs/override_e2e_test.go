@@ -128,7 +128,7 @@ func (h *harness) judgedRun(t *testing.T, userID uuid.UUID, status string) uuid.
 		        '{"config":{},"generation":{}}'::jsonb,
 		        '{"wpm":90,"raw":95,"acc":0.99}'::jsonb,
 		        '{"version":2,"total":100}'::jsonb,
-		        '8b'::bytea, 2, $2)
+		        '\x1f8b'::bytea, 2, $2)
 		RETURNING id`, userID, status).Scan(&id))
 	if status != runstatus.Pending {
 		_, err := h.pool.Exec(ctx, `

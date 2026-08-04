@@ -104,11 +104,6 @@ var bundleBuildInfo = func() (info struct {
 	return info
 }()
 
-// BuildInfo returns the loaded bundle's self-reported identity. The server
-// logs it next to BundleSHA at startup, so "which core judged this run" is
-// answerable from the boot log alone.
-func (c *Core) BuildInfo() BuildInfo { return c.buildInfo }
-
 // readBuildInfo lifts the identity constants off the bundle's export object.
 // Missing exports (an older vendored bundle) leave zero values.
 func readBuildInfo(exports *goja.Object) BuildInfo {
@@ -186,6 +181,11 @@ type Core struct {
 	// against ten random German nouns and rejecting an honest log.
 	quoteDict goja.Value
 }
+
+// BuildInfo returns the loaded bundle's self-reported identity. The server
+// logs it next to BundleSHA at startup, so "which core judged this run" is
+// answerable from the boot log alone.
+func (c *Core) BuildInfo() BuildInfo { return c.buildInfo }
 
 // NewCore evaluates the vendored bundle and binds the exports the pipeline
 // calls. A failure here means the vendored artifact is broken, was built with a

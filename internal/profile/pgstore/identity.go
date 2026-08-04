@@ -84,7 +84,7 @@ func (s *Store) Links(ctx context.Context, userID uuid.UUID) ([]profile.Link, er
 // would have to decide what an absent code means, and the answer — "hide it" —
 // is exactly what clearing already does, in one statement, with no chance of
 // two codes ending up on the same position because a delete was missed.
-func (s *Store) ApplyProfilePatch(ctx context.Context, userID uuid.UUID, patch profile.ProfilePatch) error {
+func (s *Store) ApplyProfilePatch(ctx context.Context, userID uuid.UUID, patch profile.Patch) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err

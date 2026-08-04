@@ -53,7 +53,7 @@ func TestValidateLinkPerKindGrammar(t *testing.T) {
 		{"github", "Eg0r-Kill", true},
 		{"github", "-egor", false},
 		{"github", "egor-", false},
-		{"github", "egor_kill", false}, // underscores are not GitHub's grammar
+		{"github", "egor_kill", false},                                // underscores are not GitHub's grammar
 		{"github", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false}, // 40
 
 		// YouTube handles, stored without the @, 3-30 chars.

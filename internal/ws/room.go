@@ -96,10 +96,10 @@ func newRoom(code string, reg *Registry, log *slog.Logger, store MatchStore) *Ro
 		// without a single command is exactly the case the reaper is for.
 		lastActivityMs: nowMs(),
 		createdAt:      time.Now(),
-		reg:       reg,
-		log:       log,
-		store:     store,
-		settings:  protocol.DefaultSettings(""),
+		reg:            reg,
+		log:            log,
+		store:          store,
+		settings:       protocol.DefaultSettings(""),
 	}
 }
 

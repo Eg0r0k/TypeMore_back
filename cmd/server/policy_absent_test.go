@@ -119,17 +119,15 @@ func buildServer(t *testing.T, extra []string) []byte {
 	return raw
 }
 
+// goTool locates the go binary this test builds with.
+//
+// PATH only. `runtime.GOROOT()` was the obvious answer and is deprecated as of
+// Go 1.24 for a reason that applies here: it reports the GOROOT the TEST BINARY
+// was built with, which says nothing about the machine now running it. A test
+// invoked by `go test` was started by a go on PATH, so PATH is both the honest
+// question and the one with an answer.
 func goTool(t *testing.T) string {
 	t.Helper()
-	if goroot := runtime.GOROOT(); goroot != "" {
-		exe := filepath.Join(goroot, "bin", "go")
-		if runtime.GOOS == "windows" {
-			exe += ".exe"
-		}
-		if _, err := os.Stat(exe); err == nil {
-			return exe
-		}
-	}
 	path, err := exec.LookPath("go")
 	require.NoError(t, err, "no go toolchain to build with")
 	return path

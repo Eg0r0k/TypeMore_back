@@ -22,7 +22,7 @@ import (
 func healthBody(t *testing.T, review ReviewPolicy) map[string]json.RawMessage {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	HealthHandler(review).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	HealthHandler(review).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody))
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var body map[string]json.RawMessage
@@ -67,7 +67,7 @@ func TestHealthzSaysWhenSomethingIsJudging(t *testing.T) {
 func TestHealthzLeaksNothingAboutWhatThePolicyDecides(t *testing.T) {
 	rec := httptest.NewRecorder()
 	HealthHandler(ReviewPolicy{Enabled: true, Version: "2"}).
-		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", http.NoBody))
 
 	body := rec.Body.String()
 	for _, secret := range []string{

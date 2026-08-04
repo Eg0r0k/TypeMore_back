@@ -195,10 +195,10 @@ type Link struct {
 	Handle string
 }
 
-// ProfilePatch is one write of the owner-editable profile. Every field is a
+// Patch is one write of the owner-editable profile. Every field is a
 // pointer because the route is a PATCH: nil means "not mentioned, leave it",
 // which is a different instruction from "set this to empty".
-type ProfilePatch struct {
+type Patch struct {
 	// Bio/Keyboard, each with an explicit "was this mentioned" flag.
 	//
 	// A bare *string cannot carry this: the handler normalises a cleared field
@@ -265,5 +265,5 @@ type Store interface {
 	// ApplyProfilePatch writes one owner edit ATOMICALLY: the bio, the links
 	// and the showcase move together or not at all. A half-applied patch would
 	// leave a profile the owner never asked for and cannot see they have.
-	ApplyProfilePatch(ctx context.Context, userID uuid.UUID, patch ProfilePatch) error
+	ApplyProfilePatch(ctx context.Context, userID uuid.UUID, patch Patch) error
 }

@@ -59,7 +59,7 @@ func (r *Room) touchLocked() {
 }
 
 // idleStateLocked reports what the reaper should do about this room right now.
-func (r *Room) idleStateLocked(now int64) (warn, close bool) {
+func (r *Room) idleStateLocked(now int64) (warn, expire bool) {
 	// A running match is never idle by this measure: the match has its own
 	// deadline and its own AFK rules, and both are stricter than an hour.
 	if r.inMatch {
@@ -69,7 +69,7 @@ func (r *Room) idleStateLocked(now int64) (warn, close bool) {
 	switch {
 	case idle >= roomIdleTimeout.Milliseconds():
 		return false, true
-	case idle >= (roomIdleTimeout - roomIdleWarning).Milliseconds() && !r.idleWarned:
+	case idle >= (roomIdleTimeout-roomIdleWarning).Milliseconds() && !r.idleWarned:
 		return true, false
 	default:
 		return false, false
@@ -94,13 +94,13 @@ func (reg *Registry) reapIdleRooms(now int64) {
 	var emptied []string
 	for _, room := range rooms {
 		room.mu.Lock()
-		warn, close := room.idleStateLocked(now)
+		warn, expire := room.idleStateLocked(now)
 		switch {
 		case warn:
 			room.idleWarned = true
 			room.systemChatLocked(protocol.ChatKindLeave,
 				"this room has been idle for an hour and will close in a minute")
-		case close:
+		case expire:
 			for len(room.seats) > 0 {
 				// leaveSeatLocked is what a voluntary departure runs; the last
 				// one leaves the room empty and the sweep below drops it.

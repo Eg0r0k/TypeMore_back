@@ -251,7 +251,7 @@ func (s *Service) decorateHeader(r *http.Request, userID uuid.UUID, view *header
 		return err
 	}
 	for _, l := range links {
-		view.Links = append(view.Links, publicLinkView{Kind: l.Kind, Handle: l.Handle})
+		view.Links = append(view.Links, publicLinkView(l))
 	}
 
 	// The showcase read carries the live predicate in SQL (`revoked_at IS

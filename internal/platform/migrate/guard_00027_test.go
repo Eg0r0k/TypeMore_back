@@ -47,7 +47,7 @@ func seedMatchRun(t *testing.T, pool *pgxpool.Pool, matchID string, userID *uuid
 	seedMatch(t, pool, matchID)
 	_, err := pool.Exec(context.Background(), `
 		INSERT INTO match_runs (match_id, player_id, nick, user_id, freemods, log, batch_count, final_status)
-		VALUES ($1, $2, $3, $4, '{}'::jsonb, '8b'::bytea, 0, 'finished')`,
+		VALUES ($1, $2, $3, $4, '{}'::jsonb, '\x1f8b'::bytea, 0, 'finished')`,
 		matchID, playerID, "seat-"+playerID, userID)
 	require.NoError(t, err, "seed match_runs")
 }
@@ -102,7 +102,7 @@ func TestMigration00027RefusesAMatchAnAccountPlayedAgainstItself(t *testing.T) {
 	seedMatchRun(t, pool, "m_second", &user, "p3")
 	_, err = pool.Exec(ctx, `
 		INSERT INTO match_runs (match_id, player_id, nick, user_id, freemods, log, batch_count, final_status)
-		VALUES ('m_second', 'p4', 'dupe', $1, '{}'::jsonb, '8b'::bytea, 0, 'finished')`, user)
+		VALUES ('m_second', 'p4', 'dupe', $1, '{}'::jsonb, '\x1f8b'::bytea, 0, 'finished')`, user)
 	require.Error(t, err, "the index refuses a second seat for the same account")
 	assert.True(t, strings.Contains(err.Error(), "match_runs_one_seat_per_user"),
 		"and it is THAT index that refuses it: %v", err)
@@ -131,6 +131,6 @@ func TestMigration00027LeavesGuestSeatsAlone(t *testing.T) {
 	// Still true after the index exists.
 	_, err = pool.Exec(ctx, `
 		INSERT INTO match_runs (match_id, player_id, nick, user_id, freemods, log, batch_count, final_status)
-		VALUES ('m_guests', 'g4', 'g4', NULL, '{}'::jsonb, '8b'::bytea, 0, 'finished')`)
+		VALUES ('m_guests', 'g4', 'g4', NULL, '{}'::jsonb, '\x1f8b'::bytea, 0, 'finished')`)
 	assert.NoError(t, err, "a fourth guest in the same match is still legal")
 }

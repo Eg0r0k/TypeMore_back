@@ -76,7 +76,7 @@ func (s *Service) HandleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patch := ProfilePatch{}
+	patch := Patch{}
 
 	if req.Bio != nil {
 		value, err := s.normalizeText(*req.Bio, bioMaxLen, "bio")
@@ -259,7 +259,7 @@ func (s *Service) serveOwnProfileIdentity(w http.ResponseWriter, r *http.Request
 		KnownBadges: badges.Codes(),
 	}
 	for i, l := range links {
-		view.Links[i] = linkView{Kind: l.Kind, Handle: l.Handle}
+		view.Links[i] = linkView(l)
 	}
 	for i, b := range granted {
 		view.Badges[i] = ownBadgeView{Code: b.Code, Shown: b.Order != nil, Order: b.Order}

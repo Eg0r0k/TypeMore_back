@@ -94,7 +94,7 @@ func (s *Store) OverrideRunStatus(ctx context.Context, p runs.OverrideParams) (r
 	row, err := q.InsertRunStatusOverride(ctx, runsdb.InsertRunStatusOverrideParams{
 		RunID:      p.RunID,
 		FromStatus: current.Status,
-		ToStatus:   string(p.ToStatus),
+		ToStatus:   p.ToStatus,
 		Reason:     p.Reason,
 		DecidedBy:  p.DecidedBy,
 	})

@@ -167,7 +167,10 @@ func (s *Store) PBs(ctx context.Context, userID uuid.UUID) ([]profile.PB, error)
 		return nil, err
 	}
 	out := make([]profile.PB, len(rows))
-	for i, r := range rows {
+	// Indexed rather than ranged by value: a row here is 136 bytes, and this
+	// copies every one of them to read nine fields out.
+	for i := range rows {
+		r := &rows[i]
 		out[i] = profile.PB{
 			BucketKey:   r.BucketKey,
 			RunID:       r.RunID,

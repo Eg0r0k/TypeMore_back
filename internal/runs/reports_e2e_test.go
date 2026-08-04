@@ -38,16 +38,6 @@ func (h *harness) quoteFor(text string) uuid.UUID {
 	return id
 }
 
-type reportResp struct {
-	ID      string `json:"id"`
-	Subject struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-	} `json:"subject"`
-	Reason string `json:"reason"`
-	Status string `json:"status"`
-}
-
 type queueResp struct {
 	Items []struct {
 		Subject struct {

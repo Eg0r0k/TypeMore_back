@@ -96,7 +96,7 @@ func (s *Service) handleBadgeHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]holderView, len(holders))
 	for i, h := range holders {
-		views[i] = holderView{UserID: h.UserID, DisplayName: h.DisplayName, GrantedAt: h.GrantedAt}
+		views[i] = holderView(h)
 	}
 	s.writeJSON(w, http.StatusOK, struct {
 		Code    string       `json:"code"`

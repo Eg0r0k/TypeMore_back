@@ -195,6 +195,11 @@ func run() error {
 	layouts, err := keyboard.Load()
 	if err != nil {
 		logger.Error("load keyboard layouts", "err", err)
+		// os.Exit skips every defer, including the pool's, so the one resource
+		// held at this point is closed by hand. Nothing else is registered yet:
+		// the workers and the shutdown hook come later in this function.
+		pool.Close()
+		//nolint:gocritic // exitAfterDefer: the only live defer is pool.Close, closed by hand on the line above.
 		os.Exit(1)
 	}
 
