@@ -81,7 +81,7 @@ func (g *hashGate) acquire(ctx context.Context) (release func(), ok bool) {
 	select {
 	case g.slots <- struct{}{}:
 		g.count()
-		return func() { <-g.slots; g.done() }, true
+		return g.releaser(), true
 	default:
 	}
 
@@ -90,13 +90,31 @@ func (g *hashGate) acquire(ctx context.Context) (release func(), ok bool) {
 	select {
 	case g.slots <- struct{}{}:
 		g.count()
-		return func() { <-g.slots; g.done() }, true
+		return g.releaser(), true
 	case <-ctx.Done():
 		g.shed.Add(1)
 		return nil, false
 	case <-timer.C:
 		g.shed.Add(1)
 		return nil, false
+	}
+}
+
+// releaser gives back one slot, ORDER MATTERS: the in-flight counter is
+// decremented BEFORE the semaphore slot is handed on.
+//
+// The other order overcounts. Freeing the slot first lets a queued caller take
+// it and increment in-flight while this one has not yet decremented, so the
+// counter — and with it `PeakInFlight` — reads one higher than the number of
+// hashes actually running, and can exceed the limit outright. The ceiling
+// itself was never violated (the channel is the ceiling), but the statistic
+// that reports it was, and `PeakInFlight × HashCostBytes` is documented as the
+// peak hashing memory this process has committed. A number used to size a
+// deployment must not be able to report memory that was never held.
+func (g *hashGate) releaser() func() {
+	return func() {
+		g.done()
+		<-g.slots
 	}
 }
 
