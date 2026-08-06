@@ -36,6 +36,10 @@ services:
       # the /api/v1/admin subtree is not mounted at all. Set it in your local
       # (gitignored) .env like the OAuth secrets.
       TYPEMORE_ADMINS: "${TYPEMORE_ADMINS:-}"
+      # Canary epoch (docs/REPLAY.md): set BY HAND in the local .env to the
+      # instant the canary-RENDERING frontend went live. Empty (the default)
+      # arms nobody — runs judged exactly as before.
+      TYPEMORE_REPLAY_CANARY_EPOCH: "${TYPEMORE_REPLAY_CANARY_EPOCH:-}"
       # OAuth: values come from your local (gitignored) .env or shell env — never
       # hard-coded here. OAUTH_REDIRECT_BASE must match the callback registered
       # with the provider (default http://localhost:8080).
