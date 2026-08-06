@@ -87,6 +87,12 @@ type Handler struct {
 	// request (session cookie). It may be nil (all connections are guests) and,
 	// when set, returns the account displayName, its user id, and true.
 	identify func(*http.Request) (name, userID string, authed bool)
+	// restricted answers whether an ACCOUNT is under an active ban, consulted
+	// at create_room/join_room time (not at connect) so a ban landing
+	// mid-session bites on the next room action. Nil means nobody is
+	// restricted — the correct behaviour for a stand with no moderation store
+	// and for every test that is not about bans.
+	restricted func(ctx context.Context, userID string) bool
 
 	// reaperStop ends the idle-room sweep; closeOnce makes Close idempotent.
 	reaperStop chan struct{}
@@ -115,6 +121,14 @@ func NewHandler(log *slog.Logger, allowedOrigins []string, identify func(*http.R
 	// The idle-room backstop (room_idle.go). Started here because the handler is
 	// what owns the registry's lifetime; Close stops it.
 	go reg.runIdleReaper(h.reaperStop)
+	return h
+}
+
+// WithRestrictions wires the ban lookup behind create_room/join_room. Without
+// it no connection is ever refused as restricted — the same nil default the
+// auth service's /me banner uses.
+func (h *Handler) WithRestrictions(fn func(ctx context.Context, userID string) bool) *Handler {
+	h.restricted = fn
 	return h
 }
 
@@ -217,6 +231,7 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, displayName, 
 		authed:      authed,
 		displayName: displayName,
 		userID:      userID,
+		restricted:  h.restricted,
 	}
 
 	// Writer goroutine: the sole owner of conn.Write. It drains s.outbound and

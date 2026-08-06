@@ -182,6 +182,11 @@ type headerView struct {
 	// summary would not.
 	Joined time.Time `json:"joined"`
 	Public bool      `json:"public"`
+	// Restricted marks an account under an active ban — the fact and nothing
+	// else, mirroring /me's own flag: no reason, no expiry, no issuer
+	// (docs/MODERATION.md). omitempty keeps every unbanned header
+	// byte-identical to what it served before the mark existed.
+	Restricted bool `json:"restricted,omitempty"`
 
 	// The identity half (00029), present only on an OPEN profile and only when
 	// its owner filled it in. omitempty throughout: an untouched profile serves
@@ -223,6 +228,15 @@ func (s *Service) handlePublicHeader(w http.ResponseWriter, r *http.Request) {
 	// anyone else `public` IS the answer to "may I ask for more".
 	view := headerView{
 		ID: user.ID, Name: user.DisplayName, Joined: user.Joined, Public: user.ProfilePublic,
+	}
+	if s.restrictions != nil {
+		restricted, err := s.restrictions.IsRestricted(r.Context(), user.ID)
+		if err != nil {
+			// Reported, not fatal: the mark is informational, and the ban's
+			// ENFORCEMENT lives in SQL on every board and replay read.
+			s.log.Error("resolve public restriction", "err", err, "userId", user.ID)
+		}
+		view.Restricted = restricted
 	}
 	if user.ProfilePublic || s.isOwner(r, user) {
 		if err := s.decorateHeader(r, user.ID, &view); err != nil {

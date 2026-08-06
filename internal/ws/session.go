@@ -43,6 +43,9 @@ type session struct {
 	authed      bool
 	displayName string
 	userID      string // account id (empty for a guest); persisted with the match
+	// restricted is the handler's ban lookup (nil = nobody is restricted),
+	// consulted per room action so a mid-session ban bites on the next one.
+	restricted func(ctx context.Context, userID string) bool
 
 	helloDone bool
 	playerID  string
@@ -360,6 +363,11 @@ func (s *session) handleCreateRoom(ctx context.Context) {
 		s.send(ctx, protocol.NewError(protocol.CodeBadMessage, "already in a room"))
 		return
 	}
+	if s.isRestricted(ctx) {
+		s.send(ctx, protocol.NewError(protocol.CodeAccountRestricted,
+			"this account cannot create or join rooms"))
+		return
+	}
 	s.enterRoom(ctx, func() seatOutcome { return s.reg.create(s) })
 }
 
@@ -374,7 +382,18 @@ func (s *session) handleJoinRoom(ctx context.Context, data []byte) {
 		s.send(ctx, protocol.NewError(protocol.CodeBadMessage, "already in a room"))
 		return
 	}
+	if s.isRestricted(ctx) {
+		s.send(ctx, protocol.NewError(protocol.CodeAccountRestricted,
+			"this account cannot create or join rooms"))
+		return
+	}
 	s.enterRoom(ctx, func() seatOutcome { return s.reg.join(m.Code, s) })
+}
+
+// isRestricted answers whether this connection's ACCOUNT is under an active
+// ban. Guests have no account to restrict, and a nil lookup restricts nobody.
+func (s *session) isRestricted(ctx context.Context) bool {
+	return s.authed && s.restricted != nil && s.restricted(ctx, s.userID)
 }
 
 // enterRoom runs one create_room/join_room to completion, applying the registry's

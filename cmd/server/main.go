@@ -241,7 +241,7 @@ func run() error {
 				info.WordCount = &dim
 			}
 			return info, true
-		}, layouts.LayoutFor, logger)
+		}, layouts.LayoutFor, logger).WithRestrictions(moderationStore)
 
 	quoteSvc := quote.NewService(quoteStore, logger)
 
@@ -409,7 +409,20 @@ func run() error {
 			return u.DisplayName, u.ID.String(), true
 		}
 		return "", "", false
-	}, wspg.New(pool))
+	}, wspg.New(pool)).WithRestrictions(func(ctx context.Context, userID string) bool {
+		id, err := uuid.Parse(userID)
+		if err != nil {
+			return false
+		}
+		restricted, err := moderationStore.IsRestricted(ctx, id)
+		if err != nil {
+			// Fail open: the mark is a gate on NEW room actions; the ban's hard
+			// enforcement (runs, boards, replays) lives in SQL regardless.
+			logger.Error("resolve ws restriction", "err", err, "userId", userID)
+			return false
+		}
+		return restricted
+	})
 	router.Handle("/ws", wsHandler)
 	// A match that ends while the process is going down is exactly the capture
 	// worth keeping, so its write runs on a background context of its own and is

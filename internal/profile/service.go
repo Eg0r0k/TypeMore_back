@@ -51,10 +51,19 @@ type RateLimiter interface {
 	Allow(key string) bool
 }
 
+// Restrictions answers whether an account is under an active ban — one
+// boolean, declared here at the consumer exactly as auth and runs declare it,
+// so this package cannot reach a reason or an expiry.
+type Restrictions interface {
+	IsRestricted(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
 // Service serves the session-scoped profile read model.
 type Service struct {
 	store  Store
 	userID UserIDFunc
+	// restrictions marks a banned account's PUBLIC header (nil = never marked).
+	restrictions Restrictions
 	// searchLimiter rations the ONE public route whose cost does not scale with
 	// a single account: /users?q= reads an index built over every user, while
 	// every other route on this surface is bounded by one player's history. It
@@ -73,6 +82,13 @@ func NewService(store Store, searchLimiter RateLimiter, userID UserIDFunc, bucke
 		store: store, searchLimiter: searchLimiter, userID: userID,
 		bucket: bucket, layoutFor: layoutFor, log: log,
 	}
+}
+
+// WithRestrictions wires the ban lookup behind the public header's
+// `restricted` mark. Without it no profile is ever marked.
+func (s *Service) WithRestrictions(r Restrictions) *Service {
+	s.restrictions = r
+	return s
 }
 
 // --- shared HTTP helpers (mirroring the sibling domains', kept private) -----

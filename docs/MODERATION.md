@@ -13,14 +13,26 @@ entries. That is all of it.
 | Leaderboard reads | their entries are hidden, everywhere, including the board index |
 | Public replay endpoints | **404** for a banned owner's runs |
 | `GET /api/v1/me` | gains `restricted: true` |
+| `GET /api/v1/users/{name}` | gains `restricted: true` — the fact, publicly, and nothing else |
+| `create_room` / `join_room` (WS) | refused with **`account_restricted`**; an existing seat is not evicted |
 | **Login, sessions** | **untouched** |
-| **Rooms, matches, chat** | **untouched** |
+| **Solo play, spectating a room they are already in** | **untouched** |
 | Reading boards, watching other people's replays | **untouched** |
 
-A banned player can still sign in and still play a casual match against a
-friend. `TestABannedUserStillLogsInAndKeepsItsSession` is the test that keeps
-that true — if somebody decides a ban should block login, they have to delete
-that test and say so out loud.
+A banned player can still sign in and still type solo.
+`TestABannedUserStillLogsInAndKeepsItsSession` is the test that keeps the
+login half true — if somebody decides a ban should block login, they have to
+delete that test and say so out loud.
+
+**Two of the original absences were reversed on 2026-08-06, and this says so
+out loud.** v1 kept rooms untouched and told nobody but the banned player
+themselves. The operator decided both the other way: a ban now refuses NEW
+`create_room`/`join_room` (checked per action, so a mid-session ban bites on
+the next room hop; a seat already held is not evicted — ending a running
+match somebody else is in would punish the opponents), and the public header
+carries the bare `restricted` flag so other players can see why a name
+vanished from the boards. The flag stays one boolean on both surfaces: no
+reason, no expiry, no issuer.
 
 ## The predicate, defined once
 

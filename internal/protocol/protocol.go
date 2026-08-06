@@ -103,7 +103,11 @@ const (
 	// account simply moves; mid-match the move would forfeit a running race, so
 	// the newer connection is refused instead and the older one keeps its seat.
 	CodeInMatchElsewhere = "in_match_elsewhere"
-	CodeInternal         = "internal"
+	// CodeAccountRestricted refuses a create_room / join_room from a banned
+	// account — the same machine code the run-submission gate answers with
+	// (docs/MODERATION.md), so a client renders one banner for both.
+	CodeAccountRestricted = "account_restricted"
+	CodeInternal          = "internal"
 )
 
 // Peer status values carried in a PeerStatus frame's status field.
