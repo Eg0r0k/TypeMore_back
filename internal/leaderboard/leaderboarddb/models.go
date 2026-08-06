@@ -227,15 +227,16 @@ type Session struct {
 }
 
 type User struct {
-	ID             uuid.UUID
-	DisplayName    string
-	CreatedAt      time.Time
-	ProfilePublic  bool
-	KeyboardPublic bool
-	UpdatedAt      time.Time
-	Role           string
-	Bio            *string
-	Keyboard       *string
+	ID                   uuid.UUID
+	DisplayName          string
+	CreatedAt            time.Time
+	ProfilePublic        bool
+	KeyboardPublic       bool
+	UpdatedAt            time.Time
+	Role                 string
+	Bio                  *string
+	Keyboard             *string
+	DisplayNameChangedAt *time.Time
 }
 
 type UserBadge struct {
