@@ -95,6 +95,7 @@ var TypeMoreCore = (() => {
     MOD_MULTIPLIER_CAP: () => MOD_MULTIPLIER_CAP,
     SCORE_VERSION: () => SCORE_VERSION,
     SCORE_VERSION_2: () => SCORE_VERSION_2,
+    SCORE_VERSION_3: () => SCORE_VERSION_3,
     TICK_INTERVAL_MS: () => TICK_INTERVAL_MS,
     accentsFor: () => accentsFor,
     activeModsV1: () => activeModsV1,
@@ -123,6 +124,7 @@ var TypeMoreCore = (() => {
     expandEllipsis: () => expandEllipsis,
     finalizeScore: () => finalizeScore,
     finalizeScoreV2: () => finalizeScoreV2,
+    finalizeScoreV3: () => finalizeScoreV3,
     fnv1a: () => fnv1a,
     foldLog: () => foldLog,
     generateWords: () => generateWords,
@@ -158,7 +160,9 @@ var TypeMoreCore = (() => {
     reverseWord: () => reverseWord,
     scoreOfLog: () => scoreOfLog,
     scoreStep: () => scoreStep,
+    scoreStepV3: () => scoreStepV3,
     scoreV2OfLog: () => scoreV2OfLog,
+    scoreV3OfLog: () => scoreV3OfLog,
     separatorsOf: () => separatorsOf,
     settle: () => settle,
     sortEvents: () => sortEvents,
@@ -2175,6 +2179,7 @@ var TypeMoreCore = (() => {
   // src/score.ts
   var SCORE_VERSION = 1;
   var SCORE_VERSION_2 = 2;
+  var SCORE_VERSION_3 = 3;
   var POINTS_PER_KEYSTROKE = 10;
   var COMBO_TIER = 25;
   var COMBO_STEP = 0.25;
@@ -2270,6 +2275,27 @@ var TypeMoreCore = (() => {
     if (bufLen < target.length) state.streak = 0;
     advanceWord(state, ctx);
   }
+  function applyReplaceV3(state, from, to, text, source, ctx) {
+    var _a, _b;
+    if (source === "ime") {
+      const wi = state.wordIndex;
+      const target = (_a = ctx.words[wi]) != null ? _a : "";
+      const reached = (_b = state.reached[wi]) != null ? _b : 0;
+      let pos = from;
+      for (const char of text) {
+        const correct = pos < target.length && target[pos] === char;
+        if (correct && pos >= reached) {
+          state.streak += 1;
+          if (state.streak > state.comboPeak) state.comboPeak = state.streak;
+          state.base += POINTS_PER_KEYSTROKE * comboMultiplier(state.streak);
+        } else if (!correct) {
+          state.streak = 0;
+        }
+        pos += 1;
+      }
+    }
+    applyReplace(state, from, to, text, ctx);
+  }
   function scoreStep(state, event, ctx) {
     if (state.finished) return state;
     switch (event.kind) {
@@ -2289,6 +2315,14 @@ var TypeMoreCore = (() => {
         break;
     }
     return state;
+  }
+  function scoreStepV3(state, event, ctx) {
+    if (state.finished) return state;
+    if (event.kind === "replace") {
+      applyReplaceV3(state, event.from, event.to, event.text, event.source, ctx);
+      return state;
+    }
+    return scoreStep(state, event, ctx);
   }
   function finalizeScore(base, comboPeak, metrics, mode) {
     const accMultiplier = metrics.accuracy * metrics.accuracy;
@@ -2347,6 +2381,34 @@ var TypeMoreCore = (() => {
       declaration
     );
     return finalizeScoreV2(state.base, state.comboPeak, metrics, ctx.config.mode, modMultiplier);
+  }
+  function finalizeScoreV3(base, comboPeak, metrics, mode, modMultiplier) {
+    return __spreadProps(__spreadValues({}, finalizeScoreV2(base, comboPeak, metrics, mode, modMultiplier)), {
+      version: SCORE_VERSION_3
+    });
+  }
+  function scoreV3OfLog(log, setup, declaration) {
+    const ctx = { config: setup.config, words: setup.words };
+    const ordered = sortEvents(log).filter((e) => !isTelemetryEvent(e));
+    const lastT = ordered.length > 0 ? ordered[ordered.length - 1].t : asMs(0);
+    const analysis = analyzeLog(ctx, ordered);
+    let end = lastT;
+    if (!analysis.aborted) {
+      let finalState = settle(ctx, analysis.finalState, lastT);
+      if (ctx.config.minWpm > 0 && finalState.phase === "running") {
+        const failAt = minSpeedFailInstant(ctx, finalState);
+        if (failAt !== null) finalState = settle(ctx, finalState, failAt);
+      }
+      if (finalState.finishedAt !== null) end = finalState.finishedAt;
+    }
+    const state = initialScoreState();
+    for (const event of ordered) scoreStepV3(state, event, ctx);
+    const metrics = metricsFrom(ctx, analysis, end);
+    const modMultiplier = modMultiplierV1(
+      { generation: setup.generation, config: ctx.config },
+      declaration
+    );
+    return finalizeScoreV3(state.base, state.comboPeak, metrics, ctx.config.mode, modMultiplier);
   }
 
   // src/timer.ts
@@ -2726,4 +2788,4 @@ var TypeMoreCore = (() => {
   }
   return __toCommonJS(index_exports);
 })();
-//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"5309d822035e27fb72ffd2adbb86b3ecd114d05a","gitDirty":false}
+//# typemore-core-build {"version":"2.0.0","eventLogVersion":1,"telemetryLogVersion":2,"gitSha":"624732a97cda332b779d51fe238881f8509a3afd","gitDirty":false}

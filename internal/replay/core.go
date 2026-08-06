@@ -156,6 +156,7 @@ type Core struct {
 	validateLog   goja.Callable
 	scoreOfLog    goja.Callable
 	scoreV2OfLog  goja.Callable
+	scoreV3OfLog  goja.Callable
 	// charObservationsOf feeds the user_keyboard_profile projection: per typed
 	// character — presses, errors, inter-key intervals (docs/PROFILE.md).
 	charObservationsOf goja.Callable
@@ -223,6 +224,7 @@ func NewCore(timeout time.Duration) (*Core, error) {
 		{&c.validateLog, "validateLog"},
 		{&c.scoreOfLog, "scoreOfLog"},
 		{&c.scoreV2OfLog, "scoreV2OfLog"},
+		{&c.scoreV3OfLog, "scoreV3OfLog"},
 		{&c.charObservationsOf, "charObservationsOf"},
 	} {
 		if err := bind(b.dst, b.name); err != nil {
@@ -500,7 +502,8 @@ type Input struct {
 	Setup json.RawMessage
 	// Log is the submitted {version, events} EventLog.
 	Log json.RawMessage
-	// ScoreVersion routes the score recomputation (1 → scoreOfLog, 2 → scoreV2OfLog).
+	// ScoreVersion routes the score recomputation
+	// (1 → scoreOfLog, 2 → scoreV2OfLog, 3 → scoreV3OfLog).
 	ScoreVersion int16
 	// CanariesArmed asks validateLog to run its canary detectors for this run.
 	//
@@ -573,8 +576,9 @@ type setupParts struct {
 // version the run was submitted under.
 //
 // The composition lives in Go, but every computation is the bundle's:
-// generateWords, validateLog, scoreOfLog and scoreV2OfLog are the same functions
-// the browser calls. Nothing here re-derives a metric, a multiplier, or a hash.
+// generateWords, validateLog and the scoreOfLog/scoreV2OfLog/scoreV3OfLog folds
+// are the same functions the browser calls. Nothing here re-derives a metric, a
+// multiplier, or a hash.
 func (c *Core) Replay(ctx context.Context, in Input) (Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -834,6 +838,13 @@ func (c *Core) score(ctx context.Context, input *goja.Object, scoreVersion int16
 			return nil, fmt.Errorf("replay: build score setup: %w", err)
 		}
 		result, err = c.call(ctx, c.scoreV2OfLog, events, setup, input.Get("declaration"))
+	case scoreVersionV3:
+		// v3 keeps v2's setup shape whole; the formula difference (ime replaces
+		// score) lives entirely inside the bundle's fold.
+		if err := setup.Set("generation", generation); err != nil {
+			return nil, fmt.Errorf("replay: build score setup: %w", err)
+		}
+		result, err = c.call(ctx, c.scoreV3OfLog, events, setup, input.Get("declaration"))
 	default:
 		return nil, fmt.Errorf("replay: unsupported score version %d", scoreVersion)
 	}

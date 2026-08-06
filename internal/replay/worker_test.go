@@ -924,6 +924,18 @@ func TestScoreVersionRouting(t *testing.T) {
 	assert.Less(t, v1Score["total"], v2Score["total"], "the mod multiplier must be gone")
 	assert.Equal(t, StatusFlagged, v1.Status, "a v2 total claimed as v1 no longer matches")
 
+	// v3 on a keyboard-only log collapses onto v2 (ime replaces are the ONE
+	// formula difference, and this vector has none), so the same run must be
+	// accepted under the new version — which proves the routing actually
+	// reaches scoreV3OfLog and the bundle exports it.
+	asV3 := mods.pendingRun(t)
+	asV3.ScoreVersion = 3
+	v3 := judgeOne(t, asV3)
+	require.Equal(t, StatusAccepted, v3.Status, "validation: %s", v3.Validation)
+	v3Score := numbers(t, v3.ServerScore)
+	assert.Equal(t, float64(3), v3Score["version"])
+	assert.Equal(t, v2Score["total"], v3Score["total"], "no ime replaces: v3 must equal v2")
+
 	// Without mods the two formulas collapse onto the same total (the core's own
 	// regression invariant), so the same run is accepted under either version.
 	clean := firstVector(t, "words-clean")

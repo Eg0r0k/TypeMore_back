@@ -19,10 +19,11 @@ const (
 )
 
 // Score formula versions the worker can recompute. Mirrors the core's
-// SCORE_VERSION / SCORE_VERSION_2 and runs.KnownScoreVersions.
+// SCORE_VERSION / SCORE_VERSION_2 / SCORE_VERSION_3 and runs.KnownScoreVersions.
 const (
 	scoreVersionV1 int16 = 1
 	scoreVersionV2 int16 = 2
+	scoreVersionV3 int16 = 3
 )
 
 // Decision reasons. These are stable machine codes: they land in
@@ -189,8 +190,9 @@ type Decider struct {
 //
 // WHY THE SCORE COMPARISON STAYS, which is the part that makes this an
 // asymmetry rather than an exception. A run's score is VERSION-PINNED: it
-// carries `score_version`, and the worker routes v1 to `scoreOfLog` and v2 to
-// `scoreV2OfLog`, so a scoring change ships as a NEW version and every existing
+// carries `score_version`, and the worker routes v1 to `scoreOfLog`, v2 to
+// `scoreV2OfLog` and v3 to `scoreV3OfLog`, so a scoring change ships as a NEW
+// version and every existing
 // run keeps being scored by the formula it was scored by. The score the client
 // sent is therefore still recomputable exactly, forever, and a disagreement is
 // still evidence — including evidence that someone edited the column.

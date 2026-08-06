@@ -255,7 +255,7 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 | Check | Limit / rule | Failure |
 |---|---|---|
 | Raw body size | ≤ 25 MiB (transport; sized for log v2) | `413 payload_too_large` |
-| `scoreVersion` | one of `KnownScoreVersions` = `{1, 2}` | `422 unsupported_score_version` |
+| `scoreVersion` | one of `KnownScoreVersions` = `{1, 2, 3}` | `422 unsupported_score_version` |
 | `log.version` | one of `KnownLogVersions` = `{1, 2}` | `422 unsupported_log_version` |
 | v1 log bytes | ≤ 6.5 MiB (the pre-telemetry envelope, post-decode) | `422 log_too_large` |
 | Event count | 1 … 120 000 (v1) / 1 … 480 000 (v2) | `422 empty_log` / `422 too_many_events` |
@@ -271,9 +271,10 @@ oversized body is `413`; a well-formed body that breaks a structural rule is
 | `setup` / `clientMetrics` / `clientScore` / `log` | present | `400 bad_request` |
 
 `scoreVersion` is checked against `KnownScoreVersions` (the exported allow-list
-in `internal/runs`, currently `{1, 2}`) — the single source of truth shared by
+in `internal/runs`, currently `{1, 2, 3}`) — the single source of truth shared by
 this rule and the validator, so widening it is a one-line change. The current
-client ships score formula **v2**; **v1** stays accepted for older builds.
+client ships score formula **v3** (ime replaces score — the mobile composition
+path); **v1**/**v2** stay accepted for older builds.
 
 `textSource` is the **only** part of the opaque `setup` snapshot this layer
 parses, and it parses no further than it must: the kind decides which dimension
