@@ -64,7 +64,7 @@ func toUser(u authdb.User) auth.User {
 	return auth.User{
 		ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt,
 		ProfilePublic: u.ProfilePublic, KeyboardPublic: u.KeyboardPublic,
-		Role: u.Role,
+		Role: u.Role, DisplayNameChangedAt: u.DisplayNameChangedAt,
 	}
 }
 
@@ -238,6 +238,21 @@ func (s *Store) UpdateUserSettings(ctx context.Context, userID uuid.UUID, p auth
 		ID: userID, ProfilePublic: p.ProfilePublic, KeyboardPublic: p.KeyboardPublic,
 	})
 	if err != nil {
+		return auth.User{}, mapErr(err)
+	}
+	return toUser(u), nil
+}
+
+func (s *Store) ChangeDisplayName(ctx context.Context, userID uuid.UUID, displayName string) (auth.User, error) {
+	u, err := s.q.ChangeDisplayName(ctx, authdb.ChangeDisplayNameParams{
+		ID: userID, DisplayName: displayName,
+	})
+	if err != nil {
+		// Zero rows for an AUTHENTICATED caller cannot be a missing user — it is
+		// the statement's cooldown predicate refusing the write.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return auth.User{}, auth.ErrDisplayNameCooldown
+		}
 		return auth.User{}, mapErr(err)
 	}
 	return toUser(u), nil

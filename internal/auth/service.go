@@ -301,13 +301,17 @@ type userView struct {
 	// role is a storage detail the map behind this list is free to refactor.
 	// Omitted entirely for a plain player, so the common payload is unchanged.
 	Permissions []string `json:"permissions,omitempty"`
+	// DisplayNameChangedAt lets the settings screen disable the rename field
+	// BEFORE the server would refuse it (the cooldown is +30 days from this
+	// instant). Omitted while the name has never been changed.
+	DisplayNameChangedAt *time.Time `json:"displayNameChangedAt,omitempty"`
 }
 
 func toUserView(u User) userView {
 	return userView{
 		ID: u.ID, DisplayName: u.DisplayName, CreatedAt: u.CreatedAt,
 		ProfilePublic: u.ProfilePublic, KeyboardPublic: u.KeyboardPublic,
-		Permissions: u.Permissions(),
+		Permissions: u.Permissions(), DisplayNameChangedAt: u.DisplayNameChangedAt,
 	}
 }
 

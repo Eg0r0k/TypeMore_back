@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -118,6 +120,73 @@ func (s *Service) HandleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	view := toUserView(updated)
+	if s.restrictions != nil {
+		restricted, err := s.restrictions.IsRestricted(r.Context(), user.ID)
+		if err != nil {
+			s.log.Error("resolve account restriction", "err", err, "userId", user.ID)
+		}
+		view.Restricted = restricted
+	}
+	s.writeJSON(w, http.StatusOK, view)
+}
+
+// displayNameCooldown is how long a rename locks the next one. It mirrors the
+// interval inside the ChangeDisplayName statement (queries.sql) — change both
+// together.
+const displayNameCooldown = 30 * 24 * time.Hour
+
+// HandleChangeDisplayName serves PATCH /api/v1/me/display-name: the account's
+// rename, allowed once per 30 days. Mounted beside /me/settings by the caller
+// (RequireOrigin + RequireAuth). The cooldown lives in the store's UPDATE
+// predicate, so check and write cannot race; this handler only translates the
+// refusals. The response is the same userView /me serves.
+func (s *Service) HandleChangeDisplayName(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFrom(r.Context())
+	if !ok {
+		s.writeError(w, r, apiErrUnauthorized)
+		return
+	}
+	var req struct {
+		DisplayName string `json:"displayName"`
+	}
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.DisplayName)
+	if !validDisplayName(name) {
+		s.writeError(w, r, apiErrBadRequest(
+			"display name must be 3-20 characters using only letters, digits, '_', '.', '-'"))
+		return
+	}
+	// A rename to the name already held would burn the month on a no-op.
+	// citext equality server-side means a pure case change is still a change —
+	// only the byte-identical name is refused here.
+	if name == user.DisplayName {
+		s.writeError(w, r, newAPIError(http.StatusConflict, "display_name_unchanged",
+			"this is already the account's display name"))
+		return
+	}
+
+	updated, err := s.store.ChangeDisplayName(r.Context(), user.ID, name)
+	switch {
+	case errors.Is(err, ErrDisplayNameTaken):
+		s.writeError(w, r, apiErrNameTaken)
+		return
+	case errors.Is(err, ErrDisplayNameCooldown):
+		message := "the display name can change once every 30 days"
+		if user.DisplayNameChangedAt != nil {
+			next := user.DisplayNameChangedAt.Add(displayNameCooldown)
+			message = "the display name can change once every 30 days; the next change opens " +
+				next.UTC().Format(time.RFC3339)
+		}
+		s.writeError(w, r, newAPIError(http.StatusConflict, "display_name_cooldown", message))
+		return
+	case err != nil:
+		s.writeError(w, r, err)
+		return
+	}
+
 	view := toUserView(updated)
 	if s.restrictions != nil {
 		restricted, err := s.restrictions.IsRestricted(r.Context(), user.ID)

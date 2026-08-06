@@ -43,6 +43,9 @@ type User struct {
 	// role→permissions map expands. Resolved fresh on every authenticated
 	// request by RequireAuth, so demotion takes effect mid-session.
 	Role string
+	// DisplayNameChangedAt starts the rename cooldown (00030); nil means the
+	// name has never been changed — registration does not start the clock.
+	DisplayNameChangedAt *time.Time
 }
 
 // SettingsParams is the input to UpdateUserSettings: the full pair, resolved
@@ -156,6 +159,10 @@ type Store interface {
 	// UpdateUserSettings replaces the account's privacy switches and returns
 	// the updated row.
 	UpdateUserSettings(ctx context.Context, userID uuid.UUID, p SettingsParams) (User, error)
+	// ChangeDisplayName renames the account, enforcing the 30-day cooldown in
+	// the same statement (ErrDisplayNameCooldown when it refuses;
+	// ErrDisplayNameTaken on a collision).
+	ChangeDisplayName(ctx context.Context, userID uuid.UUID, displayName string) (User, error)
 	// PromoteAdmins promotes every account owning a VERIFIED identity on one
 	// of the emails to the admin role (the startup bootstrap; promotion only,
 	// never demotion). Returns how many accounts actually changed.

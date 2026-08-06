@@ -22,6 +22,19 @@ SET profile_public = $2, keyboard_public = $3, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
+-- name: ChangeDisplayName :one
+-- The rename, with the once-per-30-days rule INSIDE the predicate: zero rows
+-- for an authenticated caller means the cooldown refused the write (the
+-- adapter reports that as ErrDisplayNameCooldown), so check and write cannot
+-- race. The interval is fixed here and mirrored by displayNameCooldown in
+-- handler.go — change both together.
+UPDATE users
+SET display_name = $2, display_name_changed_at = now(), updated_at = now()
+WHERE id = $1
+  AND (display_name_changed_at IS NULL
+       OR display_name_changed_at <= now() - interval '30 days')
+RETURNING *;
+
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1;
 

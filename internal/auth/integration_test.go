@@ -140,6 +140,8 @@ func newHarness(t *testing.T, mutators ...func(*serverOpts)) *harness {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", svc.AuthRoutes())
 		r.With(svc.RequireAuth).Get("/me", svc.HandleMe)
+		r.With(svc.RequireOrigin, svc.RequireAuth).
+			Patch("/me/display-name", svc.HandleChangeDisplayName)
 		// A probe behind the permission gate, wired exactly as main.go mounts
 		// the admin subtree (OptionalAuth, then RequirePermission): the
 		// permissions tests assert the 404-invisibility contract against it.
@@ -181,6 +183,20 @@ func (h *harness) post(path string, body any) *http.Response {
 		reader = strings.NewReader(string(b))
 	}
 	req, err := http.NewRequest(http.MethodPost, h.server.URL+path, reader)
+	require.NoError(h.t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", frontendOrigin)
+	resp, err := h.client.Do(req)
+	require.NoError(h.t, err)
+	return resp
+}
+
+// patch sends a JSON PATCH with the required Origin header (CSRF).
+func (h *harness) patch(path string, body any) *http.Response {
+	h.t.Helper()
+	b, err := json.Marshal(body)
+	require.NoError(h.t, err)
+	req, err := http.NewRequest(http.MethodPatch, h.server.URL+path, strings.NewReader(string(b)))
 	require.NoError(h.t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", frontendOrigin)

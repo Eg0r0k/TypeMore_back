@@ -12,6 +12,43 @@ import (
 	"github.com/google/uuid"
 )
 
+const changeDisplayName = `-- name: ChangeDisplayName :one
+UPDATE users
+SET display_name = $2, display_name_changed_at = now(), updated_at = now()
+WHERE id = $1
+  AND (display_name_changed_at IS NULL
+       OR display_name_changed_at <= now() - interval '30 days')
+RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard, display_name_changed_at
+`
+
+type ChangeDisplayNameParams struct {
+	ID          uuid.UUID
+	DisplayName string
+}
+
+// The rename, with the once-per-30-days rule INSIDE the predicate: zero rows
+// for an authenticated caller means the cooldown refused the write (the
+// adapter reports that as ErrDisplayNameCooldown), so check and write cannot
+// race. The interval is fixed here and mirrored by displayNameCooldown in
+// handler.go — change both together.
+func (q *Queries) ChangeDisplayName(ctx context.Context, arg ChangeDisplayNameParams) (User, error) {
+	row := q.db.QueryRow(ctx, changeDisplayName, arg.ID, arg.DisplayName)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.ProfilePublic,
+		&i.KeyboardPublic,
+		&i.UpdatedAt,
+		&i.Role,
+		&i.Bio,
+		&i.Keyboard,
+		&i.DisplayNameChangedAt,
+	)
+	return i, err
+}
+
 const createEmailToken = `-- name: CreateEmailToken :one
 INSERT INTO email_tokens (user_id, purpose, token_hash, expires_at)
 VALUES ($1, $2, $3, $4)
@@ -110,7 +147,7 @@ const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (display_name)
 VALUES ($1)
-RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard
+RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard, display_name_changed_at
 `
 
 // Queries for the auth domain. sqlc generates type-safe Go from these into
@@ -129,6 +166,7 @@ func (q *Queries) CreateUser(ctx context.Context, displayName string) (User, err
 		&i.Role,
 		&i.Bio,
 		&i.Keyboard,
+		&i.DisplayNameChangedAt,
 	)
 	return i, err
 }
@@ -278,7 +316,7 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard FROM users WHERE id = $1
+SELECT id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard, display_name_changed_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -294,6 +332,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.Role,
 		&i.Bio,
 		&i.Keyboard,
+		&i.DisplayNameChangedAt,
 	)
 	return i, err
 }
@@ -406,7 +445,7 @@ const updateUserSettings = `-- name: UpdateUserSettings :one
 UPDATE users
 SET profile_public = $2, keyboard_public = $3, updated_at = now()
 WHERE id = $1
-RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard
+RETURNING id, display_name, created_at, profile_public, keyboard_public, updated_at, role, bio, keyboard, display_name_changed_at
 `
 
 type UpdateUserSettingsParams struct {
@@ -434,6 +473,7 @@ func (q *Queries) UpdateUserSettings(ctx context.Context, arg UpdateUserSettings
 		&i.Role,
 		&i.Bio,
 		&i.Keyboard,
+		&i.DisplayNameChangedAt,
 	)
 	return i, err
 }

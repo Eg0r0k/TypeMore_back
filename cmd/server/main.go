@@ -435,6 +435,10 @@ func run() error {
 		// /me itself is a safe read and deliberately carries no CSRF check.
 		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
 			Patch("/me/settings", authSvc.HandleUpdateSettings)
+		// The rename, once per 30 days. Its own route rather than a /me/settings
+		// field: the cooldown makes it a consequential act, not a switch flip.
+		r.With(authSvc.RequireOrigin, authSvc.RequireAuth).
+			Patch("/me/display-name", authSvc.HandleChangeDisplayName)
 		// The account's PROFILE — bio, board, links, badge showcase. A
 		// different route from /me/settings on purpose: those two switches
 		// decide who may read the profile, these are the profile. The GET is a

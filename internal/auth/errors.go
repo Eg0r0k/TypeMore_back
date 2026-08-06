@@ -14,6 +14,11 @@ var ErrNotFound = errors.New("auth: not found")
 // case-insensitive unique display_name (users_display_name_key).
 var ErrDisplayNameTaken = errors.New("auth: display name taken")
 
+// ErrDisplayNameCooldown is returned by ChangeDisplayName when the once-per-
+// 30-days predicate refused the write. The handler turns it into
+// display_name_cooldown, naming when the next change opens.
+var ErrDisplayNameCooldown = errors.New("auth: display name changed too recently")
+
 // ErrEmailOwnedByOtherUser is returned by Store writes that would leave the
 // same email verified under two different users (the verified_email_one_user
 // exclusion constraint). It is the DB-level backstop for the no-auto-link
