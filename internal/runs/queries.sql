@@ -201,14 +201,23 @@ ORDER BY o.decided_at DESC;
 -- which is precisely where `sustained_superhuman` now leaves a superhuman speed.
 -- A queue that only listed `flagged` would show the cases the machine was
 -- already sure about and hide the ones it wanted help with.
+-- Sorting is a CASE ladder keyed by @sort_key ('suspicion' | 'date' |
+-- 'player'): exactly one CASE is non-null per key, the rest sort as equal, and
+-- created_at breaks every tie. COUNT(*) OVER () carries the pre-LIMIT total on
+-- every row, which is what lets the client paginate without a second query.
 SELECT r.id, r.user_id, u.display_name, r.status, r.mode, r.lang, r.created_at,
        v.server_metrics, v.validation,
        (v.validation -> 'policy' ->> 'suspicion')::numeric AS suspicion,
-       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden
+       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden,
+       COUNT(*) OVER () AS total
 FROM runs r
          JOIN run_verdicts v ON v.run_id = r.id
          LEFT JOIN users u ON u.id = r.user_id
 WHERE r.status <> 'pending'
   AND COALESCE((v.validation -> 'policy' ->> 'suspicion')::numeric, 0) >= @min_suspicion::numeric
-ORDER BY (v.validation -> 'policy' ->> 'suspicion')::numeric DESC NULLS LAST, r.created_at DESC
-LIMIT @row_limit;
+ORDER BY
+    CASE WHEN @sort_key::text = 'player' THEN lower(u.display_name) END ASC NULLS LAST,
+    CASE WHEN @sort_key::text = 'suspicion'
+        THEN (v.validation -> 'policy' ->> 'suspicion')::numeric END DESC NULLS LAST,
+    r.created_at DESC
+LIMIT @row_limit OFFSET @row_offset;

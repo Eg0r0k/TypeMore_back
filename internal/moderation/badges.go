@@ -73,6 +73,16 @@ func (s *Store) GrantBadge(ctx context.Context, userID uuid.UUID, code string, b
 	return BadgeGrant{Code: row.BadgeCode, GrantedAt: row.GrantedAt, Order: row.DisplayOrder}, nil
 }
 
+// GrantBadgeBySystem is the grant with no account behind it — the entry point
+// a future achievements pipeline calls when a badge is EARNED rather than
+// awarded. Same idempotence and the same hidden-until-showcased rule as an
+// operator's grant; granted_by stays NULL, which the surfaces already render
+// as an act without an actor. Kept as its own named method so the achievements
+// code reads as what it does and never has to know the audit parameter exists.
+func (s *Store) GrantBadgeBySystem(ctx context.Context, userID uuid.UUID, code string) (BadgeGrant, error) {
+	return s.GrantBadge(ctx, userID, code, nil)
+}
+
 // RevokeBadge soft-revokes the live grant of one badge and reports whether
 // there was one to revoke.
 //

@@ -147,18 +147,26 @@ func (s *Store) RunStatusOverrides(ctx context.Context, runID uuid.UUID) ([]runs
 	return out, nil
 }
 
-// RunsForReview lists judged runs at or above a suspicion floor, worst first.
-func (s *Store) RunsForReview(ctx context.Context, minSuspicion float64, limit int32) ([]runs.ReviewRow, error) {
+// RunsForReview lists judged runs at or above a suspicion floor, ordered by
+// sortKey ('suspicion' | 'date' | 'player'), one page at a time. The second
+// return is the pre-LIMIT total, carried by the query itself.
+func (s *Store) RunsForReview(ctx context.Context, minSuspicion float64, sortKey string, limit, offset int32) ([]runs.ReviewRow, int64, error) {
 	var floor pgtype.Numeric
 	if err := floor.Scan(strconv.FormatFloat(minSuspicion, 'f', -1, 64)); err != nil {
-		return nil, fmt.Errorf("runs: review floor: %w", err)
+		return nil, 0, fmt.Errorf("runs: review floor: %w", err)
 	}
 	rows, err := s.q.ListRunsForReview(ctx, runsdb.ListRunsForReviewParams{
 		MinSuspicion: floor,
+		SortKey:      sortKey,
 		RowLimit:     limit,
+		RowOffset:    offset,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("runs: review queue: %w", err)
+		return nil, 0, fmt.Errorf("runs: review queue: %w", err)
+	}
+	var total int64
+	if len(rows) > 0 {
+		total = rows[0].Total
 	}
 	out := make([]runs.ReviewRow, 0, len(rows))
 	for i := range rows {
@@ -183,5 +191,5 @@ func (s *Store) RunsForReview(ctx context.Context, minSuspicion float64, limit i
 		}
 		out = append(out, row)
 	}
-	return out, nil
+	return out, total, nil
 }

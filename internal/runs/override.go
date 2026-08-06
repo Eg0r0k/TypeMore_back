@@ -81,8 +81,10 @@ type Moderator interface {
 	OverrideRunStatus(ctx context.Context, p OverrideParams) (StatusOverride, error)
 	// RunStatusOverrides is one run's decision history, newest first.
 	RunStatusOverrides(ctx context.Context, runID uuid.UUID) ([]StatusOverride, error)
-	// RunsForReview lists judged runs at or above a suspicion floor, worst first.
-	RunsForReview(ctx context.Context, minSuspicion float64, limit int32) ([]ReviewRow, error)
+	// RunsForReview lists judged runs at or above a suspicion floor, ordered
+	// by sortKey ('suspicion' | 'date' | 'player'), one page at a time; the
+	// second return is the pre-LIMIT total for pagination.
+	RunsForReview(ctx context.Context, minSuspicion float64, sortKey string, limit, offset int32) ([]ReviewRow, int64, error)
 }
 
 // WithModerator attaches the operator surface. Nil leaves the admin routes
@@ -236,7 +238,26 @@ func (s *Service) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 		limit = int32(min(parsed, reviewQueueMaxLimit))
 	}
 
-	rows, err := s.moderator.RunsForReview(r.Context(), floor, limit)
+	sortKey := "suspicion"
+	switch raw := r.URL.Query().Get("sort"); raw {
+	case "", "suspicion":
+	case "date", "player":
+		sortKey = raw
+	default:
+		s.writeError(w, r, apiErrBadRequest("sort must be one of suspicion, date, player"))
+		return
+	}
+	offset := int32(0)
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			s.writeError(w, r, apiErrBadRequest("offset must be a non-negative integer"))
+			return
+		}
+		offset = int32(parsed)
+	}
+
+	rows, total, err := s.moderator.RunsForReview(r.Context(), floor, sortKey, limit, offset)
 	if err != nil {
 		s.log.Error("review queue", "err", err)
 		s.writeError(w, r, apiErrInternal)
@@ -248,5 +269,7 @@ func (s *Service) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"runs":         rows,
 		"minSuspicion": floor,
+		"total":        total,
+		"offset":       offset,
 	})
 }

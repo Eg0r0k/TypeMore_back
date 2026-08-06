@@ -73,9 +73,11 @@ const (
 
 // KnownScoreVersions enumerates the ScoreResult formula versions this server
 // accepts. It is the single source of truth for the scoreVersion structural
-// check (below) and docs/RUNS.md: v1 is the original formula, v2 is the current
-// client's scoreV2. Anything outside this set is rejected as unsupported.
-var KnownScoreVersions = []int16{1, 2}
+// check (below) and docs/RUNS.md: v1 is the original formula, v2 added the mod
+// multiplier, v3 — the current client's scoreV3 — additionally scores `'ime'`
+// replaces (the mobile composition path, which v1/v2 valued at zero). Anything
+// outside this set is rejected as unsupported.
+var KnownScoreVersions = []int16{1, 2, 3}
 
 // KnownLogVersions enumerates the EventLog wire versions this server accepts
 // (frontend core: EVENT_LOG_VERSION / EVENT_LOG_VERSION_TELEMETRY) — the same

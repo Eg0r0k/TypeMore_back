@@ -571,18 +571,25 @@ const listRunsForReview = `-- name: ListRunsForReview :many
 SELECT r.id, r.user_id, u.display_name, r.status, r.mode, r.lang, r.created_at,
        v.server_metrics, v.validation,
        (v.validation -> 'policy' ->> 'suspicion')::numeric AS suspicion,
-       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden
+       EXISTS (SELECT 1 FROM run_status_overrides o WHERE o.run_id = r.id) AS already_overridden,
+       COUNT(*) OVER () AS total
 FROM runs r
          JOIN run_verdicts v ON v.run_id = r.id
          LEFT JOIN users u ON u.id = r.user_id
 WHERE r.status <> 'pending'
   AND COALESCE((v.validation -> 'policy' ->> 'suspicion')::numeric, 0) >= $1::numeric
-ORDER BY (v.validation -> 'policy' ->> 'suspicion')::numeric DESC NULLS LAST, r.created_at DESC
-LIMIT $2
+ORDER BY
+    CASE WHEN $2::text = 'player' THEN lower(u.display_name) END ASC NULLS LAST,
+    CASE WHEN $2::text = 'suspicion'
+        THEN (v.validation -> 'policy' ->> 'suspicion')::numeric END DESC NULLS LAST,
+    r.created_at DESC
+LIMIT $4 OFFSET $3
 `
 
 type ListRunsForReviewParams struct {
 	MinSuspicion pgtype.Numeric
+	SortKey      string
+	RowOffset    int32
 	RowLimit     int32
 }
 
@@ -598,6 +605,7 @@ type ListRunsForReviewRow struct {
 	Validation        json.RawMessage
 	Suspicion         pgtype.Numeric
 	AlreadyOverridden bool
+	Total             int64
 }
 
 // The review queue: judged runs the policy scored at or above a suspicion floor,
@@ -609,8 +617,17 @@ type ListRunsForReviewRow struct {
 // which is precisely where `sustained_superhuman` now leaves a superhuman speed.
 // A queue that only listed `flagged` would show the cases the machine was
 // already sure about and hide the ones it wanted help with.
+// Sorting is a CASE ladder keyed by @sort_key ('suspicion' | 'date' |
+// 'player'): exactly one CASE is non-null per key, the rest sort as equal, and
+// created_at breaks every tie. COUNT(*) OVER () carries the pre-LIMIT total on
+// every row, which is what lets the client paginate without a second query.
 func (q *Queries) ListRunsForReview(ctx context.Context, arg ListRunsForReviewParams) ([]ListRunsForReviewRow, error) {
-	rows, err := q.db.Query(ctx, listRunsForReview, arg.MinSuspicion, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listRunsForReview,
+		arg.MinSuspicion,
+		arg.SortKey,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -630,6 +647,7 @@ func (q *Queries) ListRunsForReview(ctx context.Context, arg ListRunsForReviewPa
 			&i.Validation,
 			&i.Suspicion,
 			&i.AlreadyOverridden,
+			&i.Total,
 		); err != nil {
 			return nil, err
 		}
